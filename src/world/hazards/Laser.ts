@@ -100,8 +100,6 @@ export class LaserEmitter implements Hazard {
   private readonly emitterCollider: number;
   private readonly head: THREE.Group;
   private time = 0;
-  /** Distance from the listener to the nearest point of the beam, for the hum. */
-  nearestDistance = Infinity;
 
   constructor(
     level: Level,
@@ -166,7 +164,7 @@ export class LaserEmitter implements Hazard {
       this.head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), this.dir);
     }
     this.trace(dt, ctx);
-    this.draw(ctx.listener);
+    this.draw();
   }
 
   private trace(dt: number, ctx: HazardContext): void {
@@ -235,8 +233,14 @@ export class LaserEmitter implements Hazard {
     }
   }
 
-  private draw(listener: THREE.Vector3): void {
-    this.nearestDistance = Infinity;
+  /** Distance from `p` to the nearest point of the beam (the hum gets louder near it). */
+  distanceTo(p: THREE.Vector3): number {
+    let nearest = Infinity;
+    for (const s of this.segments) nearest = Math.min(nearest, distanceToSegment(p, s.from, s.to));
+    return nearest;
+  }
+
+  private draw(): void {
     const flicker = 1 + Math.sin(this.time * 60) * 0.08;
     for (let i = 0; i < MAX_SEGMENTS; i++) {
       const s = this.segments[i];
@@ -255,7 +259,6 @@ export class LaserEmitter implements Hazard {
         m.quaternion.setFromUnitVectors(Y, d);
         m.scale.set(m === g ? flicker : 1, len, m === g ? flicker : 1);
       }
-      this.nearestDistance = Math.min(this.nearestDistance, distanceToSegment(listener, s.from, s.to));
     }
     const last = this.segments[this.segments.length - 1];
     if (last) {

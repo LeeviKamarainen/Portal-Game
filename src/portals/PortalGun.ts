@@ -238,6 +238,12 @@ interface Tracer {
   velocities: Float32Array;
 }
 
+const beamMaterial = (color: THREE.Color) =>
+  new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending });
+
+const burstMaterial = (color: THREE.Color) =>
+  new THREE.PointsMaterial({ color, size: 0.09, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+
 /** Shot tracers and the spark burst where a shot lands (or fizzles). */
 class ShotEffects {
   private readonly scene: THREE.Scene;
@@ -248,17 +254,18 @@ class ShotEffects {
   constructor(scene: THREE.Scene, tintOf: (color: PortalColor) => number) {
     this.scene = scene;
     this.tintOf = tintOf;
+    // A hidden tracer and burst that never go away: they get their shaders compiled with the
+    // rest of the arena at load, and keep them alive - once the last material using a shader
+    // is disposed three.js drops it, and the next shot would compile it all over again.
+    const keep = new THREE.Group();
+    keep.visible = false;
+    keep.add(new THREE.Mesh(this.beamGeo, beamMaterial(new THREE.Color())), new THREE.Points(new THREE.BufferGeometry(), burstMaterial(new THREE.Color())));
+    scene.add(keep);
   }
 
   tracer(color: PortalColor, from: THREE.Vector3, to: THREE.Vector3, placed: boolean, normal?: THREE.Vector3 | null): void {
     const col = new THREE.Color(placed ? this.tintOf(color) : 0x9aa4b0);
-    const mat = new THREE.MeshBasicMaterial({
-      color: col.clone().multiplyScalar(3),
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
+    const mat = beamMaterial(col.clone().multiplyScalar(3));
     const line = new THREE.Mesh(this.beamGeo, mat);
     const d = to.clone().sub(from);
     const len = d.length();
@@ -279,16 +286,7 @@ class ShotEffects {
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    const burst = new THREE.Points(
-      g,
-      new THREE.PointsMaterial({
-        color: col.clone().multiplyScalar(placed ? 3 : 1.5),
-        size: 0.09,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-      }),
-    );
+    const burst = new THREE.Points(g, burstMaterial(col.clone().multiplyScalar(placed ? 3 : 1.5)));
     burst.frustumCulled = false;
     this.scene.add(line, burst);
     this.active.push({ line, burst, life: 1, velocities: vel });

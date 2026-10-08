@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import { simEnv } from '../../sim/env';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
 import { PLAYER_FEET_OFFSET, PLAYER_RADIUS } from '../../player/PlayerController';
 import { BOX_HALF } from './PropBox';
-import { distanceGain, type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type RamPhase = 'rest' | 'warn' | 'strike' | 'hold' | 'retract';
 
@@ -212,7 +213,7 @@ export class Ram implements Hazard, Triggerable {
         shake = -0.12 * k + Math.sin(this.t * 80) * 0.015;
         if (this.t - this.lastBeep > 0.26 - 0.14 * k) {
           this.lastBeep = this.t;
-          ctx.audio.play('warn', distanceGain(ctx.listener, this.mount, 24) * 0.55);
+          ctx.sound('warn', 0.55, this.mount, 24);
         }
         if (this.t >= RAM_WARN_TIME) this.enter('strike');
         break;
@@ -223,7 +224,7 @@ export class Ram implements Hazard, Triggerable {
         this.lamp.color.setRGB(3, 1.5, 0.1);
         this.push(ctx);
         if (k >= 1) {
-          ctx.audio.play('slam', distanceGain(ctx.listener, this.mount, 30) * 0.6);
+          ctx.sound('slam', 0.6, this.mount, 30);
           this.enter('hold');
         }
         break;
@@ -256,7 +257,7 @@ export class Ram implements Hazard, Triggerable {
       const clear = frontFace + PLAYER_RADIUS + 0.03 - l.z;
       if (clear > 0) player.externalDelta.addScaledVector(this.facing, clear);
       player.knockback(this.facing.clone().multiplyScalar(PUSH_SPEED).setY(PUSH_LIFT));
-      if (!this.struck) ctx.audio.play('hurt', distanceGain(ctx.listener, this.mount, 20) * 0.5);
+      if (!this.struck) ctx.sound('hurt', 0.5, this.mount, 20);
       this.struck = true;
     }
     for (const box of ctx.props) {
@@ -301,6 +302,7 @@ let chevronCanvas: HTMLCanvasElement | null = null;
 
 /** Yellow-on-black chevrons pointing up the texture (+v), repeated `repeat` times. */
 function chevronMaterial(repeat: number): THREE.MeshStandardMaterial {
+  if (simEnv.headless) return new THREE.MeshStandardMaterial();
   if (!chevronCanvas) {
     const c = document.createElement('canvas');
     c.width = c.height = 128;

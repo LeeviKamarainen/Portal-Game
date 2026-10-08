@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Session } from '../game/Session';
+import type { ArenaSim } from '../sim/ArenaSim';
 import type { ArenaPlayer } from '../game/ArenaPlayer';
 import { clearCommand, type CommandSource, type PlayerCommand } from '../player/PlayerCommand';
 import { BOT_SKILLS, seededRandom, type BotSkill } from './BotSkill';
@@ -8,6 +8,7 @@ import { LookController } from './LookController';
 import { NavGraph } from './NavGraph';
 import { PathFollower, type FollowStatus } from './PathFollower';
 import { TrapSpots } from './TrapSpots';
+import { ClimbSpots } from './ClimbSpots';
 import { BotBrain } from './BotBrain';
 
 /** While idle it glances somewhere new every this many seconds (randomised up to double). */
@@ -22,6 +23,8 @@ const WATCH_LOST = 2.5;
 const GLANCE_EVERY = 3;
 const GLANCE_TIME = 1.1;
 const GLANCE_ANGLE = Math.PI * 0.4;
+/** Hopping skills hop about this often while running (randomised 0.6-1.6x). */
+const HOP_EVERY = 1;
 
 const _eye = new THREE.Vector3();
 const _p = new THREE.Vector3();
@@ -48,7 +51,7 @@ export class BotController implements CommandSource {
   autonomous = true;
   /** Glance around while idle (tests turn it off to hold the gaze still). */
   scan = true;
-  private session: Session | null = null;
+  private session: ArenaSim | null = null;
   /** The body it drives (set by attach). */
   self: ArenaPlayer | null = null;
   private nextScan = 0;
@@ -56,6 +59,7 @@ export class BotController implements CommandSource {
   private nextGlance = 0;
   private glanceUntil = 0;
   private glanceSide = 1;
+  private nextHop = 0;
 
   constructor(skill: BotSkill = BOT_SKILLS.normal, seed = (Math.random() * 2 ** 32) >>> 0) {
     this.skill = skill;
@@ -63,10 +67,11 @@ export class BotController implements CommandSource {
     this.look = new LookController(skill, this.random);
   }
 
-  /** Hooks it up to the body it drives (after Session.addPlayer). Builds the arena's nav graph and trap spots if needed. */
-  attach(session: Session, self: ArenaPlayer): void {
+  /** Hooks it up to the body it drives (after ArenaSim.addPlayer). Builds the arena's nav graph and trap spots if needed. */
+  attach(session: ArenaSim, self: ArenaPlayer): void {
     this.session = session;
     this.self = self;
+    self.controller.speedScale = this.skill.moveSpeed;
     this.perception = new Perception(session, self, this.skill, this.random);
     this.nav = NavGraph.for(session, session.arena, session.physics);
     this.follower = new PathFollower(this.nav, self.controller);
@@ -81,6 +86,7 @@ export class BotController implements CommandSource {
       follower: this.follower,
       look: this.look,
       traps,
+      climbs: this.skill.portalClimb ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav) : null,
     });
   }
 
@@ -89,12 +95,20 @@ export class BotController implements CommandSource {
     return this.follower?.goTo(point) ?? 'no-path';
   }
 
-  /** The enemy it is most sure about, preferring ones in sight. */
+  /**
+   * The enemy to keep an eye on: one in view first, then one it knows the whereabouts of,
+   * then one it remembers - and among those, the one its brain most wants to go after (see
+   * BotBrain.priority: nearest against highest scoring).
+   */
   focus(): KnownEnemy | null {
     let best: KnownEnemy | null = null;
+    let bestScore = -Infinity;
     for (const e of this.perception?.enemies.values() ?? []) {
-      const score = e.confidence + (e.visible ? 1 : 0);
-      if (!best || score > best.confidence + (best.visible ? 1 : 0)) best = e;
+      const score = (e.inSight ? 3 : e.visible ? 1.5 : 0) + e.confidence * 0.5 + (this.brain?.priority(e) ?? 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = e;
+      }
     }
     return best;
   }
@@ -132,15 +146,21 @@ export class BotController implements CommandSource {
     const c = self.controller;
     if (this.autonomous) brain?.think(now);
     follower?.update(dt, cmd, c.lookYaw);
+    // Hopping as it runs, where a hop can't go wrong.
+    if (this.autonomous && this.skill.hops && now >= this.nextHop && follower?.canHop() && c.horizontalSpeed() > 3) {
+      cmd.jump = true;
+      this.nextHop = now + HOP_EVERY * (0.6 + this.random());
+    }
     if (this.autonomous) brain?.act(cmd, now);
 
     const aim = this.autonomous ? brain?.aim : null;
     const target = this.focus();
     // An enemy out of sight is watched for only a moment, unless it's being hunted: staring at
-    // where someone was while walking somewhere else, it would never see anything new.
-    const watch = target && (target.visible || now - target.sensedAt < WATCH_LOST || brain?.goal === 'hunt');
+    // where someone was while walking somewhere else, it would never see anything new. (An
+    // omniscient bot always knows where they are, but looks at them only when in view.)
+    const watch = target && (target.inSight || (!this.skill.omniscient && (now - target.sensedAt < WATCH_LOST || brain?.goal === 'hunt')));
     if (aim) {
-      this.look.lookAt(aim.key, aim.point, now);
+      this.look.lookAt(aim.key, aim.point, now, aim.planned);
     } else if (target && watch) {
       _p.copy(target.position).setY(target.position.y + CHEST);
       this.look.lookAt(`enemy:${target.id}`, _p, now);

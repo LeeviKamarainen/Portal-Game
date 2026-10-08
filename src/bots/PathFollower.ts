@@ -18,6 +18,13 @@ const WAIT_LIMIT = 4;
 const PROGRESS = 0.3;
 const PROGRESS_WINDOW = 1.2;
 const MAX_REPLANS = 3;
+/** Knocked off the route: this far sideways from it. */
+const OFF_ROUTE = 1.5;
+/** Hopping needs this many flat, safe links ahead, and safe floor under it at these times into the hop, s. */
+const HOP_CLEAR = 7;
+/** ...with open floor this many cells (metres) all round each of those points. */
+const HOP_ROOM = 2;
+const HOP_CHECK = [0.3, 0.6, 0.9, 1.2];
 
 export type FollowStatus = 'idle' | 'moving' | 'waiting' | 'arrived' | 'stuck' | 'no-path';
 
@@ -49,6 +56,7 @@ export class PathFollower {
   /** Floor to keep off (open floor portals): routes go round it where they can. */
   avoid: ((n: NavNode) => boolean) | null = null;
   private avoidReplanAt = 0;
+  private startSlack = 0;
   private clock = 0;
 
   constructor(nav: NavGraph, body: PlayerController) {
@@ -77,6 +85,11 @@ export class PathFollower {
     this.progressTimer = 0;
     this.progressAt.copy(this.body.getPosition());
     this.status = this.path ? 'moving' : 'no-path';
+    // Starting a little way off the graph (a landing, a spot between floor points): that much
+    // off the route doesn't count as knocked off it until it has reached the route.
+    const first = this.path?.nodes[0];
+    const pos = this.body.getPosition();
+    this.startSlack = first ? Math.hypot(first.x - pos.x, first.z - pos.z) : 0;
   }
 
   /** Fills in cmd.forward / cmd.right / cmd.jump for this step. */
@@ -169,6 +182,35 @@ export class PathFollower {
     this.hasLookPoint = _look.lengthSq() > 1;
   }
 
+  /**
+   * Running on flat, safe ground for a few metres yet - no steps, drops, jumps, edges or
+   * hazards ahead, and not about to arrive - so a hop can't go wrong.
+   */
+  canHop(): boolean {
+    const path = this.path;
+    if (this.status !== 'moving' || !path || !this.body.isGrounded) return false;
+    const { nodes, links } = path;
+    if (this.index + HOP_CLEAR > links.length) return false;
+    const feet = this.body.getPosition().y - PLAYER_FEET_OFFSET;
+    for (let i = this.index; i < this.index + HOP_CLEAR; i++) {
+      const n = nodes[i + 1];
+      if (!this.flat(i) || !this.nav.openFloor(n.x, feet, n.z, HOP_ROOM) || this.avoid?.(n)) return false;
+    }
+    // A hop carries straight on whatever the route does (it's in the air ~0.9 s): where it
+    // comes down, and a little beyond, must be safe floor at this height too (and no open
+    // floor portal - its own trap included).
+    // It steers in the air too (toward the route), so both the route ahead and the straight
+    // line it takes off along need room all round - only wide open floor is hopped on.
+    const pos = this.body.getPosition();
+    const v = this.body.getVelocity();
+    for (const t of HOP_CHECK) {
+      _p.set(pos.x + v.x * t, pos.y, pos.z + v.z * t);
+      const n = this.nav.nearest(_p, 0);
+      if (!n || !this.nav.openFloor(n.x, feet, n.z, HOP_ROOM) || this.avoid?.(n)) return false;
+    }
+    return true;
+  }
+
   /** The route's last node is right by the goal, so the goal itself is the last waypoint. */
   private endsAtGoal(): boolean {
     const last = this.path!.nodes[this.path!.nodes.length - 1];
@@ -208,7 +250,8 @@ export class PathFollower {
       lowest = Math.min(lowest, a.y, b.y);
     }
     if (nodes.length === 1) best = Math.hypot(nodes[0].x - pos.x, nodes[0].z - pos.z);
-    return best > 1.5 || feet < lowest - 1.5;
+    const slack = this.index === 0 ? Math.max(OFF_ROUTE, this.startSlack + 0.5) : OFF_ROUTE;
+    return best > slack || feet < lowest - 1.5;
   }
 
   private reached(pos: THREE.Vector3, n: NavNode): boolean {

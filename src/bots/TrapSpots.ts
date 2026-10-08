@@ -11,12 +11,72 @@ const SPACING = 1;
 /** Only surfaces this close (horizontally) to something deadly are worth simulating. */
 const REACH = 7;
 /** Someone dropping into a floor portal comes out at roughly these speeds (stepped in / fell in). */
-const EXIT_SPEEDS = [3, 7];
+export const EXIT_SPEEDS = [3, 7, 9];
 const GRAVITY = 20;
 const SIM_STEP = 0.04;
 const SIM_TIME = 2.5;
 /** Where the body's centre is when it has just come out. */
 const OUT = 0.7;
+/** A body this wide (a little more than a player's capsule) has to fit inside the acid. */
+const BODY_EDGE: ReadonlyArray<[number, number]> = [
+  [0, 0],
+  [0.6, 0],
+  [-0.6, 0],
+  [0, 0.6],
+  [0, -0.6],
+];
+
+export interface Flight {
+  /** Where it first hit something (the body's centre path), or null. */
+  land: THREE.Vector3 | null;
+  /** The surface's normal there (up for a floor). */
+  normal: THREE.Vector3 | null;
+  /** Speed into that surface along its normal, m/s. */
+  impact: number;
+  /** Went below the kill plane. */
+  fell: boolean;
+}
+
+/**
+ * Something comes out of an exit portal at `point` (facing `normal`) at `speed`: follow its
+ * centre under gravity until it hits something, falls out of the world, or time runs out.
+ */
+export function flyOut(physics: PhysicsWorld, killY: number, point: THREE.Vector3, normal: THREE.Vector3, speed: number): Flight {
+  const pos = _a.copy(point).addScaledVector(normal, OUT);
+  const vel = _v.copy(normal).multiplyScalar(speed);
+  for (let t = 0; t < SIM_TIME; t += SIM_STEP) {
+    const next = _b.copy(pos).addScaledVector(vel, SIM_STEP);
+    next.y -= 0.5 * GRAVITY * SIM_STEP * SIM_STEP;
+    vel.y -= GRAVITY * SIM_STEP;
+    const hit = firstHit(physics, pos, next);
+    if (hit) return { land: hit.point, normal: hit.normal, impact: Math.max(0, -vel.dot(hit.normal)), fell: false };
+    if (next.y < killY) return { land: null, normal: null, impact: 0, fell: true };
+    pos.copy(next);
+  }
+  return { land: null, normal: null, impact: 0, fell: false };
+}
+
+function firstHit(physics: PhysicsWorld, from: THREE.Vector3, to: THREE.Vector3): { point: THREE.Vector3; normal: THREE.Vector3 } | null {
+  _dir.copy(to).sub(from);
+  const len = _dir.length();
+  if (len < 1e-5) return null;
+  _dir.divideScalar(len);
+  const hit = physics.world.castRayAndGetNormal(
+    new RAPIER.Ray(from, _dir),
+    len,
+    true,
+    RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+    undefined,
+    undefined,
+    undefined,
+    (c) => {
+      const t = physics.getOwner(c.handle)?.type;
+      return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
+    },
+  );
+  if (!hit) return null;
+  return { point: from.clone().addScaledVector(_dir, hit.timeOfImpact), normal: new THREE.Vector3(hit.normal.x, hit.normal.y, hit.normal.z) };
+}
 
 /** Somewhere an exit portal sends whoever comes out of it to their death. */
 export interface TrapSpot {
@@ -100,44 +160,16 @@ export class TrapSpots {
 
   /** Fly out of `point` along `normal` at `speed` and see where it lands. */
   private deadlyExit(point: THREE.Vector3, normal: THREE.Vector3, speed: number): boolean {
-    const pos = _a.copy(point).addScaledVector(normal, OUT);
-    const vel = _v.copy(normal).multiplyScalar(speed);
-    for (let t = 0; t < SIM_TIME; t += SIM_STEP) {
-      const next = _b.copy(pos).addScaledVector(vel, SIM_STEP);
-      next.y -= 0.5 * GRAVITY * SIM_STEP * SIM_STEP;
-      vel.y -= GRAVITY * SIM_STEP;
-      const land = this.firstHit(pos, next);
-      if (land) return this.deadlyAt(land);
-      if (next.y < this.arena.killY) return true;
-      pos.copy(next);
-    }
-    return false;
+    const out = flyOut(this.physics, this.arena.killY, point, normal, speed);
+    return out.fell || (!!out.land && this.deadlyAt(out.land));
   }
 
-  private firstHit(from: THREE.Vector3, to: THREE.Vector3): THREE.Vector3 | null {
-    _dir.copy(to).sub(from);
-    const len = _dir.length();
-    if (len < 1e-5) return null;
-    _dir.divideScalar(len);
-    const hit = this.physics.world.castRay(
-      new RAPIER.Ray(from, _dir),
-      len,
-      true,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      undefined,
-      undefined,
-      undefined,
-      (c) => {
-        const t = this.physics.getOwner(c.handle)?.type;
-        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
-      },
-    );
-    return hit ? from.clone().addScaledVector(_dir, hit.timeOfImpact) : null;
-  }
-
-  /** Landing in acid (the pit floor under it counts) or below the kill plane. */
+  /**
+   * Landing in acid (the pit floor under it counts) or below the kill plane - the whole body,
+   * not just its centre: one that comes down on the very edge stands on the rim instead.
+   */
   private deadlyAt(p: THREE.Vector3): boolean {
     if (p.y < this.arena.killY) return true;
-    return this.pools.some((pool) => pool.covers(p));
+    return this.pools.some((pool) => BODY_EDGE.every(([dx, dz]) => pool.covers(_v.set(p.x + dx, p.y, p.z + dz))));
   }
 }

@@ -4,7 +4,7 @@ import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
 import { PLAYER_FEET_OFFSET, PLAYER_RADIUS } from '../../player/PlayerController';
 import { BOX_HALF } from './PropBox';
-import { distanceGain, type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type Phase = 'up' | 'warn' | 'slam' | 'down' | 'rise';
 
@@ -106,7 +106,7 @@ export class Crusher implements Hazard, Triggerable {
         shake = Math.sin(this.t * 90) * 0.03;
         if (this.t - this.lastBeep > 0.22) {
           this.lastBeep = this.t;
-          ctx.audio.play('warn', distanceGain(ctx.listener, pos, 22) * 0.7);
+          ctx.sound('warn', 0.7, pos, 22);
         }
         if (this.t >= WARN_TIME) this.enter('slam');
         break;
@@ -115,7 +115,7 @@ export class Crusher implements Hazard, Triggerable {
         const k = Math.min(1, this.t / SLAM_TIME);
         this.y = THREE.MathUtils.lerp(this.topY, this.bottomY, k * k);
         if (k >= 1) {
-          ctx.audio.play('slam', distanceGain(ctx.listener, pos, 35));
+          ctx.sound('slam', 1, pos, 35);
           this.enter('down');
         }
         break;

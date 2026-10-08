@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { simEnv } from '../../sim/env';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
-import { distanceGain, type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type SwitchEffect = 'portals' | 'trigger' | 'gravity';
 
@@ -62,7 +63,11 @@ export class Switch implements Hazard {
     housing.castShadow = true;
     const face = new THREE.Mesh(
       level.own(new THREE.CircleGeometry(0.42, 40)),
-      level.own(new THREE.MeshStandardMaterial({ map: iconTexture(o.effect), roughness: 0.5, emissive: 0xffffff, emissiveIntensity: 0.35, emissiveMap: iconTexture(o.effect) })),
+      level.own(
+        simEnv.headless
+          ? new THREE.MeshStandardMaterial()
+          : new THREE.MeshStandardMaterial({ map: iconTexture(o.effect), roughness: 0.5, emissive: 0xffffff, emissiveIntensity: 0.35, emissiveMap: iconTexture(o.effect) }),
+      ),
     );
     face.position.z = HOUSING.z + 0.006;
     this.ring = level.own(glowMaterial(EFFECT_COLORS[o.effect], 1.4));
@@ -86,13 +91,13 @@ export class Switch implements Hazard {
   /** A shot hit it. Returns whether it went off. */
   shoot(ctx: HazardContext): boolean {
     if (!this.isReady) {
-      ctx.audio.play('fizzle', 0.5);
+      ctx.sound('fizzle', 0.5);
       return false;
     }
     this.ready = this.time + this.cooldown;
     this.flash = 1;
-    ctx.audio.play('click', 0.9);
-    ctx.audio.play('door', distanceGain(ctx.listener, this.mount, 40) * 0.8);
+    ctx.sound('click', 0.9);
+    ctx.sound('door', 0.8, this.mount, 40);
     switch (this.effect) {
       case 'portals':
         ctx.effects.clearPortals();

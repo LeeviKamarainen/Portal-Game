@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Level } from '../Level';
 import { BOX_HALF } from './PropBox';
 import { PLAYER_FEET_OFFSET } from '../../player/PlayerController';
-import { distanceGain, type Hazard, type HazardContext } from './Hazard';
+import { type Hazard, type HazardContext } from './Hazard';
 
 const ACID_VERTEX = /* glsl */ `
 varying vec2 vWorld;
@@ -99,14 +99,14 @@ export class AcidPool implements Hazard {
     for (const player of ctx.players) {
       const p = player.getPosition();
       if (this.inside(p.x, p.z, -0.1) && p.y - PLAYER_FEET_OFFSET < this.surfaceY + 0.05) {
-        ctx.audio.play('sizzle', distanceGain(ctx.listener, p, 30) * 0.8);
+        ctx.sound('sizzle', 0.8, p, 30);
         ctx.kill(player, 'acid');
       }
     }
     for (const box of ctx.props) {
       const b = box.getPosition();
       if (box.visible && this.inside(b.x, b.z, 0) && b.y - BOX_HALF < this.surfaceY) {
-        ctx.audio.play('sizzle', distanceGain(ctx.listener, b, 25) * 0.6);
+        ctx.sound('sizzle', 0.6, b, 25);
         box.setVisible(false);
       }
     }

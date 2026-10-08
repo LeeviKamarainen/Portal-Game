@@ -5,13 +5,13 @@ import type { ArenaPlayer } from '../game/ArenaPlayer';
 import type { ArenaDef } from '../world/ArenaBuilder';
 import { PVP_ARENA } from '../world/arenas';
 import { BotController } from '../bots/BotController';
-import { BOT_SKILLS, type BotDifficulty } from '../bots/BotSkill';
+import { BOT_SKILLS, seededRandom, type BotDifficulty } from '../bots/BotSkill';
 
 /**
  * Milestone 6 of the bot plan: bots play whole matches against each other at a fixed
  * timestep, with nobody at the keyboard (a bot drives the local slot too). `?test=sim` plays
- * a handful and checks they play the game properly and fairly; `?test=balance` plays many
- * and reports win rates by difficulty.
+ * a handful - 1 v 1 and free-for-all - and checks they play the game properly and fairly;
+ * `?test=balance` plays many 1 v 1s and reports win rates by difficulty.
  */
 
 const DT = 1 / 60;
@@ -42,6 +42,7 @@ export interface BotReport {
   /** Deaths nobody gets credit for: walked into a hazard or off an edge by itself. */
   ownGoals: string[];
   steals: number;
+  /** Trap and steal shots (climb shots are left out), and how many were fired on the move. */
   shots: number;
   movingShots: number;
   /** Longest it stood still while not lining up a shot, seconds (and what it was doing). */
@@ -53,6 +54,11 @@ export interface BotReport {
   turnCap: number;
   /** Trap or steal attempts started before it had ever noticed the enemy. */
   blindPlans: number;
+  /** Portal climbs up to someone, and drop-ins from a ceiling, it came through. */
+  climbs: number;
+  combos: number;
+  /** Who its traps went for (enemy id -> traps started on them). */
+  trapsOn: Record<string, number>;
 }
 
 export interface MatchReport {
@@ -72,12 +78,20 @@ interface Watch {
 
 /** One bot-vs-bot match on the PvP map, played out at a fixed step. */
 export async function simMatch(game: Game, a: BotDifficulty, b: BotDifficulty, seed: number): Promise<MatchReport> {
+  return simGame(game, [a, b], seed);
+}
+
+/** A match between one bot per entry of `difficulties` (more than two: everyone for themselves). */
+export async function simGame(game: Game, difficulties: BotDifficulty[], seed: number): Promise<MatchReport> {
   await (game as unknown as Internals).load(PVP_ARENA, 'pvp', 0);
   const s: Session = game.session!;
   s.events.length = 0;
-  const watches: Watch[] = s.players.slice(0, 2).map((player, i) => {
-    const difficulty = i === 0 ? a : b;
+  // Orbs from the seed too (fresh ones, all at once), so the same seed plays the same match.
+  s.orbs!.random = seededRandom(seed * 7919 + 1);
+  s.orbs!.clear(0);
+  const watches: Watch[] = difficulties.map((difficulty, i) => {
     const bot = new BotController(BOT_SKILLS[difficulty], seed * 2 + i);
+    const player = s.players[i] ?? s.addPlayer({ id: `p${i + 1}`, name: `BOT ${i + 1}` }, bot);
     player.autopilot = true;
     player.controller.commands = bot;
     bot.attach(s, player);
@@ -103,6 +117,9 @@ export async function simMatch(game: Game, a: BotDifficulty, b: BotDifficulty, s
         peakTurn: 0,
         turnCap: BOT_SKILLS[difficulty].turnRate,
         blindPlans: 0,
+        climbs: 0,
+        combos: 0,
+        trapsOn: {},
       },
     };
   });
@@ -135,7 +152,8 @@ export async function simMatch(game: Game, a: BotDifficulty, b: BotDifficulty, s
     for (const w of watches) {
       const c = w.player.controller;
       const r = w.report;
-      if (!w.player.dead && c.command.fire) {
+      // (Climb shots are taken standing still on purpose - its way in goes right beside it.)
+      if (!w.player.dead && c.command.fire && w.bot.brain?.goal !== 'climb') {
         r.shots++;
         if (c.horizontalSpeed() >= ON_THE_MOVE) r.movingShots++;
       }
@@ -161,6 +179,10 @@ export async function simMatch(game: Game, a: BotDifficulty, b: BotDifficulty, s
     // Every trap or steal began after it had noticed someone (or seen their portal).
     const firstSeen = Math.min(...w.bot.perception!.log.filter((p) => p.how === 'sight').map((p) => p.time));
     r.blindPlans = w.bot.brain!.log.filter((l) => (l.what === 'trap:start' || l.what === 'steal:start') && l.time < firstSeen).length;
+    const stats = w.bot.brain!.stats;
+    r.climbs = stats.climbs;
+    r.combos = stats.dropIns;
+    r.trapsOn = Object.fromEntries(stats.trapsOn);
   }
   return { seed, winner: s.match!.winner?.id ?? null, time: s.time, bots: watches.map((w) => w.report) };
 }
@@ -171,7 +193,7 @@ function describe(m: MatchReport): string {
   const bots = m.bots
     .map(
       (r) =>
-        `${r.id}(${r.difficulty}) ${r.score} pts [${r.orbs} orbs, ${r.kills} kills, ${r.deaths} deaths${r.ownGoals.length ? ` (own: ${r.ownGoals.join(' ')})` : ''}, ${r.steals} steals, ${r.movingShots}/${r.shots} shots moving, still ${r.longestStill.toFixed(1)} s ${r.stillGoal}, drought ${r.drought.toFixed(0)} s, turn ${deg(r.peakTurn)}/${deg(r.turnCap)}°/s]`,
+        `${r.id}(${r.difficulty}) ${r.score} pts [${r.orbs} orbs, ${r.kills} kills, ${r.deaths} deaths${r.ownGoals.length ? ` (own: ${r.ownGoals.join(' ')})` : ''}, ${r.steals} steals, ${r.climbs} climbs, ${r.combos} drop-ins, ${r.movingShots}/${r.shots} shots moving, still ${r.longestStill.toFixed(1)} s ${r.stillGoal}, drought ${r.drought.toFixed(0)} s, turn ${deg(r.peakTurn)}/${deg(r.turnCap)}°/s${Object.keys(r.trapsOn).length > 1 ? `, traps on ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ')}` : ''}]`,
     )
     .join(' vs ');
   return `seed ${m.seed}: ${m.winner ?? 'no winner'} at ${m.time.toFixed(0)} s - ${bots}`;
@@ -181,14 +203,17 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   const results: Result[] = [];
   const add = (name: string, pass: boolean, detail: string) => results.push({ name, pass, detail });
   const started = performance.now();
-  const setups: [BotDifficulty, BotDifficulty][] = [
+  const setups: BotDifficulty[][] = [
     ['normal', 'normal'],
     ['normal', 'normal'],
     ['hard', 'normal'],
     ['easy', 'hard'],
+    // Free for all.
+    ['easy', 'normal', 'hard', 'normal'],
+    ['hard', 'hard', 'normal'],
   ];
   const matches: MatchReport[] = [];
-  for (let i = 0; i < setups.length; i++) matches.push(await simMatch(game, setups[i][0], setups[i][1], 100 + i));
+  for (let i = 0; i < setups.length; i++) matches.push(await simGame(game, setups[i], 100 + i));
   const all = matches.flatMap((m) => m.bots);
   const lines = matches.map(describe);
 
@@ -215,6 +240,12 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   const others = all.filter((r) => r.difficulty !== 'hard');
   const otherMoving = others.reduce((n, r) => n + r.movingShots, 0);
   const otherShots = others.reduce((n, r) => n + r.shots, 0);
+  const hardDropIns = hard.reduce((n, r) => n + r.combos, 0);
+  const hardMatches = matches.filter((m) => m.bots.some((r) => r.difficulty === 'hard')).length;
+  add('Hard drops in from the ceiling, now and then', hardDropIns >= hardMatches, `${hardDropIns} drop-ins (and ${hard.reduce((n, r) => n + r.climbs, 0)} climbs to high ground) by Hard in ${hardMatches} matches`);
+  const ffa = matches.filter((m) => m.bots.length > 2).flatMap((m) => m.bots);
+  const spread = ffa.filter((r) => Object.keys(r.trapsOn).length > 1).length;
+  add('free for all: bots go after more than one opponent', spread >= Math.ceil(ffa.length / 2), `${spread} of ${ffa.length} set traps on more than one: ${ffa.map((r) => `${r.id} ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ') || '-'}`).join(', ')}`);
   add(
     'Hard shoots on the move; the others stop to aim',
     hardShots > 0 && hardMoving / hardShots >= 0.5 && otherMoving / Math.max(otherShots, 1) < 0.25,

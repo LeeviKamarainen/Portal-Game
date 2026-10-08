@@ -17,7 +17,7 @@ Started 2026-10-07. Builds on the win conditions already in the game (`src/game/
 |---|---|
 | Steal rule | The gun colour you shoot with decides: hitting someone's portal with your orange makes it **your orange** (your old orange closes), linked to your blue. The victim's other portal is left unlinked (inert). The stolen portal stays where it is. |
 | Telling portals apart | Each player has their own colour pair. You keep orange/blue; bots get other pairs (no acid green, no laser red). A stolen portal recolours to the thief's pair. |
-| First format | 1v1 against one bot on Highwire (the map's two team spawns). Free-for-all and teams later. |
+| First format | 1v1 against one bot on Highwire (the map's two team spawns). Free-for-all with up to 3 bots since 2026-10-08; teams later. |
 | First playtest | Bot collects orbs, reads hazard warnings, sets floor-portal traps when it sees you. |
 | Death in a match | Only the dead player respawns (at their team spawn, with brief spawn protection); their own portals close; the arena keeps running. Tutorial stages keep the old "reset the whole arena" behaviour. |
 
@@ -31,10 +31,15 @@ Started 2026-10-07. Builds on the win conditions already in the game (`src/game/
   position (with deliberate error), not an exact one.
 - **Memory:** last-seen positions fade over ~5 s. Orbs and enemy portals are known only once
   seen (an orb's light column counts — humans see it too).
-- **Aim:** turn-speed cap (170–250°/s by difficulty) with acceleration, 200–380 ms reaction
-  delay, aim error that shrinks while tracking (down to a small wobble), slight overshoot. A
-  180° turn takes ~1 s.
-- **Difficulty** (Easy / Normal / Hard) changes these numbers, never what the bot may know.
+- **Aim:** turn-speed cap (220–620°/s by difficulty, raised on request 2026-10-08) with
+  acceleration, 150–340 ms reaction delay, aim error that shrinks while tracking (down to a
+  small wobble), slight overshoot.
+- **Speed:** Easy runs at a person's speed; on request (2026-10-08) Normal runs 10% and Hard
+  22% faster.
+- **Difficulty** (Easy / Normal / Hard) changes these numbers. Easy and Normal never know
+  more than this. **Hard is the exception, on request (2026-10-08):** it knows where everyone,
+  every orb and every portal is at all times. It still turns at its turn rate, looks at you
+  only when you're actually in view, and needs a clear line to hit what it shoots.
 
 ## Milestones
 
@@ -227,13 +232,81 @@ Bugs the sims found (all fixed):
 Known limits: traps are still acid floor-portal traps only; one rare self-inflicted death per
 few matches remains (falling through its own portal).
 
+### 6b. Hard bot specials — *done 2026-10-08*
+
+User request: Hard sees the whole map, jumps around, and when you're on high ground it gets up
+there by portal - a wall exit, or any ceiling that takes portals (flash immunity cancels the
+fall damage) - shoots you mid-air, and carries on.
+
+- [x] **Omniscient** (`BotSkill.omniscient`, Hard only): Perception knows every enemy, orb and
+      portal; `KnownEnemy.inSight` still says whether you're really in view (it only looks at
+      you then - not through walls). Shot decisions use `Perception.clearShot` (only the level
+      blocks a portal shot - players and crates don't).
+- [x] **Hops** while running (`BotSkill.hops`): only on wide open floor - 2 m of safe floor at
+      the same height all round the route ahead and the line it takes off along (it steers in
+      the air, and early versions hopped into the acid: 29 self-inflicted deaths in 100
+      matches, now 1). On Highwire's narrow walkways that means it hops mostly on the ground
+      floor (~8 hops a minute collecting orbs).
+- [x] **Portal climbs** (`BotSkill.portalClimb`, `ClimbSpots.ts`): exits worked out per map by
+      simulating a body coming out of every wall/ceiling spot that takes portals and keeping
+      those that land on high, walkable floor (Highwire: ~390, 10 ms; ceiling exits must fit a
+      portal at any angle, so the small 4x3 slots are left out). When you're 3.5 m+ above it:
+      pick an exit that lands 3-22 m from you, preferring ones with a deadly trap exit in view
+      on the way down; if none is in clear view, walk to a vantage point first; then blue on
+      the exit, orange on the floor beside itself, walk in. Out the other side it starts a trap
+      on you straight away (planned shots skip the reaction delay) - usually the exit shot is
+      fired mid-air - and flashes immunity just before a hard landing. With orbs to collect it
+      only climbs when a trap can follow.
+- [x] Fixed on the way: trap exits now have to be deadly for the whole body at exit speeds of
+      3, 7 and 9 m/s (56 on Highwire, was 84 - some only dropped you on the acid's rim); a trap
+      is dropped after 1.5 s without a clear shot; routes keep 2.2 m from open floor portals;
+      the follower doesn't count starting a little off the graph as being knocked off its
+      route; bot-vs-bot sims and brain tests seed the orbs, so a seed always plays the same.
+- [x] Fixed on the way too: a floor trap never goes within 3 m of where it is or is heading.
+- [x] Tests: `?test=brain` 13 checks (new: Hard knows where you are and Normal doesn't; Hard
+      climbs to you on the north platform and kills you - exit shot fired 14-16 m up in the air;
+      Hard hops without dying). All other suites pass (sim 8, bots 8, nav 7, players 15,
+      scoring 14, hazards 14, arenas 8, portals 15).
+- [x] Balance (50 matches per pairing): **Hard beats Normal 90%, Easy 98%** (was 84% / 96%),
+      winning in ~52 s on average; Normal beats Easy 76%.
+
+### 6c. Faster bots, drop-ins — *done 2026-10-08*
+
+User request: Hard does the ceiling combo more often, not only when you're on high ground,
+and flicks faster; harder bots move and turn faster.
+
+- [x] **Drop-ins** (`BotSkill.comboChance`, Hard 0.4 every 3 s): an exit in a ceiling it can
+      see that lands within 30 m of someone whose floor takes a portal, with that floor and a
+      deadly trap exit in view halfway down; a portal beside itself, in, and the trap on them
+      while it falls (both trap shots usually mid-air), flash immunity for the landing. Ceiling
+      exits may now land on any floor (`ClimbSpots`; wall exits still need high floor). On
+      Highwire only the two platform slots qualify - from the pillar-top drop no deadly exit
+      can be seen (they're on the pillar's sides).
+- [x] **Quicker flicks**: climb and drop-in shots are planned (no reaction delay), and it looks
+      at where a planned shot landed after 0.04 s instead of 0.15 s.
+- [x] **Faster**: `BotSkill.moveSpeed` (Easy 1, Normal 1.1, Hard 1.22 times a person's top
+      speed, via `PlayerController.speedScale`); turn rates 220 / 330 / 620°/s (were
+      170 / 210 / 250), quicker reactions and thinking.
+- [x] Tests: `?test=brain` 15 checks (new: Hard drops in on you from the north platform's
+      ceiling slot - both trap shots fired in mid-air, 20 m and 15 m up, kill in 2.5 s; a bot
+      with two enemies picks by nearness and score). The high-ground climb kill now takes 4.1 s
+      (was 6.6). `?test=sim` 10 checks over four 1 v 1 and two free-for-all matches.
+- [x] Balance (50 matches per pairing): Normal beats Easy 84% (was 76%), **Hard beats Normal
+      82%** (was 90% - Normal got faster too), Hard beats Easy 96%; Hard wins in ~49 s.
+
 ### 7. More tactics, more players
 
+- [x] **Free-for-all, first cut** (2026-10-08): 1-3 bots picked in the PvP menu
+      (`Settings.botCount`), one spawn pad each (Highwire now has four: two per platform).
+      Who a bot goes after balances nearest and leading (`BotBrain.priority`: nearness out to
+      50 m plus their score against the leader's - early on a small lead counts for little -
+      plus a little for whoever it's already after); traps, climbs, drop-ins, hunting and where
+      it looks all use it. Sims play two free-for-all matches.
 - [ ] More trap kinds: laser relays, dropper crates through portals, ram timing.
 - [ ] Ambushing orbs; portal shortcuts in navigation (portal up to a ledge, floor fling);
       personality weights.
-- [ ] Free-for-all (up to 4) and teams: spawns for 4 on the PvP map, `Game` adding N bots,
-      scoreboard for 4, perception/decisions picking among several enemies.
+- [ ] Teams; per-bot difficulty in free-for-all; spawns for more than two on other maps
+      (players beyond a map's spawn count share pads).
 - [ ] Moving platforms walkable in the navigation map.
 
 ## Risks

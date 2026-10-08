@@ -64,6 +64,10 @@ export class Game {
   /** Index into ARENAS, or -1 for the test chamber. */
   arenaIndex = 0;
   mode: Mode = 'tutorial';
+  /** The loaded arena is a scored match against bots (the PvP arena, or a combat map in playtest). */
+  combat = false;
+  /** What is loaded, so a match or playtest can start over. */
+  private current: { def: ArenaDef; mode: Mode; index: number } | null = null;
   /** Who drives the PvP opponent: a bot, or nothing (scripted test suites move it themselves). */
   opponentBrain: 'bot' | 'idle' = 'bot';
   /** `?debug=bots`: what each bot knows and plans, drawn in the arena. */
@@ -154,7 +158,9 @@ export class Game {
     this.session = null;
     this.arenaIndex = index;
     this.mode = mode;
-    const session = await Session.create(this.engine, this.input, this.audio, def, mode === 'pvp' ? {} : null);
+    this.combat = mode === 'pvp' || (mode === 'playtest' && def.kind === 'combat');
+    this.current = { def, mode, index };
+    const session = await Session.create(this.engine, this.input, this.audio, def, this.combat ? {} : null);
     // Something else was picked while this arena loaded.
     if (ticket !== this.loadTicket) {
       session.dispose();
@@ -163,8 +169,16 @@ export class Game {
     session.demo = mode === 'menu';
     session.attachAvatar(this.avatar);
     this.botViews = [];
-    if (mode === 'pvp') this.addOpponent(session);
+    if (this.combat) this.addOpponents(session);
     if (FLAGS.debug === 'nav') session.scene.add(NavGraph.for(session, session.arena, session.physics).debugObject());
+    // Every shader compiled now, not the first time a portal opens. (Test runs don't wait for
+    // the driver to finish: a hidden page polls slowly, and their first frame waits anyway.)
+    const warm = session.warmUp();
+    if (!FLAGS.test) await warm;
+    if (ticket !== this.loadTicket) {
+      session.dispose();
+      return;
+    }
     this.engine.setScene(session.scene);
     this.session = session;
     this.hud.setArena(this.arenaLabel(), def.name, def.hint);
@@ -175,22 +189,25 @@ export class Game {
   }
 
   /**
-   * The PvP opponent: a bot at the difficulty picked in the menu (see bots/BotController and
-   * docs/bot-opponents-plan.md). `opponentBrain = 'idle'` (test suites) makes it stand still.
+   * The PvP opponents: as many bots as picked in the menu, at the difficulty picked there,
+   * everyone for themselves (see bots/BotController and docs/bot-opponents-plan.md).
+   * `opponentBrain = 'idle'` (test suites) makes it one opponent that stands still.
    */
-  private addOpponent(session: Session): ArenaPlayer {
+  private addOpponents(session: Session): void {
     const idle = this.opponentBrain === 'idle';
-    const bot = idle ? null : new BotController(BOT_SKILLS[this.settings.botDifficulty]);
-    const name = idle ? 'DUMMY' : 'BOT';
-    const opponent = session.addPlayer({ id: 'p2', name }, bot ?? new IdleCommands());
-    bot?.attach(session, opponent);
-    if (bot && FLAGS.debug === 'bots') this.watchBot(session, bot, opponent);
-    // A different character from yours, so you can tell who is who in a portal view.
-    const skin = SKINS[(SKINS.indexOf(this.settings.skin) + 7) % SKINS.length];
-    PlayerAvatar.load(skin)
-      .then((avatar) => session.setOpponentBody(opponent, avatar, new PortalGunModel('orange', opponent.palette)))
-      .catch((e) => console.error(e));
-    return opponent;
+    const count = idle ? 1 : this.settings.botCount;
+    for (let i = 0; i < count; i++) {
+      const bot = idle ? null : new BotController(BOT_SKILLS[this.settings.botDifficulty]);
+      const name = idle ? 'DUMMY' : count === 1 ? 'BOT' : `BOT ${i + 1}`;
+      const opponent = session.addPlayer({ id: `p${i + 2}`, name }, bot ?? new IdleCommands());
+      bot?.attach(session, opponent);
+      if (bot && FLAGS.debug === 'bots') this.watchBot(session, bot, opponent);
+      // Characters different from yours (and each other's), so you can tell who is who.
+      const skin = SKINS[(SKINS.indexOf(this.settings.skin) + 7 + 4 * i) % SKINS.length];
+      PlayerAvatar.load(skin)
+        .then((avatar) => session.setOpponentBody(opponent, avatar, new PortalGunModel('orange', opponent.palette)))
+        .catch((e) => console.error(e));
+    }
   }
 
   /** Draws what `bot` knows and plans (`?debug=bots`; tests may call it for a bot they add). */
@@ -202,8 +219,13 @@ export class Game {
 
   private arenaLabel(): string {
     if (this.mode === 'tutorial') return `TUTORIAL ${this.arenaIndex + 1} / ${ARENAS.length}`;
-    if (this.mode === 'pvp') return this.opponentBrain === 'idle' ? 'PVP ARENA · PRACTICE' : `PVP ARENA · VS ${this.settings.botDifficulty.toUpperCase()} BOT`;
-    if (this.mode === 'playtest') return 'PLAYTEST · ESC FOR THE EDITOR';
+    if (this.combat) {
+      const where = this.mode === 'playtest' ? 'PLAYTEST' : 'PVP ARENA';
+      if (this.opponentBrain === 'idle') return `${where} · PRACTICE`;
+      const n = this.settings.botCount;
+      return `${where} · VS ${n === 1 ? '' : `${n} `}${this.settings.botDifficulty.toUpperCase()} BOT${n === 1 ? '' : 'S'}`;
+    }
+    if (this.mode === 'playtest') return 'PLAYTEST · PUZZLE · ESC FOR THE EDITOR';
     return 'DEBUG';
   }
 
@@ -356,7 +378,7 @@ export class Game {
         }
         const last = this.mode !== 'tutorial' || this.arenaIndex >= ARENAS.length - 1;
         this.hud.setBanner(
-          this.mode !== 'tutorial' ? 'GOAL REACHED' : last ? 'ALL STAGES COMPLETE' : 'STAGE COMPLETE',
+          this.mode === 'playtest' ? 'LEVEL COMPLETE' : this.mode !== 'tutorial' ? 'GOAL REACHED' : last ? 'ALL STAGES COMPLETE' : 'STAGE COMPLETE',
           !last ? '' : this.mode === 'tutorial' ? 'R: play again from stage 1 · Esc: menu' : 'R: play again · Esc: menu',
         );
         this.setState(last ? 'finished' : 'complete');
@@ -431,7 +453,7 @@ export class Game {
   }
 
   private async advance(): Promise<void> {
-    if (this.state === 'loading' || this.mode === 'pvp') return;
+    if (this.state === 'loading' || this.mode !== 'tutorial' && this.mode !== 'test') return;
     const next = this.arenaIndex < 0 ? 0 : this.arenaIndex + 1;
     if (next >= ARENAS.length) return;
     await this.loadArena(next);
@@ -439,10 +461,11 @@ export class Game {
 
   restart(): void {
     if (!this.session || this.state === 'loading') return;
-    // A match restarts from zero.
-    if (this.mode === 'pvp') {
+    // A match restarts from zero; so does a finished level (its exit has been used up).
+    if (this.combat || (this.state === 'finished' && this.mode === 'playtest')) {
+      const { def, mode, index } = this.current!;
       this.fade = 1;
-      void this.loadPvp();
+      void this.load(def, mode, index);
       return;
     }
     if (this.state === 'finished' && this.mode === 'tutorial') {

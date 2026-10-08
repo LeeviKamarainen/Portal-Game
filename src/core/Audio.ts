@@ -4,24 +4,9 @@
  * is itself a user gesture, which is what browsers require before audio may start.
  */
 
-export type SoundName =
-  | 'shootOrange'
-  | 'shootBlue'
-  | 'portalOpen'
-  | 'fizzle'
-  | 'teleport'
-  | 'hurt'
-  | 'death'
-  | 'respawn'
-  | 'goal'
-  | 'slam'
-  | 'warn'
-  | 'door'
-  | 'sizzle'
-  | 'orb'
-  | 'steal'
-  | 'land'
-  | 'click';
+import type { SoundName } from '../sim/SimEvents';
+
+export type { SoundName };
 
 const MASTER_VOLUME = 0.45;
 

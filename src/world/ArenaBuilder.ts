@@ -201,5 +201,7 @@ export interface ArenaDef {
   hint: string;
   /** One line for the stage list in the menu. */
   blurb?: string;
+  /** `combat`: a scored match; `puzzle` (the default): solo, ended by the exit goal. */
+  kind?: 'combat' | 'puzzle';
   build(b: ArenaBuilder): void;
 }

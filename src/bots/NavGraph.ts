@@ -312,6 +312,25 @@ export class NavGraph {
 
   // --- Queries ------------------------------------------------------------------------
 
+  /**
+   * Wide open floor at height `y` (a floor's surface): every cell within `reach` of (x, z)
+   * has safe, unpenalised floor at that height - no edge, drop, wall, acid or hazard nearby.
+   */
+  openFloor(x: number, y: number, z: number, reach: number): boolean {
+    const [ix, iz] = this.cellOf(x, z);
+    for (let jz = -reach; jz <= reach; jz++) {
+      for (let jx = -reach; jx <= reach; jx++) {
+        const col = this.columns.get(this.key(ix + jx, iz + jz));
+        const ok = col?.some((id) => {
+          const n = this.nodes[id];
+          return Math.abs(n.y - y) < 0.3 && n.penalty === 0 && !n.hazards.length;
+        });
+        if (!ok) return false;
+      }
+    }
+    return true;
+  }
+
   /** Deadly right now (a timed hazard over it is in its warning or active). */
   blocked(n: NavNode): boolean {
     return n.hazards.some((h) => h.dangerNow?.() ?? true);

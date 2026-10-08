@@ -2,13 +2,17 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   FACE_NAMES,
+  MAP_KINDS,
   PIECES,
   ROOM_SIDES,
   expandPieces,
+  isSymmetric,
+  mapKind,
   rotated,
   withDefaults,
   type FieldSpec,
   type MapData,
+  type MapKind,
   type Piece,
   type PieceGroup,
   type Vec3,
@@ -369,7 +373,7 @@ export class Editor {
     const main = pieceView(full);
     main.userData.pieceIndex = index;
     group.add(main);
-    if (this.map.symmetry === 'rotate180' && !p.center) {
+    if (isSymmetric(this.map) && !p.center) {
       const mirror = pieceView(rotated(full));
       mirror.traverse((o) => {
         const m = o as THREE.Mesh;
@@ -1157,7 +1161,7 @@ export class Editor {
         <input type="number" step="${spec.turn === 'quarter' ? 90 : 15}" data-key="rot" value="${p.rot ?? 0}">
         <button class="b" data-act="turn" data-deg="90" title="R">⟳</button></div></div>`);
     }
-    if (this.map.symmetry === 'rotate180') {
+    if (isSymmetric(this.map)) {
       rows.push(`<div class="row"><label title="Placed once, on the symmetry centre - not copied to the other half">On the centre</label><input type="checkbox" data-key="center" ${p.center ? 'checked' : ''}></div>`);
     }
     for (const f of spec?.fields ?? []) rows.push(this.fieldRow(f, full));
@@ -1313,8 +1317,15 @@ export class Editor {
       <div class="row"><label>Id</label><input type="text" data-key="id" value="${esc(m.id)}"></div>
       <div class="row"><label>Card line</label><input type="text" data-key="blurb" value="${esc(m.blurb ?? '')}"></div>
       <label>On-screen hint</label><textarea data-key="hint">${esc(m.hint)}</textarea>
-      <div class="row"><label title="Copy everything not marked 'on the centre' with a half turn, swapping teams">Symmetry</label>
-        <select data-key="symmetry"><option value="rotate180" ${m.symmetry === 'rotate180' ? 'selected' : ''}>Half turn (2 teams)</option><option value="none" ${m.symmetry !== 'rotate180' ? 'selected' : ''}>None</option></select></div>
+      <div class="row"><label title="${esc(MAP_KINDS.map((k) => `${k.label}: ${k.help}`).join(' · '))}">Level type</label>
+        <select data-key="kind">${MAP_KINDS.map((k) => `<option value="${k.id}" ${mapKind(m) === k.id ? 'selected' : ''}>${k.label}</option>`).join('')}</select></div>
+      <div class="insp-help">${esc(MAP_KINDS.find((k) => k.id === mapKind(m))!.help)}</div>
+      ${
+        mapKind(m) === 'combat'
+          ? `<div class="row"><label title="Copy everything not marked 'on the centre' with a half turn, swapping teams">Symmetry</label>
+        <select data-key="symmetry"><option value="rotate180" ${m.symmetry === 'rotate180' ? 'selected' : ''}>Half turn (2 teams)</option><option value="none" ${m.symmetry !== 'rotate180' ? 'selected' : ''}>None</option></select></div>`
+          : ''
+      }
       <div class="row"><label>Fog colour</label><input type="color" data-key="fog.color" value="${m.fog?.color ?? '#0c1018'}"></div>
       <div class="row"><label>Fog near / far</label><div class="vec"><input type="number" step="5" data-key="fog.near" value="${m.fog?.near ?? 40}"><input type="number" step="5" data-key="fog.far" value="${m.fog?.far ?? 160}"></div></div>
       <div class="row"><label>Death below y</label><input type="number" step="0.5" data-key="killY" value="${m.killY ?? -6}"></div>
@@ -1336,6 +1347,9 @@ export class Editor {
     else if (key === 'symmetry') {
       m.symmetry = input.value as MapData['symmetry'];
       this.rebuildAll();
+    } else if (key === 'kind') {
+      m.kind = input.value as MapKind;
+      this.rebuildAll();
     } else (m as unknown as Record<string, string>)[key] = input.value;
     this.saveDraft();
     this.refreshPanels();
@@ -1351,6 +1365,11 @@ export class Editor {
       return [(e as Error).message];
     }
     if (!pieces.some((p) => p.type === 'spawn')) out.push('Add a spawn point - there is nowhere to start.');
+    const goals = pieces.filter((p) => p.type === 'goal').length;
+    if (mapKind(this.map) === 'puzzle') {
+      if (goals === 0) out.push('A puzzle needs an exit goal (Markers → Exit goal) - nothing ends the level yet.');
+      if (goals > 1) out.push('A puzzle has one exit goal; remove the extra ones.');
+    }
     if (!pieces.some((p) => p.type === 'room')) out.push('No room shell: the map has no outer walls or sky cover.');
     const ids = new Set(pieces.map((p) => p.id).filter((x): x is string => typeof x === 'string' && !!x));
     const has = (id: string) => ids.has(id) || (id.endsWith('~') && ids.has(id.replace(/~+$/, '')));

@@ -33,7 +33,7 @@ const SNAP_DISTANCE = 0.3;
  * or a drop of up to ~4 m is free. Beyond it damage climbs steeply - with gravity at 20,
  * an 8 m drop costs ~20, 16 m ~49, 22 m ~67, and ~35 m is fatal.
  */
-const FALL_DAMAGE_THRESHOLD = 13;
+export const FALL_DAMAGE_THRESHOLD = 13;
 const FALL_DAMAGE_SCALE = 4;
 
 const IMMUNITY_DURATION = 1.0;
@@ -81,6 +81,8 @@ export class PlayerController implements PortalTraversable {
   landingSpeed = 0;
   /** Heavier (or lighter) gravity from an arena effect; 1 = normal. */
   gravityScale = 1;
+  /** Top running speed multiplier (1 = everyone's; harder bots run a little faster). */
+  speedScale = 1;
   /** 0..1 flash strength for the HUD, set on damage and decayed here. */
   damageFlash = 0;
 
@@ -305,11 +307,11 @@ export class PlayerController implements PortalTraversable {
       // brakes momentum the player already has - a fling out of a portal keeps its speed.
       if (wish.lengthSq() > 0) {
         const current = horiz.dot(wish);
-        const add = MAX_AIR_SPEED - current;
+        const add = MAX_AIR_SPEED * this.speedScale - current;
         if (add > 0) horiz.addScaledVector(wish, Math.min(AIR_ACCEL * dt, add));
       }
     } else {
-      const target = wish.multiplyScalar(MAX_GROUND_SPEED);
+      const target = wish.multiplyScalar(MAX_GROUND_SPEED * this.speedScale);
       const delta = target.sub(horiz);
       const maxDelta = GROUND_ACCEL * dt;
       if (delta.length() > maxDelta) delta.setLength(maxDelta);
@@ -408,6 +410,13 @@ export class PlayerController implements PortalTraversable {
   killInstantly(): void {
     if (this.isImmune()) return;
     this.damage(this.health.max);
+  }
+
+  /** Takes the body out of the physics world (the player left the arena). */
+  dispose(): void {
+    this.physics.owners.delete(this.colliderHandle);
+    this.physics.world.removeCharacterController(this.controller);
+    this.physics.world.removeRigidBody(this.body);
   }
 
   respawn(spawn: THREE.Vector3, yaw: number): void {

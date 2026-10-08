@@ -109,7 +109,8 @@ export class PointOrbs {
   readonly orbs: Orb[] = [];
   private readonly arena: ArenaBuilder;
   private readonly rules: MatchRules;
-  private readonly random: () => number;
+  /** Where orbs turn up (bot-vs-bot simulations seed it, so a match plays out the same each run). */
+  random: () => number;
   private time = 0;
 
   constructor(arena: ArenaBuilder, rules: MatchRules, random: () => number = Math.random) {

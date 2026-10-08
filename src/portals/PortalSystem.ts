@@ -102,6 +102,23 @@ export class PortalSystem {
     this.byCollider.set(entity.colliderHandle, t);
   }
 
+  /** Stops tracking `entity` (a player who left). */
+  unregister(entity: PortalTraversable): void {
+    const t = this.byCollider.get(entity.colliderHandle);
+    if (!t) return;
+    this.tracked.splice(this.tracked.indexOf(t), 1);
+    this.byCollider.delete(entity.colliderHandle);
+  }
+
+  /** Takes portals out of the arena for good (they close first). */
+  removePortals(...portals: Portal[]): void {
+    for (const p of portals) {
+      p.unplace();
+      const i = this.portals.indexOf(p);
+      if (i >= 0) this.portals.splice(i, 1);
+    }
+  }
+
   teleportCount(entity: PortalTraversable): number {
     return this.byCollider.get(entity.colliderHandle)?.teleports ?? 0;
   }

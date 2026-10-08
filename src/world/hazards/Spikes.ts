@@ -3,7 +3,7 @@ import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
 import { PLAYER_FEET_OFFSET, PLAYER_RADIUS } from '../../player/PlayerController';
 import { BOX_HALF } from './PropBox';
-import { distanceGain, type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type SpikeMode = 'static' | 'cycle' | 'trigger';
 type SpikePhase = 'down' | 'warn' | 'up' | 'retract';
@@ -138,7 +138,7 @@ export class Spikes implements Hazard, Triggerable {
         shake = Math.sin(this.t * 120) * 0.012;
         if (this.t - this.lastBeep > 0.2) {
           this.lastBeep = this.t;
-          ctx.audio.play('warn', distanceGain(ctx.listener, this.center, 20) * 0.5);
+          ctx.sound('warn', 0.5, this.center, 20);
         }
         if (this.t >= SPIKE_WARN_TIME) this.enter('up');
         break;
@@ -154,7 +154,7 @@ export class Spikes implements Hazard, Triggerable {
         if (this.ext <= 0) this.enter('down');
         break;
     }
-    if (this.phase === 'up' && this.t < dt * 1.5) ctx.audio.play('slam', distanceGain(ctx.listener, this.center, 25) * 0.45);
+    if (this.phase === 'up' && this.t < dt * 1.5) ctx.sound('slam', 0.45, this.center, 25);
     this.place(shake);
   }
 

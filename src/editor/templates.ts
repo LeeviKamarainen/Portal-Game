@@ -11,6 +11,7 @@ export function blankMap(): MapData {
     name: 'New map',
     hint: 'A custom arena.',
     blurb: '',
+    kind: 'combat',
     symmetry: 'rotate180',
     fog: { color: '#0c1018', near: 40, far: 160 },
     killY: -6,
@@ -25,8 +26,33 @@ export function blankMap(): MapData {
   };
 }
 
+/**
+ * A puzzle to build on: one room with a low divider, a spawn at one end and the exit at the
+ * other - reach it by portalling over the divider. No symmetry, no teams.
+ */
+export function blankPuzzle(): MapData {
+  return {
+    id: 'puzzle-new-level',
+    name: 'New puzzle',
+    hint: 'Pale panels take portals. Get to the exit.',
+    blurb: '',
+    kind: 'puzzle',
+    symmetry: 'none',
+    fog: { color: '#0e121a', near: 30, far: 110 },
+    killY: -6,
+    pieces: [
+      { type: 'room', at: [0, 0, 0], size: [20, 8, 28], portal: ['walls', 'floor'] },
+      { type: 'lights', at: [0, 8, 0], size: [20, 0, 28], spacing: 5 },
+      { type: 'block', at: [0, 0, 0], size: [20, 3.2, 1], portal: ['front', 'back'] },
+      { type: 'spawn', at: [0, 0, 10], rot: 0, team: 'orange' },
+      { type: 'goal', at: [0, 0, -10] },
+    ],
+  };
+}
+
 /** Maps that ship with the game, to open as a starting point. */
 export const BUILT_IN_MAPS: { label: string; data: () => MapData }[] = [
   { label: 'Highwire (PvP)', data: () => structuredClone(highwire as MapData) },
-  { label: 'Blank template', data: blankMap },
+  { label: 'Blank combat template', data: blankMap },
+  { label: 'Blank puzzle template', data: blankPuzzle },
 ];

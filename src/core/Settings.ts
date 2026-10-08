@@ -22,8 +22,9 @@ export interface Settings {
   fov: number;
   sensitivity: number;
   invertY: boolean;
-  /** The PvP bot's difficulty. */
+  /** The PvP bots' difficulty, and how many of them (everyone for themselves). */
   botDifficulty: BotDifficultySetting;
+  botCount: number;
 }
 
 export type BotDifficultySetting = 'easy' | 'normal' | 'hard';
@@ -39,7 +40,11 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   sensitivity: 1,
   invertY: false,
   botDifficulty: 'normal',
+  botCount: 1,
 };
+
+/** Most bots in one match (with you, one per spawn pad on Highwire). */
+export const MAX_BOTS = 3;
 
 export const SKINS = 'abcdefghijklmnopqr'.split('');
 
@@ -86,6 +91,7 @@ export function loadSettings(): Settings {
     sensitivity: clamp(s.sensitivity, 0.2, 3, d.sensitivity),
     invertY: typeof s.invertY === 'boolean' ? s.invertY : d.invertY,
     botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard'] as const, d.botDifficulty),
+    botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
   };
 }
 

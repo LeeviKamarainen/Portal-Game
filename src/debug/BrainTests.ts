@@ -5,9 +5,10 @@ import type { ArenaPlayer } from '../game/ArenaPlayer';
 import type { ArenaDef } from '../world/ArenaBuilder';
 import { ARENAS, PVP_ARENA } from '../world/arenas';
 import { BotController } from '../bots/BotController';
-import { BOT_SKILLS, type BotSkill } from '../bots/BotSkill';
+import { BOT_SKILLS, seededRandom, type BotSkill } from '../bots/BotSkill';
 import { TrapSpots } from '../bots/TrapSpots';
 import { Crusher } from '../world/hazards/Crusher';
+import { IdleCommands } from '../player/PlayerCommand';
 
 /**
  * Milestone 5 of the bot plan: the first playable bot. It goes for orbs it can see, looks
@@ -15,7 +16,9 @@ import { Crusher } from '../world/hazards/Crusher';
  * floor-portal traps on someone standing in the open - but only someone it has noticed -
  * and in a match against someone who just stands there it wins without dying itself.
  * Milestone 6 added: Hard keeps moving while it lines up its shots, and bots steal a trap
- * exit they see and make it their own.
+ * exit they see and make it their own. Then Hard got a few cheats and tricks: it knows where
+ * you are through walls, hops as it runs, and portals itself up to you on high ground -
+ * setting a trap on you on the way down.
  */
 
 const DT = 1 / 60;
@@ -43,6 +46,8 @@ async function setup(game: Game, def: ArenaDef, index: number, seed = 5, skill: 
   game.input.setScriptedKeys([]);
   for (let i = 0; i < 10; i++) game.step(DT);
   const s = game.session!;
+  // Orbs (when a test lets them come) turn up in the same places every run.
+  if (s.orbs) s.orbs.random = seededRandom(seed * 31 + 7);
   s.orbs?.clear(Infinity);
   const [you, bot] = s.players;
   const brain = new BotController(skill, seed);
@@ -208,6 +213,96 @@ export async function runBrainTests(game: Game): Promise<{ text: string; results
     placedExit
       ? `${stolen !== null ? `stole it after ${stolen.toFixed(1)} s` : 'never stole it'}; portal now ${yours.owner}'s ${yours.color}; its trap exit ${brain.brain!.exitSpot ? 'set' : 'not set'}; ${brain.brain!.log.filter((r) => r.what.startsWith('steal')).map((r) => `${r.time.toFixed(1)} ${r.what}`).join(', ')}`
       : 'could not place your exit for the test',
+  );
+
+  // --- Hard knows where you are; Normal doesn't ----------------------------------------------
+  const knows: Record<string, boolean> = {};
+  for (const [label, skill] of [['Hard', BOT_SKILLS.hard], ['Normal', BOT_SKILLS.normal]] as const) {
+    ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 2, skill));
+    brain.autonomous = false;
+    brain.scan = false;
+    place(s, bot, V(-14, 1.02, -12), 0);
+    // Far behind it, up on the north platform, out of sight.
+    place(s, you, V(10, 9.02, 31), Math.PI);
+    run(0.5);
+    knows[label] = !!brain.perception!.enemies.get(you.id)?.visible;
+  }
+  add('Hard knows where you are wherever you are; Normal only once it sees or hears you', knows.Hard && !knows.Normal, `Hard: ${knows.Hard ? 'knows' : "doesn't know"}; Normal: ${knows.Normal ? 'knows' : "doesn't know"}`);
+
+  // --- Hard portals itself up to you, and traps you on the way down --------------------------
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 7, BOT_SKILLS.hard));
+  place(s, bot, V(-14, 1.02, -12), 0);
+  place(s, you, V(10, 9.02, 31), Math.PI);
+  const airShots: string[] = [];
+  const climbed = run(15, () => {
+    if (bot.controller.command.fire && !bot.controller.isGrounded) airShots.push(`${bot.controller.command.fire} at ${bot.controller.getPosition().y.toFixed(0)} m`);
+    return events.some((e) => e.type === 'death' && e.player === you.id);
+  });
+  const climbDeath = events.find((e) => e.type === 'death' && e.player === you.id) as Extract<SessionEvent, { type: 'death' }> | undefined;
+  const climbLog = brain.brain!.log.filter((r) => /^(climb:|trap:start|shot:|flash)/.test(r.what)).map((r) => `${r.time.toFixed(1)} ${r.what}`);
+  const through = brain.brain!.log.some((r) => r.what === 'climb:through');
+  add(
+    'Hard climbs by portal to you on high ground and traps you on the way down',
+    climbed !== null && climbDeath?.by === bot.id && through && airShots.length > 0 && !bot.dead,
+    `${climbed !== null ? `you died after ${climbed.toFixed(1)} s (${climbDeath?.cause}, credited to ${climbDeath?.by})` : 'no kill'}; shots in mid-air: ${airShots.join(', ') || 'none'}; ${climbLog.join(', ')}`,
+  );
+
+  // --- Hard drops in on you from a ceiling (same level as it, or not) -------------------------
+  // (Always rolling for it here; in play it's a chance every few seconds.)
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 7, { ...BOT_SKILLS.hard, comboChance: 1 }));
+  place(s, bot, V(-8, 1.02, 10), 0);
+  place(s, you, V(8, 1.02, 18), Math.PI);
+  const dropShots: string[] = [];
+  const dropped = run(15, () => {
+    if (bot.controller.command.fire && !bot.controller.isGrounded) dropShots.push(`${bot.controller.command.fire} at ${bot.controller.getPosition().y.toFixed(0)} m`);
+    return events.some((e) => e.type === 'death' && e.player === you.id);
+  });
+  const dropDeath = events.find((e) => e.type === 'death' && e.player === you.id) as Extract<SessionEvent, { type: 'death' }> | undefined;
+  const dropLog = brain.brain!.log.filter((r) => /^(climb:|combo:|trap:start|shot:|flash)/.test(r.what)).map((r) => `${r.time.toFixed(1)} ${r.what}${r.detail ? ` (${r.detail})` : ''}`);
+  add(
+    'Hard drops in on you through a ceiling portal and traps you as it falls',
+    dropped !== null && dropDeath?.by === bot.id && brain.brain!.stats.dropIns > 0 && dropShots.length > 0 && !bot.dead,
+    `${dropped !== null ? `you died after ${dropped.toFixed(1)} s (${dropDeath?.cause}, credited to ${dropDeath?.by})` : 'no kill'}; shots in mid-air: ${dropShots.join(', ') || 'none'}; ${dropLog.join(', ')}`,
+  );
+
+  // --- More than one enemy: nearest against leading -----------------------------------------
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 3, BOT_SKILLS.hard));
+  const third = s.addPlayer({ id: 'p3', name: 'THIRD' }, new IdleCommands());
+  brain.autonomous = false;
+  brain.scan = false;
+  place(s, bot, V(-14, 1.02, -12), 0);
+  place(s, you, V(-6, 1.02, -12), 0);
+  place(s, third, V(10, 1.02, 20), 0);
+  run(0.3);
+  const pick = () => {
+    const known = [...brain.perception!.enemies.values()];
+    return known.reduce((a, b) => (brain.brain!.priority(b) > brain.brain!.priority(a) ? b : a)).id;
+  };
+  const evenPick = pick();
+  s.match!.award(third.id, 70);
+  const leaderPick = pick();
+  s.match!.award(you.id, 40);
+  const closeScorerPick = pick();
+  add(
+    'with more than one enemy, it goes after a balance of nearest and leading',
+    evenPick === you.id && leaderPick === third.id && closeScorerPick === you.id,
+    `level scores: ${evenPick} (you, 8 m away; the other 40 m); the far one on 70: ${leaderPick}; you on 40 to their 70: ${closeScorerPick}`,
+  );
+
+  // --- Hard hops as it runs, and never off an edge --------------------------------------------
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 12, BOT_SKILLS.hard));
+  bench(you);
+  s.orbs!.clear(0);
+  let hops = 0;
+  run(40, () => {
+    if (bot.controller.command.jump) hops++;
+    return false;
+  });
+  const hopDeaths = events.filter((e): e is Extract<SessionEvent, { type: 'death' }> => e.type === 'death' && e.player === bot.id);
+  add(
+    'Hard hops as it runs, and never off an edge',
+    hops >= 5 && hopDeaths.length === 0,
+    `${hops} hops in 40 s of collecting orbs, ${hopDeaths.length} deaths${hopDeaths.map((d) => ` (${d.cause})`).join('')}, ${s.match!.player(bot.id)!.score} points`,
   );
 
   // --- Sidesteps when aimed at -------------------------------------------------------------

@@ -43,11 +43,25 @@ export interface Piece {
   [param: string]: unknown;
 }
 
+/**
+ * What the level is for. `combat`: a scored match against others, won on points (orbs and
+ * hazard kills); the exit goal is ignored. `puzzle`: one player alone, hazards and portals
+ * to get past, and the level ends when they reach the exit goal. A map without a `kind`
+ * is a combat map.
+ */
+export type MapKind = 'combat' | 'puzzle';
+
+export const MAP_KINDS: { id: MapKind; label: string; help: string }[] = [
+  { id: 'combat', label: 'Combat', help: 'Scored match against bots: orbs, hazard kills, first to the target score. Needs spawn points; the exit goal is ignored.' },
+  { id: 'puzzle', label: 'Puzzle', help: 'Solo: reach the exit goal to finish the level. Needs one exit goal; symmetry and teams are ignored.' },
+];
+
 export interface MapData {
   id: string;
   name: string;
   hint: string;
   blurb?: string;
+  kind?: MapKind;
   symmetry?: 'none' | 'rotate180';
   fog?: { color: string; near: number; far: number };
   /** Anything falling below this dies. */
@@ -85,6 +99,7 @@ export interface PieceSpec {
 }
 
 interface BuildContext {
+  kind: MapKind;
   receivers: Map<string, LaserReceiver>;
   triggerables: Map<string, Triggerable>;
   spawns: { feet: THREE.Vector3; yaw: number; team: Team | null }[];
@@ -583,10 +598,13 @@ export const PIECES: Record<string, PieceSpec> = {
   goal: {
     label: 'Exit goal',
     group: 'Markers',
-    help: 'Tutorial-style exit. at = floor centre.',
+    help: 'Puzzle maps: stepping on it ends the level (one per map). Ignored in combat maps. at = floor centre.',
     turn: 'none',
-    build(b, p) {
+    build(b, p, ctx) {
+      if (ctx.kind !== 'puzzle') return;
+      if (b.goal) throw new Error('a puzzle map has one exit goal; remove the extra one');
       b.setGoal(V(p.at));
+      ctx.extent.expandByPoint(V(p.at)).expandByPoint(V(p.at).setY(p.at[1] + 4));
     },
   },
   lights: {
@@ -644,6 +662,11 @@ export function withDefaults(raw: Piece): Piece {
   return { ...PIECES[raw.type]?.defaults, ...raw };
 }
 
+export const mapKind = (data: MapData): MapKind => data.kind ?? 'combat';
+
+/** Whether the map mirrors its pieces with a half turn (a puzzle is one player's, never mirrored). */
+export const isSymmetric = (data: MapData): boolean => data.symmetry === 'rotate180' && mapKind(data) === 'combat';
+
 /** Every piece the map places, with catalogue defaults filled in and symmetry applied. */
 export function expandPieces(data: MapData): Piece[] {
   const out: Piece[] = [];
@@ -654,7 +677,7 @@ export function expandPieces(data: MapData): Piece[] {
     if (!Array.isArray(raw.at) || raw.at.length !== 3) throw new Error(`${where}: "at" must be [x, y, z]`);
     const p = withDefaults(raw);
     out.push(p);
-    if (data.symmetry === 'rotate180' && !p.center) out.push(rotated(p));
+    if (isSymmetric(data) && !p.center) out.push(rotated(p));
   });
   return out;
 }
@@ -665,8 +688,11 @@ export function mapToArena(data: MapData): ArenaDef {
     name: data.name,
     hint: data.hint,
     blurb: data.blurb,
+    kind: mapKind(data),
     build(b) {
-      const ctx: BuildContext = { receivers: new Map(), triggerables: new Map(), spawns: [], extent: new THREE.Box3(), later: [] };
+      const kind = mapKind(data);
+      if (kind !== 'combat' && kind !== 'puzzle') throw new Error(`map "${data.id}": kind must be "combat" or "puzzle", got ${JSON.stringify(data.kind)}`);
+      const ctx: BuildContext = { kind, receivers: new Map(), triggerables: new Map(), spawns: [], extent: new THREE.Box3(), later: [] };
       for (const p of expandPieces(data)) {
         try {
           PIECES[p.type].build(b, p, ctx);
@@ -675,6 +701,7 @@ export function mapToArena(data: MapData): ArenaDef {
         }
       }
       for (const wire of ctx.later) wire();
+      if (kind === 'puzzle' && !b.goal) throw new Error(`puzzle map "${data.id}" has no exit goal, so it can't be finished`);
 
       // The player starts on the first orange spawn (or the first spawn); the rest get pads.
       const main = ctx.spawns.find((s) => s.team === 'orange') ?? ctx.spawns[0];

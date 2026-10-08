@@ -156,7 +156,19 @@ export async function runPlayerTests(game: Game): Promise<{ text: string; result
   game.renderNow();
   const views = s.portalRenderer.stats.views;
   const budget = 2 * s.portalRenderer.maxDepth;
-  add('four open portals render within the view budget', views >= 4 && views <= budget + 2, `${views} portal views (budget ${budget})`);
+  // Which openings are actually on screen (a portal just out of view needs no view drawn).
+  const cam = game.engine.camera;
+  const onScreen = s.system.portals.filter((p) => {
+    if (!p.isOpen) return false;
+    const ndc = [-1, 1].flatMap((sx) => [-1, 1].map((sy) => p.root.localToWorld(V(sx * 0.95, sy * 1.45, 0)).project(cam)));
+    if (ndc.some((v) => v.z > 1)) return true; // partly behind the camera
+    return Math.max(...ndc.map((v) => v.x)) > -1 && Math.min(...ndc.map((v) => v.x)) < 1 && Math.max(...ndc.map((v) => v.y)) > -1 && Math.min(...ndc.map((v) => v.y)) < 1;
+  });
+  add(
+    'open portals on screen render within the view budget',
+    onScreen.length >= 3 && views >= onScreen.length && views <= budget + 2,
+    `${views} portal views for ${onScreen.length} of ${s.system.portals.filter((p) => p.isOpen).length} open portals on screen (budget ${budget}); ${(s.portalRenderer.stats.coverage * 100).toFixed(0)}% of the screen drawn`,
+  );
 
   // --- Hazards act on the opponent, and kills on it are credited through portals -------
   const events = recordEvents(s);

@@ -8,7 +8,8 @@ const IMMUNITY_KEY = 'ShiftLeft';
 /**
  * What a player wants to do this step. Keyboard and mouse fill one in for the local
  * player and a bot fills one in for itself; either way the body obeys the same rules
- * (speed, jump, turn), so a bot can't do anything a person couldn't.
+ * (jump, turn, and speed - bar the harder bots' slightly faster legs, see BotSkill.moveSpeed),
+ * so a bot can't do anything a person couldn't.
  */
 export interface PlayerCommand {
   /** Wish direction in the player's own frame, each -1..1. */

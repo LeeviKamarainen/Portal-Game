@@ -58,9 +58,10 @@ export class LookController {
 
   /**
    * Look at `point`, identified by `key` ("enemy:p1", "orb:3"...). Following the same key
-   * just updates the point; a new key is taken up after the reaction time.
+   * just updates the point; a new key is taken up after the reaction time - straight away if
+   * it's `planned` (somewhere it decided to look in advance, nothing to react to).
    */
-  lookAt(key: string, point: THREE.Vector3, now: number): void {
+  lookAt(key: string, point: THREE.Vector3, now: number, planned = false): void {
     if (key === this.key) {
       this.point.copy(point);
       this.pendingKey = null;
@@ -68,7 +69,7 @@ export class LookController {
     }
     if (key !== this.pendingKey) {
       this.pendingKey = key;
-      this.pendingAt = now + this.skill.reaction;
+      this.pendingAt = now + (planned ? 0 : this.skill.reaction);
     }
     this.pendingPoint.copy(point);
   }

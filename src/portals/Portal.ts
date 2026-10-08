@@ -48,6 +48,8 @@ export const TUNNEL_DEPTH = 2.4;
 const TUNNEL_MARGIN = 1.3;
 const RIM_WIDTH = 0.07;
 const OPEN_TIME = 0.28;
+/** Where its glow light sits, in front of the window (the light itself is the Session's: see glow). */
+const GLOW_OFFSET = RECESS_DEPTH + 0.6;
 
 /** Rounded-rectangle outline of the opening, counter-clockwise, in portal-local metres. */
 export function portalOutline(hw = PORTAL_HALF_W, hh = PORTAL_HALF_H, r = CORNER_RADIUS, segments = 7): THREE.Vector2[] {
@@ -100,13 +102,16 @@ uniform float time;
 uniform float open;
 uniform vec2 halfSize;
 uniform float radius;
+uniform vec4 viewRect;
 varying vec4 vClip;
 varying vec3 vLocal;
 #include <clipping_planes_pars_fragment>
 ${ROUNDED_RECT_GLSL}
 void main() {
   #include <clipping_planes_fragment>
-  vec2 suv = vClip.xy / vClip.w * 0.5 + 0.5;
+  // Where on the whole screen this fragment is: a view narrowed to part of the screen (see
+  // PortalRenderer) spans just viewRect (offset, size) of it.
+  vec2 suv = viewRect.xy + (vClip.xy / vClip.w * 0.5 + 0.5) * viewRect.zw;
   vec3 view = closed > 0.5 ? vec3(0.0) : texture2D(map, suv).rgb;
 
   vec2 p = vLocal.xy / halfSize;
@@ -278,6 +283,12 @@ export class Portal {
   tint: number;
   /** Id of the player whose gun placed it (kill credit). */
   owner = '';
+  /**
+   * Fixed for the portal's lifetime, the same on the server and every client (the slot it
+   * was made for, see ArenaSim.addPlayer) - stealing swaps Portal objects between players,
+   * so neither owner nor colour can name one over the network.
+   */
+  netId = -1;
   linked: Portal | null = null;
   placed = false;
   face: Face | null = null;
@@ -286,9 +297,14 @@ export class Portal {
 
   /** Origin at the centre of the window, +Z out of the surface. */
   readonly root = new THREE.Group();
-  readonly targets: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget];
   readonly windowMesh: THREE.Mesh;
-  readonly light: THREE.PointLight;
+  /**
+   * How brightly it lights its surroundings right now (0 when not placed). It owns no light
+   * of its own: a light appearing in the scene makes three.js recompile every lit material
+   * (a second-long hitch), so the Session keeps a fixed few and lends them out (see
+   * Session.portalLights).
+   */
+  glow = 0;
 
   readonly normal = new THREE.Vector3(0, 0, 1);
   readonly right = new THREE.Vector3(1, 0, 0);
@@ -317,15 +333,11 @@ export class Portal {
     const col = new THREE.Color(tint);
     const outline = portalOutline();
 
-    const makeTarget = () =>
-      new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, colorSpace: THREE.LinearSRGBColorSpace });
-    this.targets = [makeTarget(), makeTarget()];
-    this.owned.push(...this.targets);
-
     this.windowMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        map: { value: this.targets[0].texture },
+        map: { value: null },
         closed: { value: 1 },
+        viewRect: { value: new THREE.Vector4(0, 0, 1, 1) },
         color: { value: col.clone() },
         time: { value: 0 },
         open: { value: 1 },
@@ -375,10 +387,7 @@ export class Portal {
     const halo = new THREE.Mesh(this.own(new THREE.PlaneGeometry(PORTAL_WIDTH + 1.6, PORTAL_HEIGHT + 1.6)), this.haloMaterial);
     halo.position.z = RECESS_DEPTH + 0.004;
 
-    this.light = new THREE.PointLight(col, 0, 5.5, 1.6);
-    this.light.position.z = RECESS_DEPTH + 0.6;
-
-    this.root.add(this.windowMesh, recess, rim, innerRim, halo, this.light);
+    this.root.add(this.windowMesh, recess, rim, innerRim, halo);
     this.root.visible = false;
   }
 
@@ -400,19 +409,24 @@ export class Portal {
     this.recessMaterial.uniforms.color.value.copy(col);
     this.haloMaterial.uniforms.color.value.copy(col);
     this.rimMaterial.color.copy(col).multiplyScalar(2.4);
-    this.light.color.copy(col);
   }
 
-  /** Keeps the render targets matched to the drawing buffer (screen-space sampling). */
-  resizeTargets(width: number, height: number): void {
-    for (const t of this.targets) {
-      if (t.width !== width || t.height !== height) t.setSize(width, height);
-    }
+  /** Where its glow light goes: just in front of the opening. */
+  glowPosition(out: THREE.Vector3): THREE.Vector3 {
+    return out.copy(this.root.position).addScaledVector(this.normal, GLOW_OFFSET);
   }
 
-  setView(texture: THREE.Texture | null): void {
-    this.windowMaterial.uniforms.closed.value = texture ? 0 : 1;
-    if (texture) this.windowMaterial.uniforms.map.value = texture;
+  /**
+   * What the window shows: `texture` (a view in screen space), or the closed swirl. `drawnIn`
+   * is the part of the screen the view it is being drawn in covers (offset and size, 0-1):
+   * the whole screen for the main view, less for a portal view narrowed to its portal.
+   */
+  setView(texture: THREE.Texture | null, drawnIn?: THREE.Vector4): void {
+    const u = this.windowMaterial.uniforms;
+    u.closed.value = texture ? 0 : 1;
+    if (texture) u.map.value = texture;
+    if (drawnIn) u.viewRect.value.copy(drawnIn);
+    else u.viewRect.value.set(0, 0, 1, 1);
   }
 
   get isOpen(): boolean {
@@ -501,7 +515,7 @@ export class Portal {
     this.hostCollider = -1;
     this.placed = false;
     this.root.visible = false;
-    this.light.intensity = 0;
+    this.glow = 0;
   }
 
   /** World -> portal-local (window frame). */
@@ -525,7 +539,7 @@ export class Portal {
     const burst = 1 + this.stolenFlash * 3;
     this.recessMaterial.uniforms.energy.value = (linked ? 1 : 0.65) * burst;
     this.haloMaterial.uniforms.energy.value = open * (linked ? 1 : 0.7) * burst;
-    this.light.intensity = this.placed ? open * (2.2 + 0.4 * Math.sin(time * 7)) * burst : 0;
+    this.glow = this.placed ? open * (2.2 + 0.4 * Math.sin(time * 7)) * burst : 0;
   }
 
   dispose(): void {

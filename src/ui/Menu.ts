@@ -1,5 +1,5 @@
 import { ARENAS, PVP_ARENA } from '../world/arenas';
-import { DEFAULT_SETTINGS, SKINS, saveSettings, type Settings } from '../core/Settings';
+import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type Settings } from '../core/Settings';
 import { SkinPreview } from './SkinPreview';
 import { DEFAULT_RULES } from '../game/Match';
 
@@ -263,22 +263,28 @@ export class Menu {
       case 'pvp':
         return `${back}
           <div class="eyebrow">Player versus player</div>
-          <h2>PvP Arena <span class="chip">1 v 1 VS BOT</span></h2>
+          <h2>PvP Arena <span class="chip">${this.settings.botCount === 1 ? '1 v 1 VS BOT' : `FREE FOR ALL &middot; ${this.settings.botCount} BOTS`}</span></h2>
           <div class="card">
             <div class="t">${esc(PVP_ARENA.name)}</div>
             <div class="d">${esc(PVP_ARENA.blurb ?? '')}</div>
             <ul>
               <li class="ok">Scoring: point orbs, portal kill credit, first to ${DEFAULT_RULES.scoreToWin} wins</li>
-              <li class="ok">A bot opponent: collects orbs, dodges, sets portal traps - and sees and hears no more than you</li>
+              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is</li>
               <li class="ok">Shoot an opponent's portal to steal it</li>
               <li>Online opponents</li>
             </ul>
+            <div class="d" style="margin-top:10px">Bots</div>
+            <div class="seg" style="margin-top:6px">
+              ${Array.from({ length: MAX_BOTS }, (_, i) => i + 1)
+                .map((n) => `<button class="${this.settings.botCount === n ? 'on' : ''}" data-action="bot-count" data-count="${n}">${n === 1 ? '1 (1 v 1)' : `${n} (free for all)`}</button>`)
+                .join('')}
+            </div>
             <div class="d" style="margin-top:10px">Bot difficulty</div>
             <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap">
               ${(['easy', 'normal', 'hard'] as const)
                 .map(
                   (d) =>
-                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${d[0].toUpperCase()}${d.slice(1)} bot</button>`,
+                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${d[0].toUpperCase()}${d.slice(1)} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
                 )
                 .join('')}
             </div>
@@ -423,6 +429,15 @@ export class Menu {
           saveSettings(this.settings);
         }
         this.handlers.playPvp();
+        break;
+      }
+      case 'bot-count': {
+        const n = Number(el.dataset.count);
+        if (n >= 1 && n <= MAX_BOTS) {
+          this.settings.botCount = n;
+          saveSettings(this.settings);
+        }
+        this.show('pvp');
         break;
       }
       case 'resume':

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import type { Session } from '../game/Session';
+import type { ArenaSim } from '../sim/ArenaSim';
 import type { ArenaPlayer } from '../game/ArenaPlayer';
 import type { Portal } from '../portals/Portal';
 import { EYE_OFFSET } from '../player/PlayerController';
@@ -12,8 +12,10 @@ export interface KnownEnemy {
   /** Where their body's centre was when last sensed (a heard position is only rough). */
   readonly position: THREE.Vector3;
   readonly velocity: THREE.Vector3;
-  /** In sight (and noticed) right now. */
+  /** Known where they are right now: in sight and noticed (or always, for an omniscient bot). */
   visible: boolean;
+  /** Actually in its view, with nothing in between, right now. */
+  inSight: boolean;
   how: 'sight' | 'sound';
   /** When last seen or heard. */
   sensedAt: number;
@@ -52,7 +54,8 @@ const _p = new THREE.Vector3();
  * What a bot knows. It is never handed the world: it sees through a view cone (range
  * capped by fog, line of sight needed, and someone has to stay in view briefly before they
  * register), hears noises within range (which give only a rough position), and remembers
- * for a few seconds. Decisions read from here and nothing else.
+ * for a few seconds. Decisions read from here and nothing else. The exception is a skill
+ * that is `omniscient` (Hard): it knows where everyone, every orb and every portal is.
  */
 export class Perception {
   readonly enemies = new Map<string, KnownEnemy>();
@@ -62,14 +65,14 @@ export class Perception {
   readonly portals = new Map<Portal, THREE.Vector3>();
   readonly log: PerceptionRecord[] = [];
 
-  private readonly session: Session;
+  private readonly session: ArenaSim;
   private readonly self: ArenaPlayer;
   private readonly skill: BotSkill;
   private readonly random: () => number;
   private readonly seenFor = new Map<string, number>();
   private readonly range: number;
 
-  constructor(session: Session, self: ArenaPlayer, skill: BotSkill, random: () => number) {
+  constructor(session: ArenaSim, self: ArenaPlayer, skill: BotSkill, random: () => number) {
     this.session = session;
     this.self = self;
     this.skill = skill;
@@ -108,15 +111,17 @@ export class Perception {
       const c = other.controller;
       const body = c.getPosition();
       const handle = c.colliderHandle;
-      const visible = [EYE_OFFSET, 0.3, -0.5].some((dy) => this.canSee(_p.copy(body).setY(body.y + dy), handle));
-      const t = visible ? (this.seenFor.get(other.id) ?? 0) + dt : 0;
+      const inSight = [EYE_OFFSET, 0.3, -0.5].some((dy) => this.canSee(_p.copy(body).setY(body.y + dy), handle));
+      const t = inSight ? (this.seenFor.get(other.id) ?? 0) + dt : 0;
       this.seenFor.set(other.id, t);
       const recent = known?.how === 'sight' && now - known.sensedAt <= REACQUIRE_WINDOW;
-      if (visible && (t >= this.skill.acquireTime || recent)) {
+      if (this.skill.omniscient || (inSight && (t >= this.skill.acquireTime || recent))) {
         if (!known?.visible) this.log.push({ time: now, what: 'enemy', id: other.id, how: 'sight' });
         this.remember(other.id, body, c.getVelocity(), 'sight', 1, now);
+        this.enemies.get(other.id)!.inSight = inSight;
       } else if (known) {
         known.visible = false;
+        known.inSight = false;
       }
     }
   }
@@ -139,7 +144,7 @@ export class Perception {
   private remember(id: string, position: THREE.Vector3, velocity: THREE.Vector3, how: 'sight' | 'sound', base: number, now: number): void {
     let e = this.enemies.get(id);
     if (!e) {
-      e = { id, position: new THREE.Vector3(), velocity: new THREE.Vector3(), visible: false, how, sensedAt: now, confidence: base, base };
+      e = { id, position: new THREE.Vector3(), velocity: new THREE.Vector3(), visible: false, inSight: false, how, sensedAt: now, confidence: base, base };
       this.enemies.set(id, e);
     }
     e.position.copy(position);
@@ -167,7 +172,7 @@ export class Perception {
     for (const o of active) {
       if (this.orbs.some((k) => k.distanceToSquared(o) < 0.25)) continue;
       const beam = _p.copy(o).setY(Math.min(o.y + BEAM_SIGHT, top));
-      if (this.canSee(o) || this.canSee(beam)) {
+      if (this.skill.omniscient || this.canSee(o) || this.canSee(beam)) {
         this.orbs.push(o.clone());
         this.log.push({ time: now, what: 'orb', id: o.toArray().map((v) => v.toFixed(1)).join(','), how: 'sight' });
       }
@@ -176,7 +181,7 @@ export class Perception {
     const body = this.self.controller.getPosition();
     for (let i = this.orbs.length - 1; i >= 0; i--) {
       const k = this.orbs[i];
-      if (!active.some((o) => o.distanceToSquared(k) < 0.25) && (k.distanceTo(body) < 1.5 || this.canSee(k))) this.orbs.splice(i, 1);
+      if (!active.some((o) => o.distanceToSquared(k) < 0.25) && (this.skill.omniscient || k.distanceTo(body) < 1.5 || this.canSee(k))) this.orbs.splice(i, 1);
     }
   }
 
@@ -187,11 +192,11 @@ export class Perception {
       const known = this.portals.get(p);
       if (mine || !p.placed) {
         // Ours now (stolen), or seen to be gone.
-        if (known && (mine || this.canSee(known))) this.portals.delete(p);
+        if (known && (mine || this.skill.omniscient || this.canSee(known))) this.portals.delete(p);
         continue;
       }
       const facing = p.normal.dot(_v.copy(_eye).sub(front)) > 0;
-      if (facing && this.canSee(front)) {
+      if (this.skill.omniscient || (facing && this.canSee(front))) {
         if (!known) this.log.push({ time: now, what: 'portal', id: `${p.owner}:${p.color}`, how: 'sight' });
         this.portals.set(p, front.clone());
       }
@@ -212,6 +217,32 @@ export class Perception {
   /** In view and nothing solid in between (`target`: a collider that counts as reaching it). */
   canSee(point: THREE.Vector3, target = -1): boolean {
     return this.inView(point) && this.lineOfSight(point, target);
+  }
+
+  /**
+   * A portal shot from the eye would reach `point`: like line of sight, but players and
+   * crates don't count - portal shots go straight past them (only the level stops a shot).
+   */
+  clearShot(point: THREE.Vector3): boolean {
+    const physics = this.session.physics;
+    const dir = _v.copy(point).sub(_eye);
+    const dist = dir.length();
+    if (dist < 1e-3) return true;
+    dir.divideScalar(dist);
+    const hit = physics.world.castRay(
+      new RAPIER.Ray(_eye, dir),
+      dist,
+      true,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+      undefined,
+      undefined,
+      undefined,
+      (c) => {
+        const t = physics.getOwner(c.handle)?.type;
+        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
+      },
+    );
+    return !hit || hit.timeOfImpact >= dist - 0.05;
   }
 
   lineOfSight(point: THREE.Vector3, target = -1): boolean {

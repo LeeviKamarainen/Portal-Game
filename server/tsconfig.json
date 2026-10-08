@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    /* DOM stays in the lib: @types/three and the guarded texture code mention DOM types.
+       The headless test is what proves nothing touches the DOM at run time. */
+    "types": ["node", "vite/client"]
+  },
+  "include": ["./**/*.ts", "../src"]
+}

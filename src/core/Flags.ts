@@ -12,7 +12,8 @@
  *   ?test=bots          check bots play fair: what they can see and hear, how fast they turn.
  *   ?test=nav           check bots find their way: the navigation graph, walking, jumps, crushers.
  *   ?test=brain         check the bot plays: orbs, exploring, escaping, dodging, portal traps, a match.
- *   ?test=sim           bot-vs-bot matches: everyone scores, nobody stuck, traps and steals, fair play.
+ *   ?test=sim           bot-vs-bot matches, 1 v 1 and free-for-all: everyone scores, nobody stuck, traps,
+ *                       steals and drop-ins, fair play.
  *   ?test=balance       win rates by bot difficulty: 50 bot-vs-bot matches per pairing (&n= to change).
  *   ?test=perf          measure GPU/CPU frame time per arena with timer queries.
  *                       (Results show in an overlay and in window.__testResults.)

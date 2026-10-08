@@ -1,6 +1,8 @@
 /**
- * How good a bot is. Difficulty changes these numbers only - never what a bot is allowed
- * to know (see Perception) or do (it drives the same PlayerCommand a keyboard does).
+ * How good a bot is. Difficulty changes these numbers and a few abilities - it always drives
+ * the same PlayerCommand a keyboard does. Easy and Normal know only what they see and hear
+ * (see Perception); Hard is `omniscient` by design. Harder bots also run a little faster
+ * than a person (`moveSpeed`).
  */
 export interface BotSkill {
   readonly name: string;
@@ -44,6 +46,27 @@ export interface BotSkill {
   readonly dodges: boolean;
   /** Keeps moving (strafing, or on along its route) while it lines up a shot. */
   readonly moveWhileAiming: boolean;
+  /**
+   * Knows where everyone, every orb and every portal is, all the time (a deliberate cheat
+   * for the top difficulty). It still turns at its turn rate and needs a clear line to shoot.
+   */
+  readonly omniscient: boolean;
+  /** Hops as it runs (on flat, safe ground) - harder to trap. */
+  readonly hops: boolean;
+  /**
+   * Portals itself up to someone on higher ground (an exit on a wall or ceiling up there, a
+   * portal on the floor beside it), sets a trap on them on the way down, and flashes
+   * immunity before a hard landing.
+   */
+  readonly portalClimb: boolean;
+  /**
+   * Chance, rolled every few seconds, that it drops in on someone from a ceiling for the fun
+   * of it (high ground or not): exit in the ceiling, a portal beside itself, in, and a trap
+   * on them while it falls. Needs `portalClimb`.
+   */
+  readonly comboChance: number;
+  /** Top running speed, times a person's (harder bots are a little quicker on their feet). */
+  readonly moveSpeed: number;
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
@@ -57,21 +80,26 @@ export const BOT_SKILLS = {
     acquireTime: 0.38,
     hearing: 0.8,
     memory: 4.5,
-    reaction: 0.38,
-    turnRate: deg(170),
-    turnAccel: deg(750),
+    reaction: 0.34,
+    turnRate: deg(220),
+    turnAccel: deg(1000),
     aimError: deg(5),
     aimSettle: 1,
     aimWobble: deg(0.6),
     overshoot: 1.22,
-    thinkInterval: 0.35,
-    shotCooldown: 0.75,
+    thinkInterval: 0.3,
+    shotCooldown: 0.7,
     aimTolerance: deg(2.2),
     trapChance: 0.6,
     trapRange: 30,
     stealChance: 0.3,
     dodges: false,
     moveWhileAiming: false,
+    omniscient: false,
+    hops: false,
+    portalClimb: false,
+    comboChance: 0,
+    moveSpeed: 1,
   },
   normal: {
     name: 'Normal',
@@ -81,21 +109,26 @@ export const BOT_SKILLS = {
     acquireTime: 0.25,
     hearing: 1.05,
     memory: 5.5,
-    reaction: 0.28,
-    turnRate: deg(210),
-    turnAccel: deg(1050),
+    reaction: 0.24,
+    turnRate: deg(330),
+    turnAccel: deg(2000),
     aimError: deg(3),
-    aimSettle: 0.65,
+    aimSettle: 0.55,
     aimWobble: deg(0.35),
     overshoot: 1.12,
-    thinkInterval: 0.2,
-    shotCooldown: 0.5,
+    thinkInterval: 0.16,
+    shotCooldown: 0.45,
     aimTolerance: deg(1.5),
     trapChance: 1,
     trapRange: 38,
     stealChance: 0.7,
     dodges: true,
     moveWhileAiming: false,
+    omniscient: false,
+    hops: false,
+    portalClimb: false,
+    comboChance: 0,
+    moveSpeed: 1.1,
   },
   hard: {
     name: 'Hard',
@@ -105,21 +138,26 @@ export const BOT_SKILLS = {
     acquireTime: 0.16,
     hearing: 1.25,
     memory: 7,
-    reaction: 0.2,
-    turnRate: deg(250),
-    turnAccel: deg(1500),
-    aimError: deg(1.5),
-    aimSettle: 0.4,
+    reaction: 0.15,
+    turnRate: deg(620),
+    turnAccel: deg(5500),
+    aimError: deg(1.2),
+    aimSettle: 0.28,
     aimWobble: deg(0.2),
-    overshoot: 1.06,
-    thinkInterval: 0.12,
-    shotCooldown: 0.35,
+    overshoot: 1.05,
+    thinkInterval: 0.08,
+    shotCooldown: 0.25,
     aimTolerance: deg(1),
     trapChance: 1,
     trapRange: 45,
     stealChance: 1,
     dodges: true,
     moveWhileAiming: true,
+    omniscient: true,
+    hops: true,
+    portalClimb: true,
+    comboChance: 0.4,
+    moveSpeed: 1.22,
   },
 } satisfies Record<string, BotSkill>;
 

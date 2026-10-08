@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
-import { distanceGain, type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 type TrapPhase = 'closed' | 'warn' | 'open' | 'closing';
 
@@ -129,12 +129,12 @@ export class Trapdoor implements Hazard, Triggerable {
         shake = Math.sin(this.t * 95) * 0.015;
         if (this.t - this.lastBeep > 0.22) {
           this.lastBeep = this.t;
-          ctx.audio.play('warn', distanceGain(ctx.listener, this.center, 22) * 0.5);
+          ctx.sound('warn', 0.5, this.center, 22);
         }
         if (this.t >= TRAP_WARN_TIME) {
           this.enter('open');
           for (const c of this.colliders) c.setEnabled(false);
-          ctx.audio.play('door', distanceGain(ctx.listener, this.center, 30));
+          ctx.sound('door', 1, this.center, 30);
         }
         break;
       }

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
 import { PropBox } from './PropBox';
-import { distanceGain, type Hazard, type HazardContext } from './Hazard';
+import { type Hazard, type HazardContext } from './Hazard';
 
 const SETTLE_SPEED = 0.05;
 const SETTLE_DELAY = 2;
@@ -59,7 +59,7 @@ export class Dropper implements Hazard {
         this.waiting = false;
         this.box.setFrozen(false);
         this.lamp.color.setRGB(0.6, 0.05, 0.02);
-        ctx.audio.play('warn', distanceGain(ctx.listener, this.dropPoint, 30));
+        ctx.sound('warn', 1, this.dropPoint, 30);
       }
       return;
     }

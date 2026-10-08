@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { simEnv } from '../sim/env';
 
 /**
  * Procedural surface materials - generated on canvases at start-up, no image files.
@@ -176,6 +177,12 @@ let cache: Record<MaterialName, THREE.MeshStandardMaterial> | null = null;
 
 export function materials(): Record<MaterialName, THREE.MeshStandardMaterial> {
   if (cache) return cache;
+  // Nobody looks at a headless arena: plain colours, no canvases.
+  if (simEnv.headless) {
+    const plain = () => new THREE.MeshStandardMaterial();
+    cache = { panel: plain(), floor: plain(), metal: plain(), hazard: plain(), trim: plain() };
+    return cache;
+  }
   const panel = makeTextures(panelPainter, 6);
   const floor = makeTextures(floorPainter, 5);
   const metal = makeTextures(metalPainter, 9);

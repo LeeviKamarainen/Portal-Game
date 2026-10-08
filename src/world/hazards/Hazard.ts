@@ -2,7 +2,7 @@ import type * as THREE from 'three';
 import type { PhysicsWorld } from '../../physics/PhysicsWorld';
 import type { PlayerController } from '../../player/PlayerController';
 import type { PortalSystem } from '../../portals/PortalSystem';
-import type { Audio } from '../../core/Audio';
+import type { SoundName } from '../../sim/SimEvents';
 import type { PropBox } from './PropBox';
 
 export interface HazardContext {
@@ -12,9 +12,11 @@ export interface HazardContext {
   players: readonly PlayerController[];
   props: PropBox[];
   portals: PortalSystem;
-  audio: Audio;
-  /** Where sounds are heard from (the camera). */
-  listener: THREE.Vector3;
+  /**
+   * Makes a sound: at full `volume` everywhere, or fading out over `radius` metres from `at`.
+   * (The simulation has no speakers; whoever presents it decides who hears what.)
+   */
+  sound(name: SoundName, volume: number, at?: THREE.Vector3, radius?: number): void;
   kill(player: PlayerController, cause: string): void;
   /**
    * Damage from an object (a beam): `credit` is the owner of the last portal it came out

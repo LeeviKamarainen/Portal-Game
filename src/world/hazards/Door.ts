@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
-import { distanceGain, type Hazard, type HazardContext } from './Hazard';
+import { type Hazard, type HazardContext } from './Hazard';
 import type { LaserReceiver } from './Laser';
 
 const OPEN_SPEED = 1.6;
@@ -53,7 +53,7 @@ export class Door implements Hazard {
 
   prePhysics(dt: number, ctx: HazardContext): void {
     const opening = this.receiver.powered;
-    if (opening !== this.wasOpening) ctx.audio.play('door', distanceGain(ctx.listener, this.closed, 30));
+    if (opening !== this.wasOpening) ctx.sound('door', 1, this.closed, 30);
     this.wasOpening = opening;
     this.open = THREE.MathUtils.clamp(this.open + (opening ? dt : -dt) * OPEN_SPEED, 0, 1);
     const e = this.open * this.open * (3 - 2 * this.open);
