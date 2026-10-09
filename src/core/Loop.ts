@@ -6,6 +6,8 @@ export class Loop {
   private readonly step: (dt: number) => void;
   private readonly render: (frameDt: number) => void;
   private accumulator = 0;
+  /** Game time per real time (online clock sync nudges it a few percent either way). */
+  timeScale = 1;
   private running = false;
   private generation = 0;
 
@@ -30,7 +32,7 @@ export class Loop {
       requestAnimationFrame(tick);
       const frameDt = Math.min((now - last) / 1000, 0.25);
       last = now;
-      this.accumulator += frameDt;
+      this.accumulator += frameDt * this.timeScale;
 
       let steps = 0;
       while (this.accumulator >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {

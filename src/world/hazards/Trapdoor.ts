@@ -5,6 +5,7 @@ import { glowMaterial, materials } from '../Materials';
 import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 type TrapPhase = 'closed' | 'warn' | 'open' | 'closing';
+const TRAP_PHASES: readonly TrapPhase[] = ['closed', 'warn', 'open', 'closing'];
 
 export const TRAP_WARN_TIME = 0.75;
 const SWING_TIME = 0.18;
@@ -158,6 +159,18 @@ export class Trapdoor implements Hazard, Triggerable {
   /** Drops open now (after its warning) if it is shut. */
   trigger(): void {
     if (this.phase === 'closed') this.enter('warn');
+  }
+
+  netState(): number[] {
+    return [TRAP_PHASES.indexOf(this.phase), this.t, this.swing, this.lastBeep];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.phase = TRAP_PHASES[s[0]] ?? 'closed';
+    [, this.t, , this.lastBeep] = s;
+    const shut = this.phase === 'closed' || this.phase === 'warn';
+    for (const c of this.colliders) c.setEnabled(shut);
+    this.setSwing(s[2]);
   }
 
   private enter(phase: TrapPhase): void {

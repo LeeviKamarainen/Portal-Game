@@ -28,8 +28,13 @@ Started 2026-10-08. Builds on the multiplayer foundation from the bot work
 - **Server:** 60 Hz fixed step (the same step as offline), a snapshot to each client every
   2nd tick (30 Hz). Each snapshot has full precision for that client's own player.
 - **Inputs:** one `PlayerCommand` per tick, numbered; each packet repeats the last 4 so a lost
-  or late packet costs nothing. The server takes exactly one command per player per tick
-  (queue capped - no speed hacks); a missing one repeats the last movement with no look/fire.
+  or late packet costs nothing. The server takes exactly one command per player per tick, in
+  number order (no speed hacks). When the next one is late the player **waits for it, paused**
+  (nothing moves or hurts them) for up to 0.5 s, so the commands play out exactly as that
+  player's screen predicted them; after that they stand idle.
+- **Clock sync:** each snapshot says how many of your commands are waiting on the server; your
+  game clock runs up to 3% fast or slow to keep about 3 waiting. At the start (and after the
+  server ran dry) the client jumps 2 steps ahead at once.
 - **Your own player is predicted:** the client runs your body on its own copy of the map and
   checks it against the server's answer for the same command; if they disagree beyond a few
   centimetres it rewinds to the server's state and replays the commands since. Small leftover
@@ -37,7 +42,9 @@ Started 2026-10-08. Builds on the multiplayer foundation from the bot work
 - **Everyone else is ~0.1 s in the past**, smoothly interpolated between snapshots (jumps
   straight across teleports and respawns instead of sliding through walls).
 - **Hazards run on the client's own clock** (they're timer-driven), so a ram shoves you where the
-  server will shove you; the server corrects drift now and then.
+  server will shove you. Once a second (and straight after a switch is shot) a snapshot carries
+  every hazard's state at full precision; the client takes it and runs the hazards on by the
+  steps it has played since the command the server last used, which lines them up exactly.
 - **Portal shots:** your own placements show up at once (predicted) and the server confirms;
   steals and switch hits show the shot at once and the result when the server says so. No
   lag compensation is needed: a portal shot only hits the level, never players.
@@ -77,33 +84,113 @@ the keyboard player, so every existing caller works unchanged.
 - [x] All existing suites pass: portals 15, arenas 8, hazards 14, scoring 14, players 15,
       bots 8, nav 7, brain 15, sim 10.
 
-### 2. Server, rooms, lobby
+### 2. Server, rooms, lobby — *done 2026-10-08*
 
-- [ ] Node server (`server/`): serves the game, `/healthz`, WebSocket on `/ws`; rooms with
-      5-letter codes; reconnect tokens.
-- [ ] Menu: Online → name, Create room / Join with code; lobby with the code, Copy invite link,
-      the slots (human / bot / empty), and for the host: map, bots, difficulty, Start.
-- [ ] Map picker: built-in combat maps and the host's editor maps; puzzle maps listed but
-      greyed out ("Puzzle maps are single-player"); broken or oversized maps refused with the
-      reason; the slot cap follows the map's spawns.
-- [ ] Errors for a wrong code, a full room, an old game version; the host leaving hands the
-      room to the next player.
+- [x] **Game server** (`server/main.ts`, `npm run server` = `tsx watch`, port 8787 or `PORT`):
+      serves the built game from `dist/`, `/healthz`, and the rooms over a WebSocket on `/ws`
+      (`ws` library). `ALLOWED_ORIGINS` limits which pages may connect (unset = any, for dev);
+      30 creates/joins per address per minute; heartbeat drops dead connections. The Vite dev
+      server proxies `/ws` to it (`vite.config.ts`), so the page always connects to its own
+      origin; `?server=` or `VITE_SERVER_URL` point it elsewhere.
+- [x] **Rooms** (`src/room/` - plain TypeScript, no networking of its own): `RoomManager`
+      checks every message (version handshake first, one slow request per client at a time),
+      `Room` holds the lobby (humans in join order, host = first, bots, difficulty, map) and
+      builds the match. Codes are 5 letters from `BCDFGHJKLMNPQRSTVWXZ`. Each player gets a
+      reconnect token (kept in `sessionStorage`; used in milestone 6). Messages: `src/net/protocol.ts`
+      (`PROTOCOL_VERSION` 1).
+- [x] **Menu**: main menu → Online (your name, Create room, Join with a code; Enter works in
+      both fields) → Lobby (big code, Copy invite link, a row per slot - humans with their
+      character, bots, open slots - ping, and for the host: map, bots 0..free slots, difficulty,
+      Start). Everyone else sees "Waiting for HOST to start". `?room=ABCDE` (the invite link)
+      opens the Online page with the code filled in. Your name is remembered (`Settings.playerName`).
+- [x] **Maps**: built-in Highwire, "Editor map: NAME" (the editor's saved draft, now read
+      through `src/editor/draft.ts`), or Load .json…. A puzzle draft is listed but greyed out
+      ("Puzzle maps are single-player"); the server also refuses puzzle maps, maps over 256 KB
+      or 2000 pieces, maps that don't build (it builds them headless, `src/room/mapCheck.ts`),
+      and maps with fewer than 2 spawns. Slots = min(4, spawn pads): Highwire 4, the blank
+      combat template 2. Bots are clamped to the free slots whenever a friend joins or the
+      map changes; a map smaller than the people already in the room is refused.
+- [x] **Start** (host, at least 2 players counting bots): the server builds the match - humans
+      in slots 0.., then the bots (`BotController`, server side) - logs it ("match built on
+      Highwire in 300 ms (2 humans, 2 hard bots)") and sends everyone `matchStart` (map, roster,
+      their player id, rules). The lobby then shows "Match starting"; nobody can join a match in
+      progress yet. Humans stand still on the server until milestone 3 brings their inputs.
+- [x] Errors: wrong code, full room, match already started, not the host, old game version
+      ("reload the page"), lost connection.
+- [x] `npm run test:server` now 12 tests (8 new in `server/test/room.test.ts`, real WebSocket
+      clients against the server on a random port): version check, create/join by code (names
+      cleaned), wrong code, host-only bot settings clamped to free slots and passed to everyone,
+      full room, custom/puzzle/broken/oversized maps, host hand-over and the room closing when
+      empty, Start building a 4-player match. Checked by hand in two browser tabs too (create,
+      join through the invite link, bots, Hard, Start, host leaving, puzzle draft greyed out,
+      editor combat map picked). Suites players 15 and arenas 8 still pass.
 
-### 3. First online match (authoritative, no prediction yet)
+Known limits: back to the lobby / rematch after a match is milestone 6; leaving drops you
+straight away (the 20 s rejoin grace is milestone 6).
 
-- [ ] Binary inputs and snapshots, interpolation of everyone (even yourself, to prove the
-      plumbing), server events (deaths, scores, steals, win) through the same HUD/audio code as
-      offline. Ping in the HUD.
-- [ ] 2 humans + 2 bots play to 100 on localhost; scoreboards agree; portals and steals show on
-      both screens; under 15 KB/s per client.
+### 3. First online match — *done 2026-10-09*
 
-### 4. Prediction, reconciliation, clock sync
+Done together with milestone 4: prediction went in straight away, and `?predict=0` gives this
+milestone's version (your own player drawn where the server had it, like everyone else).
 
-- [ ] Your own body predicted and corrected (rewind + replay through portals), client clock
-      kept a couple of ticks ahead of the server, hazards on the client clock.
-- [ ] Latency simulation flags (`?lag=150&jitter=30&loss=2`) and an in-page loopback server
-      (`?online=loopback`); `?test=net` suite.
-- [ ] ~0 corrections a minute at zero latency; at 150 ms movement feels local.
+- [x] **Binary messages** (`src/net/codec.ts` ByteWriter/ByteReader, little-endian):
+      `commands.ts` - input messages (the last 4 commands, each 11 bytes: move axes in 1/127
+      steps, flags, look change as 32-bit floats; the client plays its own copy quantized the
+      same way); `snapshot.ts` - one per client every 2nd step: every player (yours in full
+      precision, others at 1/128 m), every portal (face index + centre + up, owner slot and
+      colour - stealing just changes those), orbs, crates, hazard states (once a second), the
+      shots and sounds since the last one. ~230-300 bytes without hazards. Protocol version 2.
+- [x] **Server match loop** (`server/TickLoop.ts`: one 60 Hz accumulator for every room;
+      `Room.tick`): loading (everyone sends `loaded`, or 20 s) → 3 s countdown (snapshots,
+      arena frozen) → `go` → playing → finished on the win. Humans get an `InputQueue`
+      (`src/room/InputQueue.ts`), bots their BotController as before. Deaths, scores, steals
+      and the win go out as JSON `events` right after the snapshot that shows them; switch
+      notices as `notice`. The server logs each busy room's KB/s and ms/step every 30 s.
+- [x] **Client** (`src/net/NetSession.ts`, renderer-free): the arena built from the same map
+      JSON, everyone else as *puppets* drawn ~100 ms in the past (`Interpolation.ts`, no sliding
+      across portal trips or respawns), portals/orbs/crates/scores/gravity taken on arrival,
+      shot tracers and remote sounds played from the snapshot. `ArenaSim.netClient` turns off
+      everything the server decides (deaths, damage, scoring, orb pickups, crates, respawns).
+- [x] **Game** `Mode 'online'` (`Game.loadOnline` on `matchStart`): the event handling shared
+      with offline play (`handleEvent`), countdown banner then GO, dying waits for the server's
+      respawn, Esc opens a menu while the match goes on (Leave match, no Restart), losing the
+      connection goes back to the Online page. HUD corner: ping; `?net=1` adds KB/s, fixes,
+      queue and clock.
+- [x] 2 humans + 2 hard bots play a whole match to 105 against the real server (`FULL=1 npm run
+      test:server`); both screens end with the server's scoreboard and winner; every portal is
+      open in the same place, held by the same player; 10-12 KB/s down, 2.8 KB/s up.
+
+### 4. Prediction, reconciliation, clock sync — *done 2026-10-09*
+
+- [x] Your own body moves at once; every snapshot checks the step the server last used against
+      what was predicted for it (3 cm, 0.2 m/s, look, grounded, portal passing) and on a
+      miss puts the body where the server had it and replays the commands since
+      (`PlayerController.saveMove/restoreMove/replay`, `PortalSystem.stepEntity`; hazards'
+      pushes during each step are recorded and replayed). What is left eases out of the camera
+      in ~0.1 s; over 1 m it jumps.
+- [x] Exact restores: own speed and look go at full 64-bit precision, portal orientation and
+      hazard timers too; portal trips derive the new look from yaw/pitch only (not the camera's
+      ease-out), so a replayed trip turns you exactly as the server's did.
+- [x] Clock sync (above); server holds a player for a late command instead of guessing; out-of-
+      order input is slotted back into place.
+- [x] `?lag=150&jitter=30&loss=2` (`src/net/DelayLine.ts`: in order, like TCP; loss = a 200 ms
+      hold-up), `?predict=0`, `?net=1`.
+- [x] Corrections at zero latency: 0-9 a minute (usually 0-3), mostly a few cm - left are
+      someone else's portal opening under you before you hear of it, bumping into other players
+      (they're drawn in the past) and contact-order differences between the two physics
+      worlds. At 150 ± 30 ms with 2% loss: 0-9 a minute (browser: 0 in 18 s of scripted play).
+- [x] `npm run test:server` 15 tests (+1 opt-in full match): wire formats, the input queue, two
+      headless clients with prediction against the real server, a bad line.
+
+Not done from the original M4 list: the in-page loopback server (`?online=loopback`) and a
+browser `?test=net` suite - the headless clients in `server/test/netplay.test.ts` cover the same
+ground against the real server. All browser suites still pass (portals 15, arenas 8, hazards 14,
+scoring 14, players 15, bots 8, nav 7, brain 15, sim 10).
+
+Known limits (milestone 5): your own portal shots show when the server answers (a round trip
+late), and the first steps after your own floor portal opens under you get corrected; crates
+are placed where the latest snapshot says (not interpolated); shots and sounds play on arrival,
+not in time with the shooter's interpolated body.
 
 ### 5. Portals, crates, hazards, effects
 
@@ -132,6 +219,8 @@ the keyboard player, so every existing caller works unchanged.
   network does and sending your own state at full precision.
 - **Cheating** - inputs are clamped and rate-limited and the server decides every hit, but every
   snapshot contains everyone's position (a wallhack is possible). Acceptable for friends' rooms.
-- **TCP stalls under packet loss** - absorbed by the interpolation buffer; WebTransport later.
+- **TCP stalls under packet loss** - absorbed by the interpolation buffer and by the server
+  waiting for late commands; WebTransport later. A player whose commands are late is paused
+  (untouchable) for up to 0.5 s - holding back commands on purpose would exploit that.
 - **Hidden tabs stop the game loop** - the server keeps you standing still; the client re-syncs
   when the tab comes back.

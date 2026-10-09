@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { EDITOR_DRAFT_KEY, readEditorCloudId, readEditorDraft, writeEditorCloudId } from './draft';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   FACE_NAMES,
@@ -37,10 +38,11 @@ import { carried, directlyAttached, faceMotion, shift, surfaceBox, turnAbout } f
 
 export interface EditorHandlers {
   playtest(map: MapData): void;
+  /** Saves the map to the player's account (`id`: the saved map it came from, if any); resolves with the saved map's id, rejects with a reason. */
+  saveToAccount(map: MapData, id: string | null): Promise<string>;
   exit(): void;
 }
 
-const DRAFT_KEY = 'portal-arena.editor-draft';
 const GRID_STEPS = [1, 0.5, 0.25, 2];
 /** Pieces that hang on walls and face out of them. */
 const MOUNTED = new Set(['ram', 'switch', 'laser', 'receiver', 'target']);
@@ -183,6 +185,8 @@ export class Editor {
   private readonly keys = new Set<string>();
   private active = false;
   private loaded = false;
+  /** The saved (online) map being edited, so Save online updates it. */
+  private cloudId: string | null = null;
 
   constructor(container: HTMLElement, renderer: THREE.WebGLRenderer, envMap: THREE.Texture, handlers: EditorHandlers) {
     this.renderer = renderer;
@@ -234,6 +238,14 @@ export class Editor {
     return this.active;
   }
 
+  /** The editor on a map from the player's account: Save online then updates `id` (null: it is a copy). */
+  openAccountMap(data: MapData, id: string | null): void {
+    this.setMap(structuredClone(data));
+    this.setCloudId(id);
+    this.frameAll();
+    this.status(id ? `Opened "${data.name}" from your account.` : `Opened a copy of "${data.name}".`);
+  }
+
   /** The piece the inspector shows, or -1. */
   get selected(): number {
     return this.sel.length ? this.sel[this.sel.length - 1] : -1;
@@ -247,6 +259,7 @@ export class Editor {
     if (!this.loaded) {
       this.loaded = true;
       this.setMap(this.loadDraft() ?? blankMap(), false);
+      this.cloudId = readEditorCloudId();
       this.frameAll();
     }
     this.active = true;
@@ -341,21 +354,16 @@ export class Editor {
 
   private saveDraft(): void {
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(this.map));
+      localStorage.setItem(EDITOR_DRAFT_KEY, JSON.stringify(this.map));
     } catch {
       // No storage: the draft just doesn't survive a reload.
     }
   }
 
   private loadDraft(): MapData | null {
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      const data = raw ? (JSON.parse(raw) as MapData) : null;
-      return data && Array.isArray(data.pieces) ? data : null;
-    } catch {
-      return null;
-    }
+    return readEditorDraft();
   }
+
 
   // ---------------------------------------------------------------- 3D views
 
@@ -969,6 +977,7 @@ export class Editor {
           </div>
         </div>
         <button class="b" data-act="save" title="Download the map as a .json file">Save .json</button>
+        <button class="b" data-act="cloud-save" title="Save the map to your account, to open from anywhere and use in online rooms">Save online</button>
         <button class="b" data-act="copy" title="Copy the map's JSON">Copy JSON</button>
         <div class="sep"></div>
         <button class="b" data-act="undo" data-el="undo" title="Ctrl+Z">Undo</button>
@@ -1004,6 +1013,7 @@ export class Editor {
       switch (btn.dataset.act) {
         case 'new':
           this.setMap(blankMap());
+          this.setCloudId(null);
           this.frameAll();
           break;
         case 'open':
@@ -1011,6 +1021,7 @@ export class Editor {
           break;
         case 'builtin':
           this.setMap(BUILT_IN_MAPS[Number(btn.dataset.i)].data());
+          this.setCloudId(null);
           this.frameAll();
           break;
         case 'file':
@@ -1018,6 +1029,9 @@ export class Editor {
           break;
         case 'save':
           this.download();
+          break;
+        case 'cloud-save':
+          void this.saveOnline();
           break;
         case 'copy':
           void navigator.clipboard?.writeText(this.json()).then(
@@ -1081,6 +1095,7 @@ export class Editor {
         const data = JSON.parse(await f.text()) as MapData;
         if (!Array.isArray(data.pieces)) throw new Error('not a map file (no "pieces")');
         this.setMap(data);
+        this.setCloudId(null);
         this.frameAll();
         this.status(`Opened ${f.name}.`);
       } catch (err) {
@@ -1391,6 +1406,25 @@ export class Editor {
     const { pieces, ...rest } = this.map;
     const head = JSON.stringify(rest, null, 2).replace(/\n}$/, '');
     return `${head},\n  "pieces": [\n${pieces.map((p) => `    ${JSON.stringify(p)}`).join(',\n')}\n  ]\n}\n`;
+  }
+
+  private setCloudId(id: string | null): void {
+    this.cloudId = id;
+    writeEditorCloudId(id);
+  }
+
+  private async saveOnline(): Promise<void> {
+    const button = this.root.querySelector<HTMLButtonElement>('[data-act="cloud-save"]');
+    if (button) button.disabled = true;
+    try {
+      this.setCloudId(await this.handlers.saveToAccount(structuredClone(this.map), this.cloudId));
+      this.status(`Saved "${this.map.name}" to your account.`);
+      this.toast(`Saved "${this.map.name}" to your account.`);
+    } catch (e) {
+      this.showError(`Could not save online: ${(e as Error).message}`);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   private download(): void {

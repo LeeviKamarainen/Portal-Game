@@ -18,6 +18,8 @@ export interface HazardContext {
    */
   sound(name: SoundName, volume: number, at?: THREE.Vector3, radius?: number): void;
   kill(player: PlayerController, cause: string): void;
+  /** Online, on a player's screen: the game server owns everything that isn't timing (crates, deaths). */
+  netClient?: boolean;
   /**
    * Damage from an object (a beam): `credit` is the owner of the last portal it came out
    * of, if any, for kill credit.
@@ -46,6 +48,13 @@ export interface Hazard {
   update(dt: number, ctx: HazardContext): void;
   /** Back to the initial state (on player respawn). */
   reset?(): void;
+  /**
+   * Online: whatever changes as it runs (phase, timers), as numbers - the game server sends
+   * it in its snapshots and each player's copy of the arena takes it (see net/snapshot).
+   * Hazards without it are the same on every screen (acid, beams traced every step).
+   */
+  netState?(): number[];
+  setNetState?(state: readonly number[]): void;
   /** Whether it makes the floor at `p` deadly, so nothing should be put there (point orbs). */
   covers?(p: THREE.Vector3): boolean;
   /**

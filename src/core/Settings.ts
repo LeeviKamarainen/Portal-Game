@@ -25,6 +25,8 @@ export interface Settings {
   /** The PvP bots' difficulty, and how many of them (everyone for themselves). */
   botDifficulty: BotDifficultySetting;
   botCount: number;
+  /** What other players see you as online ('' until you pick one). */
+  playerName: string;
 }
 
 export type BotDifficultySetting = 'easy' | 'normal' | 'hard';
@@ -41,6 +43,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   invertY: false,
   botDifficulty: 'normal',
   botCount: 1,
+  playerName: '',
 };
 
 /** Most bots in one match (with you, one per spawn pad on Highwire). */
@@ -92,6 +95,7 @@ export function loadSettings(): Settings {
     invertY: typeof s.invertY === 'boolean' ? s.invertY : d.invertY,
     botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard'] as const, d.botDifficulty),
     botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
+    playerName: typeof s.playerName === 'string' ? s.playerName.slice(0, 16) : d.playerName,
   };
 }
 

@@ -7,6 +7,7 @@ import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type SpikeMode = 'static' | 'cycle' | 'trigger';
 type SpikePhase = 'down' | 'warn' | 'up' | 'retract';
+const SPIKE_PHASES: readonly SpikePhase[] = ['down', 'warn', 'up', 'retract'];
 
 export const SPIKE_WARN_TIME = 0.8;
 const RISE_TIME = 0.08;
@@ -185,6 +186,16 @@ export class Spikes implements Hazard, Triggerable {
   /** Shoots up now (after its warning) if it is down. */
   trigger(): void {
     if (this.mode !== 'static' && this.phase === 'down') this.enter('warn');
+  }
+
+  netState(): number[] {
+    return [SPIKE_PHASES.indexOf(this.phase), this.t, this.ext, this.lastBeep];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.phase = SPIKE_PHASES[s[0]] ?? 'down';
+    [, this.t, this.ext, this.lastBeep] = s;
+    this.place();
   }
 
   private enter(phase: SpikePhase): void {

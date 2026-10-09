@@ -27,6 +27,11 @@ export interface PlayerCommand {
 export interface CommandSource {
   /** Fills in this step's command (every field); `dt` is the step length. */
   read(cmd: PlayerCommand, dt: number): void;
+  /**
+   * False: this step's command hasn't arrived yet (online, on the game server), so the
+   * player holds still this step - not even falling - and takes it up when it comes.
+   */
+  ready?(): boolean;
 }
 
 export function emptyCommand(): PlayerCommand {
@@ -58,6 +63,23 @@ export class KeyboardCommands implements CommandSource {
     cmd.right = (input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0);
     cmd.jump = input.isDown('Space');
     cmd.immunity = input.isDown(IMMUNITY_KEY);
+  }
+}
+
+/** Commands handed over one step at a time (online: your own player, see net/NetSession). */
+export class BufferedCommands implements CommandSource {
+  /** What the next step does. */
+  readonly next: PlayerCommand = emptyCommand();
+
+  read(cmd: PlayerCommand): void {
+    const n = this.next;
+    cmd.forward = n.forward;
+    cmd.right = n.right;
+    cmd.jump = n.jump;
+    cmd.immunity = n.immunity;
+    cmd.yaw = n.yaw;
+    cmd.pitch = n.pitch;
+    cmd.fire = n.fire;
   }
 }
 

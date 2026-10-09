@@ -13,7 +13,7 @@ import { Switch } from '../world/hazards/Switch';
 import { PointOrbs, distanceToOpening } from '../world/PointOrbs';
 import { Match, type MatchRules } from '../game/Match';
 import { ArenaPlayer, type PlayerSetup } from '../game/ArenaPlayer';
-import type { Noise, SessionEvent, SimSound, SoundName } from './SimEvents';
+import type { Noise, SessionEvent, SimShot, SimSound, SoundName, SoundSource } from './SimEvents';
 
 const BOX_IMPACT_THRESHOLD = 10;
 const BOX_IMPACT_SCALE = 4;
@@ -72,6 +72,10 @@ export class ArenaSim {
   readonly events: SessionEvent[] = [];
   /** Sounds made during the latest step (Session plays them straight away instead). */
   readonly sounds: SimSound[] = [];
+  /** Portal shots fired during the latest step (the game server sends them on, for tracers). */
+  readonly shots: SimShot[] = [];
+  /** Every portal by its net id (see Portal.netId), whoever holds it now. */
+  readonly portalsByNetId = new Map<number, Portal>();
   /** Scores and win condition; null outside PvP. */
   readonly match: Match | null;
   readonly orbs: PointOrbs | null;
@@ -82,6 +86,18 @@ export class ArenaSim {
   localPlayer: ArenaPlayer | null = null;
   /** Menu backdrop: the arena runs, but the player stands still and cannot be hurt. */
   demo = false;
+  /**
+   * A copy of an online match on a player's screen (see net/NetSession): the game server
+   * decides who dies, scores, picks up orbs and comes back; this copy only moves its own
+   * player ahead of the server and runs the hazards. Everyone else is a puppet.
+   */
+  netClient = false;
+  /** No sounds (steps being replayed, already heard once). */
+  quiet = false;
+  /** A shot set off a switch since this was last cleared (the game server then sends hazard state at once). */
+  hazardsTouched = false;
+  /** An arena-wide message was shown (the game server passes them on). */
+  onNotice: ((text: string, seconds: number) => void) | null = null;
   protected readonly hazardCtx: HazardContext;
   protected disposed = false;
   private noises: Noise[] = [];
@@ -93,6 +109,9 @@ export class ArenaSim {
   private completed = false;
   private gravityFactor = 1;
   private gravityUntil = 0;
+  /** Online, on a player's screen: steps of the gravity effect left, as the game server counts them (see syncGravity). */
+  private gravitySteps: number | null = null;
+  private stepDt = 1 / 60;
   private notice = '';
   private noticeUntil = 0;
 
@@ -109,9 +128,9 @@ export class ArenaSim {
 
     this.system = new PortalSystem(physics);
     this.system.onTeleport = (e) => {
-      this.sound('teleport', 0.6, e.to.root.position, 30);
       // Kill credit: players only remember other people's portals; objects remember any.
       const self = e.entity.kind === 'player' ? (e.entity as PlayerController).id : null;
+      this.sound('teleport', 0.6, e.to.root.position, 30, self);
       if (e.from.owner !== self) e.entity.lastTrip = { owner: e.from.owner, time: this.time };
       this.makeNoise('teleport', e.to.root.position, self);
     };
@@ -125,7 +144,7 @@ export class ArenaSim {
       players: this.alive,
       props: this.arena.props,
       portals: this.system,
-      sound: (name, volume, at, radius) => this.sound(name, volume, at, radius),
+      sound: (name, volume, at, radius) => this.sound(name, volume, at, radius, 'hazard'),
       kill: (player, cause) => this.kill(player, cause),
       hurtPlayer: (player, amount, credit) => this.hurtPlayer(player, amount, credit),
       effects: {
@@ -169,6 +188,8 @@ export class ArenaSim {
     portals.orange.owner = portals.blue.owner = setup.id;
     portals.orange.netId = slot * 2;
     portals.blue.netId = slot * 2 + 1;
+    this.portalsByNetId.set(portals.orange.netId, portals.orange);
+    this.portalsByNetId.set(portals.blue.netId, portals.blue);
     this.scene.add(portals.orange.root, portals.blue.root);
     this.system.addPortals(portals.orange, portals.blue);
     const gun = new PortalGun(this.level, this.physics, portals, () => this.system.portals);
@@ -197,6 +218,7 @@ export class ArenaSim {
     this.system.removePortals(...portals);
     for (const portal of portals) {
       this.scene.remove(portal.root);
+      this.portalsByNetId.delete(portal.netId);
       portal.dispose();
     }
     this.system.unregister(p.controller);
@@ -281,10 +303,12 @@ export class ArenaSim {
 
   /**
    * A sound: at full `volume` everywhere, or fading out over `radius` metres from `at`.
-   * Here it is only recorded (the game server sends them on); Session plays them.
+   * Here it is only recorded (the game server sends them on); Session plays them. `source`
+   * is the player who made it, or 'hazard'.
    */
-  protected sound(name: SoundName, volume: number, at?: THREE.Vector3, radius = 25): void {
-    this.sounds.push({ name, volume, at: at ? at.clone() : null, radius });
+  protected sound(name: SoundName, volume: number, at?: THREE.Vector3, radius = 25, source: SoundSource = null): void {
+    if (this.quiet) return;
+    this.sounds.push({ name, volume, at: at ? at.clone() : null, radius, source });
   }
 
   /** Every open portal closes, everyone's (a switch effect). */
@@ -304,9 +328,37 @@ export class ArenaSim {
     this.physics.world.gravity = { x: 0, y: -WORLD_GRAVITY * factor, z: 0 };
   }
 
-  private showNotice(text: string, seconds: number): void {
+  /** A line across the HUD for a while (an arena-wide effect). */
+  showNotice(text: string, seconds: number): void {
     this.notice = text;
     this.noticeUntil = this.time + seconds;
+    this.onNotice?.(text, seconds);
+  }
+
+  /**
+   * The gravity multiplier in force (1: normal), how long it has left, and how many more
+   * steps it lasts - counted exactly as `step` will count them, so another screen can end it
+   * on the very same step.
+   */
+  get gravity(): { factor: number; left: number; steps: number } {
+    let steps = 0;
+    if (this.gravityFactor !== 1) {
+      for (let t = this.time + this.stepDt; t < this.gravityUntil && steps < 65535; t += this.stepDt) steps++;
+    }
+    return { factor: this.gravityFactor, left: Math.max(0, this.gravityUntil - this.time), steps };
+  }
+
+  /**
+   * Online, on a player's screen: gravity as the game server has it, lasting `steps` more
+   * steps (see `gravity`). True if that changed it here.
+   */
+  syncGravity(factor: number, steps: number): boolean {
+    const want = steps > 0 ? factor : 1;
+    this.gravitySteps = steps;
+    const changed = want !== this.gravityFactor;
+    if (changed) this.setGravity(want, 0);
+    this.gravityUntil = this.time + steps * this.stepDt;
+    return changed;
   }
 
   /** A line for the HUD about whatever arena effect is on, or '' for none. */
@@ -321,27 +373,59 @@ export class ArenaSim {
   protected fireFrom(player: ArenaPlayer, color: PortalColor, eye: THREE.Vector3, look: THREE.Quaternion, muzzle?: THREE.Vector3): boolean {
     _fwd.set(0, 0, -1).applyQuaternion(look);
     const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle);
+    const shot: SimShot = {
+      player: player.id,
+      color,
+      from: (muzzle ?? eye).clone(),
+      to: r.point?.clone() ?? eye.clone().addScaledVector(_fwd, 60),
+      outcome: r.placed ? 'placed' : r.interactable ? 'switch' : r.stolen ? 'stolen' : 'fizzle',
+      normal: r.normal?.clone() ?? null,
+    };
+    this.shots.push(shot);
     // Your own gun is right by your ear.
     const from = player.local ? undefined : eye;
-    this.sound(color === 'orange' ? 'shootOrange' : 'shootBlue', 0.7, from, 35);
+    this.sound(color === 'orange' ? 'shootOrange' : 'shootBlue', 0.7, from, 35, player.id);
     this.makeNoise('shot', eye, player.id);
     if (!player.local) {
       player.avatar?.shoot();
       player.gunModel?.charge(color);
     }
     if (r.interactable instanceof Switch) {
-      r.interactable.shoot(this.hazardCtx);
+      // The switch's click and clunk are the shooter's doing (online, everyone hears them).
+      r.interactable.shoot({ ...this.hazardCtx, sound: (n, v, at, radius) => this.sound(n, v, at, radius, player.id) });
+      this.hazardsTouched = true;
       return false;
     }
-    if (r.stolen && this.steal(player, color, r.stolen)) {
-      this.sound('steal', 0.7, r.stolen.root.position, 35);
+    if (r.stolen && !this.steal(player, color, r.stolen)) shot.outcome = 'fizzle';
+    if (r.stolen && shot.outcome === 'stolen') {
+      this.sound('steal', 0.7, r.stolen.root.position, 35, player.id);
       this.makeNoise('steal', r.stolen.root.position, player.id);
       return true;
     }
-    this.sound(r.placed ? 'portalOpen' : 'fizzle', 0.5, from, 35);
+    this.sound(r.placed ? 'portalOpen' : 'fizzle', 0.5, from, 35, player.id);
     if (r.placed) this.makeNoise('portal', player.portals[color].root.position, player.id);
     if (r.noPortalZone && player.local) this.showNotice('NO PORTALS NEAR ORBS OR SPAWN PADS', 1.5);
     return r.placed;
+  }
+
+  /**
+   * Online, on a player's screen: your own shot, on the step the server will fire it. Your
+   * portal opens here at once (the server has the last word when it gets there); a steal
+   * or a switch only shows the shot - what they do is the server's to say.
+   */
+  private predictShot(player: ArenaPlayer, color: PortalColor, eye: THREE.Vector3, look: THREE.Quaternion): void {
+    _fwd.set(0, 0, -1).applyQuaternion(look);
+    const r = player.gun.fire(color, eye.clone(), _fwd.clone());
+    this.shots.push({
+      player: player.id,
+      color,
+      from: eye.clone(),
+      to: r.point?.clone() ?? eye.clone().addScaledVector(_fwd, 60),
+      outcome: r.placed ? 'placed' : r.interactable ? 'switch' : r.stolen ? 'stolen' : 'fizzle',
+      normal: r.normal?.clone() ?? null,
+    });
+    if (!r.stolen && !r.interactable) this.sound(r.placed ? 'portalOpen' : 'fizzle', 0.5, undefined, 35, player.id);
+    if (r.noPortalZone) this.showNotice('NO PORTALS NEAR ORBS OR SPAWN PADS', 1.5);
   }
 
   /**
@@ -381,7 +465,7 @@ export class ArenaSim {
   private bodyNoises(dt: number): void {
     for (const p of this.players) {
       const c = p.controller;
-      if (p.dead) continue;
+      if (p.dead || p.puppet) continue;
       if (c.landingSpeed > 6) {
         this.noises.push({ kind: 'land', position: c.getPosition(), radius: NOISE_RADIUS.land + c.landingSpeed, source: p.id });
         // Game reads (and clears) the local player's for the landing sound.
@@ -396,31 +480,50 @@ export class ArenaSim {
   step(dt: number): void {
     this.time += dt;
     this.hazardCtx.time = this.time;
+    this.hazardCtx.netClient = this.netClient;
     this.heard = this.noises;
     this.noises = [];
     this.sounds.length = 0;
-    if (this.gravityFactor !== 1 && this.time >= this.gravityUntil) this.setGravity(1, 0);
+    this.shots.length = 0;
+    this.stepDt = dt;
+    if (this.gravitySteps !== null) {
+      if (this.gravityFactor !== 1 && this.gravitySteps-- <= 0) this.setGravity(1, 0);
+    } else if (this.gravityFactor !== 1 && this.time >= this.gravityUntil) {
+      this.setGravity(1, 0);
+    }
 
+    // Online, on the game server: a player whose next command is late waits for it, paused -
+    // nothing moves them, nothing reaches them - so their commands play out as predicted.
+    this.alive.length = 0;
+    for (const p of this.players) {
+      p.waiting = p.controller.commands.ready?.() === false;
+      if (this.reachable(p)) this.alive.push(p.controller);
+    }
     for (const h of this.arena.hazards) h.prePhysics?.(dt, this.hazardCtx);
     for (const p of this.players) {
       const c = p.controller;
+      // Puppets are placed from the game server's snapshots instead (see netClient).
+      if (p.puppet) continue;
       // Everyone but the local player fires through their command and comes back on their
-      // own; the local player's shots and respawn come from Game.
+      // own; the local player's shots and respawn come from Game (online: from the server).
       const auto = !p.local || p.autopilot;
       if (p.dead) {
         p.deadFor += dt;
-        if (auto && p.deadFor >= OPPONENT_RESPAWN_DELAY) this.respawnPlayer(p);
+        if (auto && !this.netClient && p.deadFor >= OPPONENT_RESPAWN_DELAY) this.respawnPlayer(p);
       }
+      if (p.waiting) continue;
       const demo = this.demo && p.local;
       c.inputEnabled = !p.dead && !this.completed && !demo;
       if (demo) c.setInvulnerableFor(1);
       c.update(dt);
-      if (auto && c.inputEnabled && c.command.fire) {
+      if (c.inputEnabled && c.command.fire && (auto || this.netClient)) {
         c.viewPose(_eye, _look);
-        this.fireFrom(p, c.command.fire, _eye, _look);
+        if (auto) this.fireFrom(p, c.command.fire, _eye, _look);
+        else this.predictShot(p, c.command.fire, _eye, _look);
       }
     }
-    for (const p of this.arena.props) {
+    // (Online, on a player's screen, crates are wherever the server had them.)
+    for (const p of this.netClient ? [] : this.arena.props) {
       if (p.passing) p.addVelocity(this.system.funnel(p, _funnel).multiplyScalar(dt * 4));
     }
 
@@ -436,20 +539,21 @@ export class ArenaSim {
     this.physics.step();
     this.system.step(dt);
     this.alive.length = 0;
-    for (const p of this.players) if (!p.dead) this.alive.push(p.controller);
+    for (const p of this.players) if (this.reachable(p)) this.alive.push(p.controller);
     this.handleCollisions();
 
     for (const p of this.arena.props) {
       p.syncMesh();
-      this.updatePropLife(p, dt);
+      if (!this.netClient) this.updatePropLife(p, dt);
     }
     for (const h of this.arena.hazards) h.update(dt, this.hazardCtx);
     for (const p of this.players) {
-      p.controller.postStep(dt);
+      if (!p.puppet) p.controller.postStep(dt);
       p.gun.update(dt);
     }
     this.bodyNoises(dt);
-    if (this.orbs && !this.completed) {
+    if (this.orbs && this.netClient) this.orbs.advance(dt);
+    else if (this.orbs && !this.completed) {
       // The dead can't pick anything up, but orbs keep coming back meanwhile.
       for (const id of this.orbs.update(dt, this.alive, this.system.portals)) {
         this.score(id, this.match!.rules.orbPoints, 'orb');
@@ -468,6 +572,11 @@ export class ArenaSim {
       this.completed = true;
       this.events.push({ type: 'goal' });
     }
+  }
+
+  /** Whether hazards and orbs act on `p` this step. */
+  private reachable(p: ArenaPlayer): boolean {
+    return !p.dead && !p.puppet && !p.waiting;
   }
 
   private updatePropLife(p: PropBox, dt: number): void {
@@ -495,7 +604,7 @@ export class ArenaSim {
       const body = (o1.type === 'player' ? o1.ref : o2.type === 'player' ? o2.ref : null) as PlayerController | null;
       if (!box || !body) return;
       const speed = Math.max(box.speed(), ...(this.propSpeed.get(box) ?? []));
-      if (speed > BOX_IMPACT_THRESHOLD) {
+      if (speed > BOX_IMPACT_THRESHOLD && !this.netClient) {
         this.hurtPlayer(body, (speed - BOX_IMPACT_THRESHOLD) * BOX_IMPACT_SCALE, this.creditOf(box.lastTrip));
         this.sound('hurt', 0.8, body.getPosition(), 25);
       }
@@ -504,7 +613,7 @@ export class ArenaSim {
 
   private hurtPlayer(body: PlayerController, amount: number, credit: string | null): void {
     const p = this.playerOf(body);
-    if (!p || p.dead) return;
+    if (!p || p.dead || this.netClient) return;
     body.damage(amount);
     p.lastHit = { by: credit, time: this.time };
   }
@@ -538,7 +647,7 @@ export class ArenaSim {
 
   private kill(body: PlayerController, cause: string): void {
     const victim = this.playerOf(body);
-    if (!victim || victim.dead || this.completed) return;
+    if (!victim || victim.dead || this.completed || this.netClient) return;
     if (cause !== 'hurt' && cause !== 'fell') {
       body.killInstantly();
       if (!body.health.isDead) return; // flash immunity saved them
@@ -563,6 +672,36 @@ export class ArenaSim {
     for (const p of this.arena.props) this.system.resync(p);
   }
 
+  /**
+   * Online, on a player's screen: the hazards take the game server's state and then run
+   * `steps` more steps on their own (nobody in reach, no sound), to catch up with this
+   * screen's clock, which runs ahead of the server's by the time a command takes to get there.
+   */
+  syncHazards(states: readonly (readonly number[])[], steps: number, dt: number): void {
+    const hazards = this.arena.hazards.filter((h) => h.setNetState);
+    if (hazards.length !== states.length) return;
+    hazards.forEach((h, i) => h.setNetState!(states[i]));
+    const ctx: HazardContext = {
+      ...this.hazardCtx,
+      players: [],
+      props: [],
+      sound: () => {},
+      kill: () => {},
+      hurtPlayer: () => {},
+      effects: { clearPortals: () => {}, setGravity: () => {} },
+      netClient: true,
+    };
+    for (let i = 0; i < steps; i++) {
+      for (const h of hazards) h.prePhysics?.(dt, ctx);
+      for (const h of hazards) h.update(dt, ctx);
+    }
+  }
+
+  /** Online, on a player's screen: the server says the match is over - nobody moves any more. */
+  endMatch(): void {
+    this.completed = true;
+  }
+
   /** One player back on their spawn with a clean slate; their portals close. */
   respawnPlayer(p: ArenaPlayer): void {
     p.portals.orange.unplace();
@@ -575,6 +714,7 @@ export class ArenaSim {
     p.lastHit = null;
     p.dead = false;
     p.deadFor = 0;
+    p.respawns++;
   }
 
   dispose(): void {

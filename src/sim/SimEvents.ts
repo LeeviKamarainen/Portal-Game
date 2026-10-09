@@ -1,4 +1,5 @@
 import type * as THREE from 'three';
+import type { PortalColor } from '../portals/Portal';
 
 /** Every sound the game can make (synthesized by core/Audio in the browser). */
 export type SoundName =
@@ -30,6 +31,23 @@ export interface SimSound {
   volume: number;
   at: THREE.Vector3 | null;
   radius: number;
+  source: SoundSource;
+}
+
+/** Who made a sound: a player (by id), a hazard, or nobody in particular. */
+export type SoundSource = string | 'hazard' | null;
+
+/** What a portal shot did: opened a portal, fizzled, took someone's portal, or set off a switch. */
+export type ShotOutcome = 'fizzle' | 'placed' | 'stolen' | 'switch';
+
+/** A portal shot: from the muzzle (or eye) to where it hit. */
+export interface SimShot {
+  player: string;
+  color: PortalColor;
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+  outcome: ShotOutcome;
+  normal: THREE.Vector3 | null;
 }
 
 export type SessionEvent =

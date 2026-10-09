@@ -31,11 +31,20 @@ export class ArenaPlayer {
   dead = false;
   /** Seconds since dying (opponents come back on their own after a delay). */
   deadFor = 0;
+  /** Times they have come back (online: lets every screen tell a respawn from a fast move). */
+  respawns = 0;
   /**
    * Driven by a bot even in the local slot (bot-vs-bot simulations): fires through its
    * command and respawns on its own, like an opponent.
    */
   autopilot = false;
+  /**
+   * Online, on a player's screen: someone else, placed where the game server's snapshots
+   * say they were (see net/NetSession) instead of being simulated here.
+   */
+  puppet = false;
+  /** Online, on the game server: paused this step, waiting for a late command (see InputQueue). */
+  waiting = false;
   /** The last object (beam, crate) to hurt them and who it is credited to. */
   lastHit: { by: string | null; time: number } | null = null;
 

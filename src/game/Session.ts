@@ -11,7 +11,7 @@ import type { PlayerAvatar } from '../player/PlayerAvatar';
 import type { PortalGunModel } from '../player/PortalGunModel';
 import { distanceGain } from '../world/hazards/Hazard';
 import type { MatchRules } from './Match';
-import type { ArenaPlayer } from './ArenaPlayer';
+import type { ArenaPlayer, PlayerSetup } from './ArenaPlayer';
 import { ArenaSim } from '../sim/ArenaSim';
 import type { SoundName } from '../sim/SimEvents';
 
@@ -23,6 +23,12 @@ const PORTAL_LIGHTS = 4;
 const PORTAL_LIGHT_RANGE = 5.5;
 const PORTAL_LIGHT_DECAY = 1.6;
 const _glowAt = new THREE.Vector3();
+
+/** Who plays at this screen in an online match: their match identity and slot. */
+export interface OnlineSeat {
+  setup: PlayerSetup;
+  slot: number;
+}
 
 /**
  * One arena in play on this screen: the simulation (ArenaSim) plus everything to see and
@@ -50,6 +56,7 @@ export class Session extends ArenaSim {
     physics: PhysicsWorld,
     def: ArenaDef,
     rules: Partial<MatchRules> | null,
+    seat: OnlineSeat | null,
   ) {
     super(physics, def, rules);
     this.engine = engine;
@@ -61,20 +68,24 @@ export class Session extends ArenaSim {
       this.portalLights.push(light);
       this.scene.add(light);
     }
-    this.addPlayer({ id: 'p1', name: 'YOU' }, new KeyboardCommands(input), engine.camera);
+    this.addPlayer(seat?.setup ?? { id: 'p1', name: 'YOU' }, new KeyboardCommands(input), engine.camera, seat ? { slot: seat.slot } : {});
   }
 
-  /** `rules` makes it a scored match (PvP); null for the tutorial stages. */
+  /**
+   * `rules` makes it a scored match (PvP); null for the tutorial stages. `seat`: you in an
+   * online match (otherwise player p1 in slot 0).
+   */
   static async create(
     engine: Engine,
     input: InputManager,
     audio: Audio,
     def: ArenaDef,
     rules: Partial<MatchRules> | null = null,
+    seat: OnlineSeat | null = null,
   ): Promise<Session> {
     const physics = await PhysicsWorld.create();
     try {
-      return new Session(engine, input, audio, physics, def, rules);
+      return new Session(engine, input, audio, physics, def, rules, seat);
     } catch (e) {
       // A map that fails to build (bad editor data) must not leak its physics world.
       physics.dispose();
@@ -84,6 +95,12 @@ export class Session extends ArenaSim {
 
   /** Sounds play as they happen, as loud as they are from the camera. */
   protected override sound(name: SoundName, volume: number, at?: THREE.Vector3, radius = 25): void {
+    if (this.quiet) return;
+    this.playSound(name, volume, at ?? null, radius);
+  }
+
+  /** A sound heard from the camera (online: one the game server reports). */
+  playSound(name: SoundName, volume: number, at: THREE.Vector3 | null, radius = 25): void {
     this.audio.play(name, at ? volume * distanceGain(this.engine.camera.position, at, radius) : volume);
   }
 
@@ -187,7 +204,7 @@ export class Session extends ArenaSim {
   }
 
   /** Opponents' third-person bodies follow their controllers; the dead vanish until they respawn. */
-  private updateOpponentBodies(dt: number): void {
+  updateOpponentBodies(dt: number): void {
     for (const p of this.players) {
       if (p.local || !p.avatar) continue;
       const c = p.controller;

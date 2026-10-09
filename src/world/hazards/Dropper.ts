@@ -50,7 +50,22 @@ export class Dropper implements Hazard {
     this.box.setFrozen(true);
   }
 
+  netState(): number[] {
+    return [this.waiting ? 1 : 0, this.warnTimer, this.settleTimer];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.waiting = s[0] === 1;
+    [, this.warnTimer, this.settleTimer] = s;
+  }
+
   update(dt: number, ctx: HazardContext): void {
+    // Online, on a player's screen, the crate is where the game server says: only the lamp runs here.
+    if (ctx.netClient) {
+      const blink = this.waiting ? (Math.sin((this.warnTimer += dt) * 18) > 0 ? 1 : 0.15) : 0.2;
+      this.lamp.color.setRGB(3 * blink, 0.2 * blink, 0.1 * blink);
+      return;
+    }
     if (this.waiting) {
       this.warnTimer += dt;
       const blink = Math.sin(this.warnTimer * 18) > 0 ? 1 : 0.15;

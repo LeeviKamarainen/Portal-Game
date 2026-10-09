@@ -7,6 +7,7 @@ import { BOX_HALF } from './PropBox';
 import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type Phase = 'up' | 'warn' | 'slam' | 'down' | 'rise';
+const CRUSHER_PHASES: readonly Phase[] = ['up', 'warn', 'slam', 'down', 'rise'];
 
 export const WARN_TIME = 0.9;
 const SLAM_TIME = 0.16;
@@ -138,6 +139,16 @@ export class Crusher implements Hazard, Triggerable {
   /** Slams now (after its usual warning) if it is raised and waiting. */
   trigger(): void {
     if (this.phase === 'up') this.enter('warn');
+  }
+
+  netState(): number[] {
+    return [CRUSHER_PHASES.indexOf(this.phase), this.t, this.y, this.lastBeep];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.phase = CRUSHER_PHASES[s[0]] ?? 'up';
+    [, this.t, this.y, this.lastBeep] = s;
+    this.place();
   }
 
   private enter(phase: Phase): void {

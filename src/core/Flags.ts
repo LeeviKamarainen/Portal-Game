@@ -24,6 +24,12 @@
  *   ?arena=pvp          start straight in the PvP arena.
  *   ?debug=nav          draw the bots' navigation graph (green floor points; grey walk, blue
  *                       drop and yellow jump links; orange/yellow points: hazard / edge cost).
+ *   ?room=ABCDE         open the Online page ready to join that room (invite links).
+ *   ?server=URL         game server WebSocket to use instead of /ws on this page's origin.
+ *   ?lag=150&jitter=30&loss=2   online: pretend the connection is bad - round trip in ms, give or
+ *                       take jitter ms, and loss% of messages held back by a resend.
+ *   ?predict=0          online: draw your own player where the server had it (no prediction).
+ *   ?net=1              online: show connection stats (ping, bandwidth, corrections).
  *   ?debug=bots         draw what each bot knows and plans: view cone, route, remembered
  *                       enemies (red seen, yellow heard), known orbs, aim point, goal label.
  */
@@ -51,4 +57,11 @@ export const FLAGS = {
   quality: readQuality(),
   showFps: params.has('fps') || import.meta.env.DEV,
   debug: params.get('debug'),
+  room: params.get('room'),
+  server: params.get('server'),
+  lag: Number(params.get('lag')) || 0,
+  jitter: Number(params.get('jitter')) || 0,
+  loss: Number(params.get('loss')) || 0,
+  predict: params.get('predict') !== '0',
+  net: params.has('net'),
 };

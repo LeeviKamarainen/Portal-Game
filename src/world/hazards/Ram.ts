@@ -8,6 +8,7 @@ import { BOX_HALF } from './PropBox';
 import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type RamPhase = 'rest' | 'warn' | 'strike' | 'hold' | 'retract';
+const RAM_PHASES: readonly RamPhase[] = ['rest', 'warn', 'strike', 'hold', 'retract'];
 
 export const RAM_WARN_TIME = 0.85;
 const STRIKE_TIME = 0.18;
@@ -281,6 +282,17 @@ export class Ram implements Hazard, Triggerable {
   /** Fires now (after its usual warning) if it is resting. */
   trigger(): void {
     if (this.phase === 'rest') this.enter('warn');
+  }
+
+  netState(): number[] {
+    return [RAM_PHASES.indexOf(this.phase), this.t, this.ext, this.lastBeep, this.struck ? 1 : 0];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.phase = RAM_PHASES[s[0]] ?? 'rest';
+    [, this.t, this.ext, this.lastBeep] = s;
+    this.struck = s[4] === 1;
+    this.place(0);
   }
 
   private enter(phase: RamPhase): void {

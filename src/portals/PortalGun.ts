@@ -202,6 +202,11 @@ export class PortalGun {
     return blocked === null;
   }
 
+  /** A shot's tracer and sparks without firing (online: a shot the game server reports). */
+  showShot(color: PortalColor, from: THREE.Vector3, to: THREE.Vector3, hit: boolean, normal: THREE.Vector3 | null): void {
+    this.effects.tracer(color, from, to, hit, normal);
+  }
+
   update(dt: number): void {
     this.effects.update(dt);
   }

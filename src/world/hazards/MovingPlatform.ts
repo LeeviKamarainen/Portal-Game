@@ -120,6 +120,14 @@ export class MovingPlatform implements Hazard {
 
   update(): void {}
 
+  netState(): number[] {
+    return [this.t];
+  }
+
+  setNetState(s: readonly number[]): void {
+    this.t = s[0];
+  }
+
   reset(): void {
     this.t = 0;
     this.pos.copy(this.a);

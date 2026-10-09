@@ -88,6 +88,14 @@ export class Switch implements Hazard {
     return this.time >= this.ready;
   }
 
+  netState(): number[] {
+    return [this.ready, this.time, this.flash];
+  }
+
+  setNetState(s: readonly number[]): void {
+    [this.ready, this.time, this.flash] = s;
+  }
+
   /** A shot hit it. Returns whether it went off. */
   shoot(ctx: HazardContext): boolean {
     if (!this.isReady) {

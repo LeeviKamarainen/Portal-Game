@@ -46,6 +46,18 @@ const IMMUNITY_COOLDOWN = 5.0;
  */
 const CAMERA_SETTLE_TIME = 0.24;
 
+/** How fast a prediction correction's leftover fades from the view (1/s): mostly gone in 0.1 s. */
+const CORRECTION_FADE = 30;
+
+/** Everything about a body's movement that the next step depends on (see net/NetSession). */
+export interface MoveState {
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  yaw: number;
+  pitch: number;
+  grounded: boolean;
+}
+
 const _q = new THREE.Quaternion();
 const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _q2 = new THREE.Quaternion();
@@ -85,6 +97,18 @@ export class PlayerController implements PortalTraversable {
   speedScale = 1;
   /** 0..1 flash strength for the HUD, set on damage and decayed here. */
   damageFlash = 0;
+  /** The external displacement the latest step used (recorded for replaying predicted steps). */
+  readonly usedExternal = new THREE.Vector3();
+  /** Shoves taken just before the latest step (likewise). */
+  stepKnocks: THREE.Vector3[] = [];
+  /**
+   * Leftover of a prediction correction: the camera starts where it was drawn and eases
+   * onto the corrected body instead of jumping.
+   */
+  readonly viewCorrection = new THREE.Vector3();
+  /** Replaying predicted steps: moves are made at once instead of by the physics step. */
+  private replaying = false;
+  private knocks: THREE.Vector3[] = [];
 
   private readonly physics: PhysicsWorld;
   private readonly body: RAPIER.RigidBody;
@@ -146,6 +170,9 @@ export class PlayerController implements PortalTraversable {
   update(dt: number): void {
     this.clock += dt;
     this.damageFlash = Math.max(0, this.damageFlash - dt * 2.5);
+    this.usedExternal.copy(this.externalDelta);
+    this.stepKnocks = this.knocks;
+    this.knocks = [];
     // Always read (so a mouse moved while input is off doesn't land all at once later).
     this.commands.read(this.command, dt);
     if (!this.inputEnabled) clearCommand(this.command);
@@ -222,7 +249,13 @@ export class PlayerController implements PortalTraversable {
     }
 
     const pos = this.body.translation();
-    this.body.setNextKinematicTranslation({ x: pos.x + corrected.x, y: pos.y + corrected.y, z: pos.z + corrected.z });
+    const next = { x: pos.x + corrected.x, y: pos.y + corrected.y, z: pos.z + corrected.z };
+    if (this.replaying) {
+      this.body.setTranslation(next, true);
+      this.physics.world.propagateModifiedBodyPositionsToColliders();
+    } else {
+      this.body.setNextKinematicTranslation(next);
+    }
 
     // Something brushed underfoot while flying upward (the lip of a floor portal one is
     // shooting out of) is not ground: counting it would zero the climb next step.
@@ -275,6 +308,11 @@ export class PlayerController implements PortalTraversable {
 
   /** After the physics step: find the ground and place the camera. */
   postStep(dt: number): void {
+    this.findGround();
+    this.syncCamera(dt);
+  }
+
+  private findGround(): void {
     this.groundCollider = -1;
     if (this.wasGrounded) {
       const p = this.body.translation();
@@ -290,7 +328,6 @@ export class PlayerController implements PortalTraversable {
       );
       if (hit) this.groundCollider = hit.collider.handle;
     }
-    this.syncCamera(dt);
   }
 
   private updateHorizontalVelocity(dt: number, grounded: boolean): void {
@@ -357,8 +394,9 @@ export class PlayerController implements PortalTraversable {
 
   private syncCamera(dt: number): void {
     if (dt > 0 && this.settle < 1) this.settle = Math.min(1, this.settle + dt / CAMERA_SETTLE_TIME);
+    if (dt > 0) this.viewCorrection.multiplyScalar(Math.exp(-dt * CORRECTION_FADE));
     if (!this.camera) return;
-    this.viewPosition(this.camera.position);
+    this.viewPosition(this.camera.position).add(this.viewCorrection);
     this.viewQuaternion(this.camera.quaternion);
     this.camera.updateMatrixWorld();
   }
@@ -480,6 +518,7 @@ export class PlayerController implements PortalTraversable {
    * going that way is kept), and lifted off the ground so ground friction cannot eat it.
    */
   knockback(v: THREE.Vector3): void {
+    this.knocks.push(v.clone());
     const flat = new THREE.Vector3(v.x, 0, v.z);
     const speed = flat.length();
     if (speed > 1e-6) {
@@ -492,6 +531,80 @@ export class PlayerController implements PortalTraversable {
     }
     this.velocity.y = Math.max(this.velocity.y, v.y);
     this.wasGrounded = false;
+  }
+
+  /** The movement state after the latest step. */
+  saveMove(): MoveState {
+    return { position: this.getPosition(), velocity: this.velocity.clone(), yaw: this.yaw, pitch: this.pitch, grounded: this.wasGrounded };
+  }
+
+  /** Puts the body back in `s` (the game server's word on where it really was). */
+  restoreMove(s: MoveState): void {
+    this.body.setTranslation({ x: s.position.x, y: s.position.y, z: s.position.z }, true);
+    this.physics.world.propagateModifiedBodyPositionsToColliders();
+    this.velocity.copy(s.velocity);
+    this.yaw = s.yaw;
+    this.pitch = s.pitch;
+    this.wasGrounded = s.grounded;
+    this.findGround();
+  }
+
+  /**
+   * Runs `steps` again as replayed predicted steps: each one `step()` moves the body at once
+   * (no physics step) and is given the external push and shoves it had the first time.
+   * Health, timers and effects are left as they were - only movement is redone.
+   */
+  replay(steps: number, step: (i: number) => void): void {
+    const kept = {
+      clock: this.clock,
+      immuneUntil: this.immuneUntil,
+      immunityReadyAt: this.immunityReadyAt,
+      damageFlash: this.damageFlash,
+      health: this.health.value,
+      landing: this.landingSpeed,
+      settle: this.settle,
+    };
+    this.replaying = true;
+    try {
+      for (let i = 0; i < steps; i++) step(i);
+    } finally {
+      this.replaying = false;
+      this.clock = kept.clock;
+      this.immuneUntil = kept.immuneUntil;
+      this.immunityReadyAt = kept.immunityReadyAt;
+      this.damageFlash = kept.damageFlash;
+      this.health.set(kept.health);
+      this.landingSpeed = kept.landing;
+      this.settle = kept.settle;
+    }
+  }
+
+  /** One replayed step: the recorded push and shoves, the move, then the ground underfoot. */
+  replayStep(dt: number, external: THREE.Vector3, knocks: readonly THREE.Vector3[]): void {
+    for (const k of knocks) this.knockback(k);
+    this.externalDelta.copy(external);
+    this.update(dt);
+  }
+
+  /** After a replayed step and its portal travel. */
+  replayPost(): void {
+    this.findGround();
+  }
+
+  /** Online: someone else's body, put where the game server's snapshots say (no physics). */
+  setPuppetPose(position: THREE.Vector3, velocity: THREE.Vector3, yaw: number, pitch: number, grounded: boolean): void {
+    this.body.setTranslation({ x: position.x, y: position.y, z: position.z }, true);
+    this.velocity.copy(velocity);
+    this.yaw = yaw;
+    this.pitch = THREE.MathUtils.clamp(pitch, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
+    this.wasGrounded = grounded;
+    this.settle = 1;
+    this.syncCamera(0);
+  }
+
+  /** Clock-based state the HUD shows, from the game server (online). */
+  get immunityTimes(): { immuneFor: number; readyIn: number } {
+    return { immuneFor: Math.max(0, this.immuneUntil - this.clock), readyIn: Math.max(0, this.immunityReadyAt - this.clock) };
   }
 
   getCrossingPoint(): THREE.Vector3 {
@@ -525,16 +638,20 @@ export class PlayerController implements PortalTraversable {
     // after this step's physics, not from the camera, which was placed a step earlier.)
     const camPos = this.viewPosition(new THREE.Vector3()).applyMatrix4(transform);
     const camQuat = rotation.clone().multiply(this.viewQuaternion(new THREE.Quaternion()));
+    // The look carried through: from yaw and pitch alone, not the view (which may still be
+    // easing out of an earlier passage) - so where you face next depends only on movement
+    // state, the same on the server and on a screen replaying the step.
+    const lookQuat = rotation.clone().multiply(this.baseQuaternion(new THREE.Quaternion()));
 
     this.body.setTranslation({ x: center.x, y: center.y, z: center.z }, true);
     this.velocity.applyQuaternion(rotation);
     this.wasGrounded = false;
 
-    // Re-derive yaw/pitch from the carried view. Taking yaw from the forward vector alone
+    // Re-derive yaw/pitch from the carried look. Taking yaw from the forward vector alone
     // is unstable when looking straight up or down; blending in the up vector is exact
     // for any roll-free view and degrades gracefully when the passage adds roll.
-    const f = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
-    const u = new THREE.Vector3(0, 1, 0).applyQuaternion(camQuat);
+    const f = new THREE.Vector3(0, 0, -1).applyQuaternion(lookQuat);
+    const u = new THREE.Vector3(0, 1, 0).applyQuaternion(lookQuat);
     this.pitch = THREE.MathUtils.clamp(Math.asin(THREE.MathUtils.clamp(f.y, -1, 1)), -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01);
     const cp = Math.cos(this.pitch);
     const sp = Math.sin(this.pitch);

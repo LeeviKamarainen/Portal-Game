@@ -202,6 +202,33 @@ export class PointOrbs {
     return collected;
   }
 
+  /** Online, on a player's screen: orbs only age (the game server places them and sees them taken). */
+  advance(dt: number): void {
+    for (const orb of this.orbs) if (orb.active) orb.timer += dt;
+  }
+
+  /** Where every orb is, for the game server's snapshot: null for one that isn't out. */
+  netState(): (THREE.Vector3 | null)[] {
+    return this.orbs.map((o) => (o.active ? o.pos : null));
+  }
+
+  /** Puts the orbs where the game server says they are. */
+  setNetState(state: readonly (THREE.Vector3 | null)[]): void {
+    this.orbs.forEach((orb, i) => {
+      const at = state[i] ?? null;
+      if (!at) {
+        if (orb.active) this.hide(orb, Infinity);
+        return;
+      }
+      if (orb.active && orb.pos.distanceToSquared(at) < 1e-4) return;
+      orb.pos.copy(at);
+      orb.active = true;
+      orb.timer = 0;
+      orb.group.position.copy(at);
+      orb.group.visible = true;
+    });
+  }
+
   /** Per-frame animation. */
   animate(time: number): void {
     for (const [i, orb] of this.orbs.entries()) {

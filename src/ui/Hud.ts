@@ -22,6 +22,7 @@ const CSS = `
   color:#e8edf5; border-radius:6px; padding:5px 10px; font-size:13px; }
 .hud .btn:hover { background:rgba(40,44,56,0.9); }
 .hud .fps { font: 11px ui-monospace, monospace; opacity:0.7; }
+.hud .net { position:absolute; right:0; top:30px; white-space:nowrap; font: 11px ui-monospace, monospace; opacity:0.85; }
 .hud .keys { position:absolute; right:18px; bottom:16px; font-size:12px; opacity:0.6; text-align:right; line-height:1.6; }
 .hud .center { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); text-align:center; }
 .hud .banner { font-size:34px; font-weight:700; letter-spacing:0.08em; }
@@ -76,7 +77,7 @@ export class Hud {
     this.root.innerHTML = `
       <div class="xhair"><div class="br l"></div><div class="dot"></div><div class="br r"></div></div>
       <div class="title shadow"><div class="step"></div><div class="name"></div><div class="hint"></div></div>
-      <div class="corner shadow"><span class="fps"></span><button class="btn mute"></button></div>
+      <div class="corner shadow"><span class="net"></span><span class="fps"></span><button class="btn mute"></button></div>
       <div class="bars shadow">
         <div class="label">HEALTH</div>
         <div class="bar"><div class="health" style="width:100%; background:linear-gradient(90deg,#c8322a,#ff6a4a)"></div></div>
@@ -91,7 +92,7 @@ export class Hud {
       <div class="click shadow">Click to play</div>
     `;
     container.appendChild(this.root);
-    for (const cls of ['step', 'name', 'hint', 'fps', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts']) {
+    for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts']) {
       this.el[cls] = this.root.querySelector(`.${cls}`)!;
     }
     this.el.l = this.root.querySelector('.br.l')!;
@@ -165,6 +166,11 @@ export class Hud {
     this.el.toasts.appendChild(t);
     while (this.el.toasts.childElementCount > 3) this.el.toasts.firstElementChild!.remove();
     t.addEventListener('animationend', () => t.remove());
+  }
+
+  /** Online: ping (and with ?net=1, more about the connection); null outside a match. */
+  setNet(text: string | null): void {
+    if (this.el.net.textContent !== (text ?? '')) this.el.net.textContent = text ?? '';
   }
 
   setFps(text: string | null): void {

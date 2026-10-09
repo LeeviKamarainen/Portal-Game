@@ -147,32 +147,40 @@ export class PortalSystem {
 
   step(dt: number): void {
     const open = this.open();
-    for (const t of this.tracked) {
-      const e = t.entity;
-      // A portal that closed (or lost its partner) mid-passage lets go.
-      if (e.passing && !e.passing.isOpen) e.passing = null;
-      if (open.length === 0) {
-        e.passing = null;
-        t.prevCross.copy(e.getCrossingPoint());
-        continue;
-      }
+    for (const t of this.tracked) this.stepTracked(t, dt, open);
+  }
 
-      const candidate = this.computePassing(e, dt, open);
-      const cross = e.getCrossingPoint();
-      let crossed: Portal | null = null;
-      for (const p of [e.passing, candidate]) {
-        if (!p || crossed) continue;
-        p.toLocal(t.prevCross, _prev);
-        p.toLocal(cross, _curr);
-        if (_prev.z > 0 && _curr.z <= 0 && p.inAperture(_curr, 0.15)) crossed = p;
-      }
+  /** Portal travel for one entity alone (a predicted player's steps being replayed). */
+  stepEntity(entity: PortalTraversable, dt: number): void {
+    const t = this.byCollider.get(entity.colliderHandle);
+    if (t) this.stepTracked(t, dt, this.open());
+  }
 
-      if (crossed) {
-        this.teleport(t, crossed, crossed.linked!);
-      } else {
-        e.passing = candidate;
-        t.prevCross.copy(cross);
-      }
+  private stepTracked(t: Tracked, dt: number, open: readonly Portal[]): void {
+    const e = t.entity;
+    // A portal that closed (or lost its partner) mid-passage lets go.
+    if (e.passing && !e.passing.isOpen) e.passing = null;
+    if (open.length === 0) {
+      e.passing = null;
+      t.prevCross.copy(e.getCrossingPoint());
+      return;
+    }
+
+    const candidate = this.computePassing(e, dt, open);
+    const cross = e.getCrossingPoint();
+    let crossed: Portal | null = null;
+    for (const p of [e.passing, candidate]) {
+      if (!p || crossed) continue;
+      p.toLocal(t.prevCross, _prev);
+      p.toLocal(cross, _curr);
+      if (_prev.z > 0 && _curr.z <= 0 && p.inAperture(_curr, 0.15)) crossed = p;
+    }
+
+    if (crossed) {
+      this.teleport(t, crossed, crossed.linked!);
+    } else {
+      e.passing = candidate;
+      t.prevCross.copy(cross);
     }
   }
 

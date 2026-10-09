@@ -150,6 +150,21 @@ export class PropBox implements PortalTraversable {
     this.body.setBodyType(frozen ? RAPIER.RigidBodyType.KinematicPositionBased : RAPIER.RigidBodyType.Dynamic, true);
   }
 
+  /**
+   * Online, on a player's screen: where it is drawn (call while frozen; the caller then
+   * propagates the move to the colliders, once for every crate moved).
+   */
+  setPose(position: THREE.Vector3, rotation: THREE.Quaternion): void {
+    this.body.setTranslation({ x: position.x, y: position.y, z: position.z }, true);
+    this.body.setRotation({ x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w }, true);
+    this.syncMesh();
+  }
+
+  getRotation(out: THREE.Quaternion): THREE.Quaternion {
+    const r = this.body.rotation();
+    return out.set(r.x, r.y, r.z, r.w);
+  }
+
   speed(): number {
     const v = this.body.linvel();
     return Math.hypot(v.x, v.y, v.z);
