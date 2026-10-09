@@ -1,0 +1,42 @@
+# Fly.io: one machine runs every room (docs/online-multiplayer-plan.md, milestone 6).
+#   fly launch --no-deploy --copy-config   (pick your own app name; it replaces the one below)
+#   fly volumes create portal_data --size 1
+#   fly deploy
+# Then set ALLOWED_ORIGINS below to your app's address and deploy again.
+
+app = "portal-arena"
+primary_region = "arn"
+
+[build]
+
+[env]
+  PORT = "8080"
+  DB_PATH = "/data/game.db"
+  # Pages allowed to open a room connection (your app's https address).
+  ALLOWED_ORIGINS = "https://portal-arena.fly.dev"
+  # Behind Fly's proxy: https only, and the client address comes from the proxy.
+  COOKIE_SECURE = "1"
+  TRUST_PROXY = "1"
+
+[[mounts]]
+  source = "portal_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Rooms live in memory: a stopped machine ends every match, so keep one running.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

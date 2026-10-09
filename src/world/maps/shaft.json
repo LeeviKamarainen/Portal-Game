@@ -1,0 +1,24 @@
+{
+  "id": "pvp-shaft",
+  "name": "Shaft",
+  "hint": "One tall pillar in the middle and a ledge in two corners. Portal onto the pillar top to see the whole room; watch the rams on the side walls and the switches on the end walls.",
+  "blurb": "A tall central pillar, corner ledges, and rams on the side walls.",
+  "kind": "combat",
+  "symmetry": "rotate180",
+  "fog": {"color": "#0c1018", "near": 40, "far": 150},
+  "killY": -6,
+  "pieces": [
+    {"type": "room", "at": [0, 0, 0], "size": [36, 28, 36], "portal": ["walls"], "skip": ["floor"], "center": true},
+    {"type": "lights", "at": [0, 28, 0], "size": [36, 0, 36], "spacing": 8, "center": true},
+    {"type": "block", "at": [0, -3, 0], "size": [36, 3, 36], "portal": ["top"], "hide": ["bottom"], "center": true},
+    {"type": "block", "at": [0, 0, 0], "size": [8, 14, 8], "portal": ["sides", "top"], "hide": ["bottom"], "center": true},
+    {"type": "ceiling-slot", "at": [0, 28, 0], "size": [6, 0.3, 6], "center": true},
+    {"type": "block", "at": [-12, 0, -12], "size": [6, 6, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
+    {"type": "block", "at": [12, 0, -12], "size": [6, 6, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
+    {"type": "ram", "at": [-17.6, 3, 0], "rot": 270, "reach": 3, "rest": 3.4, "offset": 0},
+    {"type": "switch", "at": [0, 8, -17.8], "rot": 180, "effect": "portals", "cooldown": 20},
+    {"type": "switch", "at": [-12, 14, -17.8], "rot": 180, "effect": "gravity", "factor": 1.8, "duration": 8, "cooldown": 25},
+    {"type": "spawn", "at": [-10, 0, 14], "rot": 0, "team": "orange"},
+    {"type": "spawn", "at": [10, 0, 14], "rot": 0}
+  ]
+}

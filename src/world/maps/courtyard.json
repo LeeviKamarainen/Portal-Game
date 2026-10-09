@@ -1,0 +1,24 @@
+{
+  "id": "pvp-courtyard",
+  "name": "Courtyard",
+  "hint": "Open ground with low cover and two raised plinths. Spikes wait in the centre, and a ram punches out from each side wall.",
+  "blurb": "Open ground, low cover, spikes in the middle, and rams on the walls.",
+  "kind": "combat",
+  "symmetry": "rotate180",
+  "fog": {"color": "#10121a", "near": 45, "far": 160},
+  "killY": -6,
+  "pieces": [
+    {"type": "room", "at": [0, 0, 0], "size": [44, 18, 44], "portal": ["walls"], "skip": ["floor"], "center": true},
+    {"type": "lights", "at": [0, 18, 0], "size": [44, 0, 44], "spacing": 8, "center": true},
+    {"type": "block", "at": [0, -3, 0], "size": [44, 3, 44], "portal": ["top"], "hide": ["bottom"], "center": true},
+    {"type": "spikes", "at": [0, 0, 0], "size": [4, 0, 4], "mode": "cycle", "rest": 3, "center": true},
+    {"type": "ceiling-slot", "at": [-14, 18, -14], "size": [4, 0.3, 4]},
+    {"type": "block", "at": [-14, 0, 14], "size": [6, 4, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
+    {"type": "wall", "at": [-8, 0, -7], "size": [6, 1.6, 0.6]},
+    {"type": "wall", "at": [7, 0, -1], "size": [0.6, 1.6, 8]},
+    {"type": "block", "at": [-4, 0, 6], "size": [2, 1.2, 2], "material": "metal"},
+    {"type": "ram", "at": [-21.6, 2.5, -6], "rot": 270, "reach": 3, "rest": 3, "offset": 0},
+    {"type": "spawn", "at": [-6, 0, 19], "rot": 0, "team": "orange"},
+    {"type": "spawn", "at": [6, 0, 19], "rot": 0}
+  ]
+}

@@ -14,6 +14,7 @@ import { BotDebugView } from '../bots/BotDebug';
 import type { ArenaPlayer } from './ArenaPlayer';
 import { ViewModel } from '../player/ViewModel';
 import { Hud } from '../ui/Hud';
+import { NetOverlay } from '../ui/NetOverlay';
 import { Menu } from '../ui/Menu';
 import { Editor } from '../editor/Editor';
 import { mapToArena, type MapData } from '../world/maps/MapFormat';
@@ -62,6 +63,8 @@ export class Game {
   readonly input: InputManager;
   readonly audio: Audio;
   readonly hud: Hud;
+  /** `?net=1`: the connection stats panel online. */
+  private readonly netOverlay: NetOverlay | null;
   readonly menu: Menu;
   /** Online rooms: the lobby you're in, if any (docs/online-multiplayer-plan.md). */
   readonly online = new OnlineLobby();
@@ -116,6 +119,7 @@ export class Game {
     this.keyboard = new KeyboardCommands(this.input);
     this.audio = new Audio(FLAGS.muted);
     this.hud = new Hud(container);
+    this.netOverlay = FLAGS.net ? new NetOverlay(this.hud.layer) : null;
     this.menu = new Menu(container, this.settings, {
       playStage: (i) => this.startFromMenu(() => this.loadArena(i)),
       playPvp: () => this.startFromMenu(() => this.loadPvp()),
@@ -236,6 +240,7 @@ export class Game {
     }
     session.demo = mode === 'menu';
     session.attachAvatar(this.avatar);
+    session.localMuzzle = (out) => this.viewModel.muzzleIn(this.engine.camera, out);
     this.botViews = [];
     if (match) this.joinMatch(session, match);
     else if (this.combat) this.addOpponents(session);
@@ -298,7 +303,8 @@ export class Game {
     net.onPlayerJoined = (p, entry) => giveBody(p, entry.skin);
     net.onSound = (s) => session.playSound(s.name, s.volume, s.at, s.radius);
     net.onShot = (shot, shooter) => {
-      shooter.gun.showShot(shot.color, shot.from, shot.to, shot.outcome !== 'fizzle', shot.normal);
+      // The server shoots from the eye; the tracer leaves the gun as this screen draws it.
+      shooter.gun.showShot(shot.color, session.muzzleOf(shooter) ?? shot.from, shot.to, shot.outcome !== 'fizzle', shot.normal);
       // Your own shot was heard when you clicked; everyone else's from where they stood.
       if (!shooter.local) {
         shooter.avatar?.shoot();
@@ -747,26 +753,16 @@ export class Game {
       blue: session.portals.blue.placed,
       locked: this.input.isPointerLocked() || !!FLAGS.test,
     });
-    this.hud.setNet(this.net ? this.netText(this.net) : null);
+    const ping = this.online.view().ping;
+    // (With ?net=1 the panel shows it, first line.)
+    this.hud.setNet(this.net && !this.netOverlay ? (ping === null ? 'PING …' : `PING ${ping} ms`) : null);
+    this.netOverlay?.update(frameDt, this.net, ping);
     if (FLAGS.showFps) {
       const ft = this.engine.smoothedFrameTime;
       this.hud.setFps(
         `${(1 / ft).toFixed(0)} fps · ${(ft * 1000).toFixed(1)} ms · ${session.portalRenderer.stats.views} portal views · ${this.engine.pixelRatio.toFixed(2)}x`,
       );
     }
-  }
-
-  /** The corner readout online: ping, and with ?net=1 how the connection is doing. */
-  private netText(net: NetSession): string {
-    const ping = this.online.view().ping;
-    let text = ping === null ? 'PING …' : `PING ${ping} ms`;
-    if (FLAGS.net) {
-      const s = net.stats;
-      text += ` · ${(s.rateIn / 1024).toFixed(1)} KB/s · ${s.corrections} fixes · queue ${s.queue.toFixed(1)} · clock ×${s.timeScale.toFixed(3)}`;
-      const last = net.why[net.why.length - 1];
-      if (last) text += ` · last fix ${last}`;
-    }
-    return text;
   }
 
   /** Renders one frame immediately (used by the scripted tests while the loop is paused). */

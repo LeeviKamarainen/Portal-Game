@@ -8,9 +8,10 @@ import type { ShotOutcome, SimShot, SimSound, SoundName } from '../sim/SimEvents
 
 /**
  * The game server's snapshot of a match, written for one player: everyone's bodies (your
- * own in full precision, for prediction), every portal, the orbs, crates, hazard timers,
- * scores, and the shots and sounds since the last one. Each snapshot is complete on its
- * own - nothing depends on an earlier one having arrived.
+ * own in full precision, for prediction), the crates, scores, and the shots and sounds
+ * since the last one; every few - and around any change - every portal and orb, and the
+ * hazard timers. Nothing depends on an earlier one having arrived: what one leaves out
+ * comes again in a later one.
  */
 
 /** Remote positions and speeds: 1/128 m (or m/s) steps, ±256 m. */
@@ -97,8 +98,9 @@ export interface Snapshot {
   /** The gravity multiplier and the steps it lasts after this one (see ArenaSim.gravity). */
   gravity: { factor: number; steps: number };
   players: NetPlayer[];
-  portals: NetPortal[];
-  orbs: (THREE.Vector3 | null)[];
+  /** Every portal and orb - in the snapshots around a change, and every few (see SnapshotFor.world). */
+  portals: NetPortal[] | null;
+  orbs: (THREE.Vector3 | null)[] | null;
   props: NetProp[];
   /** Every hazard's state, in arena order - in every few snapshots only (they run on their own between). */
   hazards: number[][] | null;
@@ -115,6 +117,20 @@ export interface SnapshotFor {
   queued: number;
   /** Include the hazards' state this time. */
   hazards: boolean;
+  /**
+   * The portals and orbs (writeWorld), or null to leave them out this time. They seldom
+   * change, so the server sends them in the few snapshots after a change (one may be lost
+   * on the way), after any shot (the shooter learns how it turned out), and every few.
+   */
+  world: Uint8Array | null;
+}
+
+/** A hazard's state has at most this many numbers (a bit each says how it is written). */
+const MAX_HAZARD_STATE = 8;
+
+/** A number that goes as one byte, exactly. */
+function smallWhole(v: number): boolean {
+  return Number.isInteger(v) && v >= 0 && v <= 255 && !Object.is(v, -0);
 }
 
 const _v = new THREE.Vector3();
@@ -153,6 +169,61 @@ export function writeSnapshot(sim: ArenaSim, to: SnapshotFor, shots: readonly Si
     }
   }
 
+  if (to.world) w.u8(1).raw(to.world);
+  else w.u8(0);
+
+  const props = sim.arena.props;
+  w.u8(props.length);
+  for (const prop of props) {
+    w.u8(prop.visible ? 1 : 0).i8(prop.passing ? prop.passing.netId : -1).u8(sim.system.teleportCount(prop) & 255);
+    const pos = prop.getPosition();
+    const r = prop.getRotation(_q);
+    w.f32(pos.x).f32(pos.y).f32(pos.z).i16(r.x * 32767).i16(r.y * 32767).i16(r.z * 32767).i16(r.w * 32767);
+  }
+
+  const hazards = to.hazards ? sim.arena.hazards.filter((h) => h.netState) : [];
+  w.u8(to.hazards ? 1 : 0);
+  if (to.hazards) {
+    w.u8(hazards.length);
+    for (const h of hazards) {
+      const s = h.netState!();
+      if (s.length > MAX_HAZARD_STATE) throw new Error(`a hazard state of ${s.length} numbers`);
+      // Phases, flags and resting values are whole numbers and go as a byte; the rest at full
+      // precision - a timer a hair short of its threshold has to stay short of it here too.
+      w.u8(s.length).u8(s.reduce((bits, v, i) => (smallWhole(v) ? bits | (1 << i) : bits), 0));
+      for (const v of s) {
+        if (smallWhole(v)) w.u8(v);
+        else w.f64(v);
+      }
+    }
+  }
+
+  w.u8(Math.min(255, shots.length));
+  for (const s of shots.slice(0, 255)) {
+    const slot = sim.playerById(s.player)?.slot ?? 0;
+    w.u8((slot << 3) | (OUTCOMES.indexOf(s.outcome) << 1) | (s.color === 'blue' ? 1 : 0));
+    w.i16(s.from.x * POS_SCALE).i16(s.from.y * POS_SCALE).i16(s.from.z * POS_SCALE);
+    w.i16(s.to.x * POS_SCALE).i16(s.to.y * POS_SCALE).i16(s.to.z * POS_SCALE);
+    const n = s.normal ?? _v.set(0, 0, 0);
+    w.i8(n.x * 127).i8(n.y * 127).i8(n.z * 127);
+  }
+
+  w.u8(Math.min(255, sounds.length));
+  for (const s of sounds.slice(0, 255)) {
+    const by = s.source && s.source !== 'hazard' ? sim.playerById(s.source) : undefined;
+    w.u8(SOUND_IDS.indexOf(s.name)).u8(Math.round(Math.min(1, s.volume) * 255)).u8(Math.min(255, Math.round(s.radius))).u8(by ? by.slot : NO_SLOT);
+    if (s.at) w.u8(1).i16(s.at.x * POS_SCALE).i16(s.at.y * POS_SCALE).i16(s.at.z * POS_SCALE);
+    else w.u8(0);
+  }
+  return w.bytes();
+}
+
+/**
+ * Every portal and orb, written once a round for all the snapshots that carry them (and
+ * compared with the last round's to tell whether anything changed).
+ */
+export function writeWorld(sim: ArenaSim): Uint8Array<ArrayBuffer> {
+  const w = new ByteWriter(256);
   const portals = [...sim.portalsByNetId.values()];
   w.u8(portals.length);
   for (const portal of portals) {
@@ -178,46 +249,14 @@ export function writeSnapshot(sim: ArenaSim, to: SnapshotFor, shots: readonly Si
     }
     w.u8(1).f32(o.x).f32(o.y).f32(o.z);
   }
-
-  const props = sim.arena.props;
-  w.u8(props.length);
-  for (const prop of props) {
-    w.u8(prop.visible ? 1 : 0).i8(prop.passing ? prop.passing.netId : -1).u8(sim.system.teleportCount(prop) & 255);
-    const pos = prop.getPosition();
-    const r = prop.getRotation(_q);
-    w.f32(pos.x).f32(pos.y).f32(pos.z).i16(r.x * 32767).i16(r.y * 32767).i16(r.z * 32767).i16(r.w * 32767);
-  }
-
-  const hazards = to.hazards ? sim.arena.hazards.filter((h) => h.netState) : [];
-  w.u8(to.hazards ? 1 : 0);
-  if (to.hazards) {
-    w.u8(hazards.length);
-    for (const h of hazards) {
-      const s = h.netState!();
-      // Full precision: a timer a hair short of its threshold has to stay short of it here too.
-      w.u8(s.length);
-      for (const v of s) w.f64(v);
-    }
-  }
-
-  w.u8(Math.min(255, shots.length));
-  for (const s of shots.slice(0, 255)) {
-    const slot = sim.playerById(s.player)?.slot ?? 0;
-    w.u8((slot << 3) | (OUTCOMES.indexOf(s.outcome) << 1) | (s.color === 'blue' ? 1 : 0));
-    w.i16(s.from.x * POS_SCALE).i16(s.from.y * POS_SCALE).i16(s.from.z * POS_SCALE);
-    w.i16(s.to.x * POS_SCALE).i16(s.to.y * POS_SCALE).i16(s.to.z * POS_SCALE);
-    const n = s.normal ?? _v.set(0, 0, 0);
-    w.i8(n.x * 127).i8(n.y * 127).i8(n.z * 127);
-  }
-
-  w.u8(Math.min(255, sounds.length));
-  for (const s of sounds.slice(0, 255)) {
-    const by = s.source && s.source !== 'hazard' ? sim.playerById(s.source) : undefined;
-    w.u8(SOUND_IDS.indexOf(s.name)).u8(Math.round(Math.min(1, s.volume) * 255)).u8(Math.min(255, Math.round(s.radius))).u8(by ? by.slot : NO_SLOT);
-    if (s.at) w.u8(1).i16(s.at.x * POS_SCALE).i16(s.at.y * POS_SCALE).i16(s.at.z * POS_SCALE);
-    else w.u8(0);
-  }
   return w.bytes();
+}
+
+/** Whether two written blocks are the same. */
+export function sameBytes(a: Uint8Array, b: Uint8Array | null): boolean {
+  if (!b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** Reads a snapshot (it comes from our own server, but a short one still throws). */
@@ -268,23 +307,26 @@ export function readSnapshot(data: ArrayBuffer | Uint8Array): Snapshot {
     players.push(p);
   }
 
-  const portals: NetPortal[] = [];
-  for (let i = r.u8(); i > 0; i--) {
-    const netId = r.u8();
-    const owner = r.u8();
-    const placed = r.u8() === 1;
-    let placement: NetPortal['placement'] = null;
-    if (placed) {
-      const face = r.u16();
-      const center = new THREE.Vector3(r.f32(), r.f32(), r.f32());
-      const up = new THREE.Vector3(r.f32(), r.f32(), r.f32());
-      placement = { face, center, up };
+  let portals: NetPortal[] | null = null;
+  let orbs: (THREE.Vector3 | null)[] | null = null;
+  if (r.u8() === 1) {
+    portals = [];
+    for (let i = r.u8(); i > 0; i--) {
+      const netId = r.u8();
+      const owner = r.u8();
+      const placed = r.u8() === 1;
+      let placement: NetPortal['placement'] = null;
+      if (placed) {
+        const face = r.u16();
+        const center = new THREE.Vector3(r.f32(), r.f32(), r.f32());
+        const up = new THREE.Vector3(r.f32(), r.f32(), r.f32());
+        placement = { face, center, up };
+      }
+      portals.push({ netId, ownerSlot: owner >> 1, color: owner & 1 ? 'blue' : 'orange', placement });
     }
-    portals.push({ netId, ownerSlot: owner >> 1, color: owner & 1 ? 'blue' : 'orange', placement });
+    orbs = [];
+    for (let i = r.u8(); i > 0; i--) orbs.push(r.u8() === 1 ? new THREE.Vector3(r.f32(), r.f32(), r.f32()) : null);
   }
-
-  const orbs: (THREE.Vector3 | null)[] = [];
-  for (let i = r.u8(); i > 0; i--) orbs.push(r.u8() === 1 ? new THREE.Vector3(r.f32(), r.f32(), r.f32()) : null);
 
   const props: NetProp[] = [];
   for (let i = r.u8(); i > 0; i--) {
@@ -301,7 +343,9 @@ export function readSnapshot(data: ArrayBuffer | Uint8Array): Snapshot {
     hazards = [];
     for (let i = r.u8(); i > 0; i--) {
       const s: number[] = [];
-      for (let n = r.u8(); n > 0; n--) s.push(r.f64());
+      const n = r.u8();
+      const small = r.u8();
+      for (let k = 0; k < n; k++) s.push(small & (1 << k) ? r.u8() : r.f64());
       hazards.push(s);
     }
   }

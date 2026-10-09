@@ -96,6 +96,12 @@ export class PortalGunModel {
     return resource;
   }
 
+  /** Where the muzzle is, in the coordinates of the scene the gun is in. */
+  muzzlePosition(out: THREE.Vector3): THREE.Vector3 {
+    this.muzzle.updateWorldMatrix(true, false);
+    return this.muzzle.getWorldPosition(out);
+  }
+
   /** Recolour the emitter to the portal just fired and light the muzzle. */
   charge(color: PortalColor): void {
     const hex = this.palette[color];

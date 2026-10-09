@@ -21,7 +21,7 @@ Started 2026-10-08. Builds on the multiplayer foundation from the bot work
 | Match size | **2-4 players free-for-all**, capped by the map's spawn count. The host can fill empty slots with **server-side bots** (difficulty picked in the lobby). |
 | Map kinds | **Combat maps only online.** Puzzle maps (solo, ended by the exit goal) stay single-player; the protocol leaves room for a puzzle race/co-op mode later. |
 | Which maps | **Built-in combat maps** (Highwire) **or the host's own editor maps**: the host uploads the map JSON, the server checks it (size, kind, it builds) and hands it to everyone who joins. |
-| Transport | WebSocket for v1 (one origin with the game page: `wss://` for free, no CORS); full self-contained snapshots so a later move to WebTransport datagrams changes nothing else. |
+| Transport | WebSocket for v1 (one origin with the game page: `wss://` for free, no CORS); snapshots that need no earlier one (what one leaves out comes again soon), so a later move to WebTransport datagrams changes nothing else. |
 
 ## How the netcode works
 
@@ -39,15 +39,19 @@ Started 2026-10-08. Builds on the multiplayer foundation from the bot work
   checks it against the server's answer for the same command; if they disagree beyond a few
   centimetres it rewinds to the server's state and replays the commands since. Small leftover
   error fades out over ~0.1 s; big ones snap.
-- **Everyone else is ~0.1 s in the past**, smoothly interpolated between snapshots (jumps
-  straight across teleports and respawns instead of sliding through walls).
+- **Everyone else is drawn 67-150 ms in the past**, smoothly interpolated between snapshots
+  (jumps straight across teleports and respawns instead of sliding through walls). The delay
+  follows the connection: as short as it can be while a snapshot is still always in hand.
 - **Hazards run on the client's own clock** (they're timer-driven), so a ram shoves you where the
-  server will shove you. Once a second (and straight after a switch is shot) a snapshot carries
+  server will shove you. Twice a second (and straight after a switch is shot) a snapshot carries
   every hazard's state at full precision; the client takes it and runs the hazards on by the
   steps it has played since the command the server last used, which lines them up exactly.
+- **Portals and orbs** come in the snapshots after a change (4 in a row), after any shot, and
+  twice a second otherwise; the rest of a snapshot is bodies, crates, scores, shots and sounds.
 - **Portal shots:** your own placements show up at once (predicted) and the server confirms;
   steals and switch hits show the shot at once and the result when the server says so. No
-  lag compensation is needed: a portal shot only hits the level, never players.
+  lag compensation is needed: a portal shot only hits the level, never players. Other
+  players' shots and sounds go off when their (past) bodies are drawn making them.
 - **Deaths, health, scores, orbs, steals** are always the server's word.
 
 ## Milestones
@@ -187,40 +191,133 @@ browser `?test=net` suite - the headless clients in `server/test/netplay.test.ts
 ground against the real server. All browser suites still pass (portals 15, arenas 8, hazards 14,
 scoring 14, players 15, bots 8, nav 7, brain 15, sim 10).
 
-Known limits (milestone 5): your own portal shots show when the server answers (a round trip
-late), and the first steps after your own floor portal opens under you get corrected; crates
-are placed where the latest snapshot says (not interpolated); shots and sounds play on arrival,
-not in time with the shooter's interpolated body.
+Known limits then (all fixed in milestone 5): your own portal shots showed a round trip late;
+crates were not interpolated; shots and sounds played on arrival.
 
-### 5. Portals, crates, hazards, effects
+### 5. Portals, crates, hazards, effects — *done 2026-10-09*
 
-- [ ] Predicted own portal placements; remote shots, sounds and steal flashes in time with the
-      shooter; crates through portals; switch effects (all portals closed, gravity) on every
-      client; ram knockback and trapdoor timing match.
+- [x] **Your own portal shots are predicted**: the shot is fired on your screen on the step the
+      server will fire it (`ArenaSim.predictShot`, from the same eye), so your portal opens the
+      moment you click. Until the server has used that command, what it says about that portal
+      is older news and is left alone (`NetSession.pending`); then the server's word stands. A
+      steal or a switch only shows the shot - what it does is the server's to say.
+      `stats.shotMisses` counts shots that came out differently (usually 0; a miss is a spot
+      nudged round a portal a bot had just opened there, put right a round trip later).
+- [x] **Other players' shots, sounds and steal flashes go off when their bodies are drawn
+      there** (~100 ms after they arrive): snapshot sounds now carry who made them, and
+      anything by a player drawn in the past waits for the drawing clock. Your own steal
+      flashes when the server confirms it.
+- [x] **Crates are interpolated** like players (no sliding across a portal trip or a return
+      home; each carries a trip counter) and drawn halfway through portals - the snapshot
+      says which portal a crate is passing, so the far-side copy shows.
+- [x] **Switch effects on every screen**: portals closing come with the snapshot (and the
+      notice); gravity now travels as the exact factor and the number of steps it has left,
+      counted the way the server counts them, so it starts and ends on the very step it does
+      for your commands (your recent steps are replayed under the new gravity).
+- [x] **Rams and trapdoors** (milestone 4 already ran hazards on your clock): checked - a ram
+      throwing you off the walkway, a trapdoor dropping you, heavy gravity coming and going:
+      0 corrections each.
+- [x] Tests: `server/test/netplay.test.ts` - gravity / ram / trapdoor, and a crate dropping
+      through a floor portal and out of a wall portal (drawn passing, one jump for the trip,
+      at rest exactly where the server has it). Protocol version 3.
 
-### 6. Bots online, join/leave, reconnect, rematch, deploy
+Found on the way (not online-specific, handed to its own task): a portal opened under a crate
+that has come to rest leaves it hovering - the physics engine has put the crate to sleep.
 
-- [ ] Server-side bots, joining a match in progress, rejoining within 20 s keeps your slot and
-      score, rematch / back to lobby.
-- [ ] Deployed (one Node process on Fly.io or a VPS), played from two different networks.
+### 6. Bots online, join/leave, reconnect, rematch, deploy — *done 2026-10-09 (deploy prepared)*
 
-### 7. Polish
+- [x] Server-side bots (since milestone 2).
+- [x] **Joining a match in progress**: a friend who joins gets a free slot - or the last bot
+      makes room - and loads the match with the scoreboard so far (`matchStart.scores`); their
+      body appears once they have loaded, with spawn protection, and everyone else gets
+      `playerJoined`. Player ids are never reused in a match (the bot keeps its row and points).
+      Messages that arrive while the match is loading wait for it.
+- [x] **Dropped connections keep your place for 20 s**: your player holds still, out of reach
+      (nothing can kill them for points); the client reconnects by itself (every 2 s, showing
+      RECONNECTING… over the match) with its token, gets the match again and carries on as the
+      same player with the same score. A reloaded page gets its place back the same way (the
+      token is kept per tab) by joining the room's code again. After 20 s the place goes;
+      everyone sees "X LOST CONNECTION", "X IS BACK", "X JOINED", "X LEFT". Leaving from the menu
+      leaves at once. In the lobby a dropped connection still just leaves.
+- [x] **Rematch**: the result stays up 8 s, then the room goes back to its lobby (same map, bots
+      and difficulty) and the host can start the next match. Someone joining while a result is
+      up waits in the lobby for it.
+- [x] Tests: a friend joining a full match (a bot makes room, both scoreboards match the
+      server), a dropped connection coming back (same player, same body, score kept, held
+      meanwhile), a dropped player who never comes back (gone after 20 s, room closes), the win
+      → lobby → rematch. In the browser: two tabs, a mid-match join, a forced 4 s outage
+      (RECONNECTING… then back as the same player), the bots winning, both tabs back in the
+      lobby, a rematch.
+- [x] **Deploy prepared**: `npm run build:server` bundles the server (`dist-server/main.js`,
+      Vite SSR); `npm start` runs it, serving the built game and `/ws` from one origin.
+      `Dockerfile` (Node 24, `DB_PATH=/data/game.db`), `.dockerignore`, `fly.toml` (one
+      always-on machine - rooms live in memory - a volume for the accounts database, `/healthz`
+      check, `ALLOWED_ORIGINS`, secure cookies behind Fly's proxy). Checked by running the
+      built server locally and playing a match against 3 hard bots through it (0.66 ms a step).
+- [ ] Deployed and played from two different networks - needs a Fly.io (or VPS) account:
+      `fly launch --no-deploy --copy-config`, `fly volumes create portal_data --size 1`,
+      set `ALLOWED_ORIGINS` to the app's address, `fly deploy`.
 
-- [ ] Adaptive interpolation delay, `?net=1` stats overlay, bandwidth tuning, WebTransport
-      trial, a "favour the shooter" grace for steals only if playtests ask for it.
+### 7. Polish — *in progress 2026-10-09*
+
+- [x] **Adaptive interpolation delay** (`Interpolation.ts`): each arriving snapshot measures how
+      much was still in hand (counting the steps the drawing clock had to wait at the newest
+      one). Short of a step's margin, the delay goes up at once by the shortfall (up to 9
+      steps, 150 ms); a whole second with room to spare and it comes down half a step (down
+      to 4 steps, 67 ms). A clean line sits at 67 ms (it was a fixed 100 ms); the pretend bad
+      line (150 ms, ±30, 2% held back 200 ms) at 150 ms. `stats.delay`, `stats.late`.
+- [x] **`?net=1` stats panel** (`src/ui/NetOverlay.ts`, under the ping): down and up KB/s and
+      bytes a snapshot, how far behind everyone is drawn and how many snapshots came late,
+      the command queue on the server and the clock, corrections (total and last minute) and
+      own shots placed differently, the latest correction reasons, and a graph of the last 4 s
+      of snapshot arrival gaps (amber/red bars for bunched ones, a red mark where your player
+      was corrected) - `NetSession.trace`.
+- [x] **Muzzle-origin tracers**, online and off: a shot still goes from the eye, but its tracer
+      leaves the gun as it is drawn - the gun in your hands (`ViewModel.muzzleIn`, mapped from
+      its own scene to where the main camera sees it) or an opponent's third-person gun
+      (`PortalGunModel.muzzlePosition`). `ArenaSim.muzzleOf` (nothing headless, so the server
+      sends eye positions); `Session.muzzleOf` / `localMuzzle`.
+- [x] **Bandwidth**: portals and orbs only in the snapshots that need them (`writeWorld`,
+      written once a round and compared byte for byte; a player who has just loaded gets
+      everything for half a second); hazard numbers that are whole go as one byte (phases,
+      flags, resting values; timers stay f64). A lean snapshot 300 → ~150 bytes, one with
+      hazards 1030 → ~700. Measured in the tests: 11.7 → 7.5 KB/s down a client; up is
+      2.8 KB/s (60 input messages a second, each repeating 4 commands). Protocol version 4.
+- [ ] **Clock and queue on a lossy line - looked at, left as it is.** The server holds a
+      player whose next command is late, so every TCP stall puts their commands later and
+      the queue grows by the stall; the client only drains it by running up to 3% slow. On
+      the pretend bad line (a 200 ms stall about once a second) the queue settles at ~10
+      commands - in effect the queue covers the stalls, which is the right trade there
+      (no holds, no mispredictions) at about 0.1 s of extra input delay. Real TCP resends sooner
+      than that line pretends; datagrams (below) remove the stalls altogether.
+- [ ] **WebTransport trial - assessed, not built** (needs a decision). The client side is small
+      (browser `WebTransport`: snapshots and inputs as unreliable datagrams, lobby messages on
+      a reliable stream; snapshots already stand alone and inputs repeat the last 4 commands).
+      The server side is the cost: Node has no WebTransport server built in, so it means a
+      native add-on (e.g. `@fails-components/webtransport`) or a small sidecar in Go/Rust
+      relaying to the room server; QUIC needs the server's own TLS certificate (or 14-day
+      self-signed certificates passed to the browser by hash); on Fly.io UDP needs a
+      dedicated IPv4 and bypasses its HTTPS proxy. Browser support needs checking for Safari.
+      Worth it if playtests on real connections show stalls (the `?net=1` graph shows them as
+      red bars); keep WebSocket as the fallback either way.
+- [ ] A "favour the shooter" grace for steals - only if playtests ask for it.
 - [ ] Later: puzzle race / co-op, public lobby, teams.
 
 ## Risks
 
-- **Server CPU per room** - measured in milestone 1; rooms move to worker threads if one core
-  can't hold enough of them.
+- **Server CPU per room** - measured in milestone 1; the built server runs a 4-player room
+  (1 human, 3 hard bots) at 0.66 ms a step - a core holds a couple of dozen. Rooms move to
+  worker threads if one core can't hold enough of them.
+- **Rooms live in memory** - restarting or redeploying the server ends every match (the
+  accounts database is on disk). Deploy when nobody is playing.
 - **Prediction drift** - the client's world is never identical to the server's (other players
   sit in the past), so corrections are expected; kept small by rounding inputs the way the
   network does and sending your own state at full precision.
 - **Cheating** - inputs are clamped and rate-limited and the server decides every hit, but every
   snapshot contains everyone's position (a wallhack is possible). Acceptable for friends' rooms.
-- **TCP stalls under packet loss** - absorbed by the interpolation buffer and by the server
-  waiting for late commands; WebTransport later. A player whose commands are late is paused
+- **TCP stalls under packet loss** - absorbed by the interpolation buffer (it grows to 150 ms
+  on a bad line) and by the server waiting for late commands (the queue grows); WebTransport
+  later (assessed in milestone 7). A player whose commands are late is paused
   (untouchable) for up to 0.5 s - holding back commands on purpose would exploit that.
 - **Hidden tabs stop the game loop** - the server keeps you standing still; the client re-syncs
   when the tab comes back.

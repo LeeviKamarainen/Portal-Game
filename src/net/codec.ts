@@ -74,6 +74,14 @@ export class ByteWriter {
     return this;
   }
 
+  /** Bytes written elsewhere, as they are. */
+  raw(bytes: Uint8Array): this {
+    this.room(bytes.length);
+    new Uint8Array(this.buf, this.pos, bytes.length).set(bytes);
+    this.pos += bytes.length;
+    return this;
+  }
+
   /** Overwrites a u16 written earlier (a count only known once the items are written). */
   patchU16(at: number, v: number): void {
     this.view.setUint16(at, v, true);

@@ -66,9 +66,27 @@ export interface NetStats {
   timeScale: number;
   /** Snapshot bytes a second over the last second. */
   rateIn: number;
+  /** Command bytes a second sent over the last second. */
+  rateOut: number;
   /** Your own portal shots that opened a portal here and turned out differently on the server. */
   shotMisses: number;
+  /** Steps everyone else is drawn behind the newest snapshot (it follows the connection). */
+  delay: number;
+  /** Snapshots that came too late: everyone else stood still a moment waiting for them. */
+  late: number;
 }
+
+/** One snapshot's arrival, for the net stats overlay's graph. */
+export interface SnapshotTrace {
+  /** Milliseconds since the one before. */
+  gap: number;
+  bytes: number;
+  /** It set off a correction of your own player. */
+  fixed: boolean;
+}
+
+/** Snapshots kept in `trace` (4 s). */
+const TRACE = 120;
 
 /**
  * Your side of an online match. The game server runs the real match; this keeps a copy of
@@ -101,7 +119,21 @@ export class NetSession {
   countdown = 0;
   /** Your player came back after dying (the game clears it once it has reacted). */
   respawned = false;
-  readonly stats: NetStats = { snapshots: 0, corrections: 0, bytesIn: 0, bytesOut: 0, queue: TARGET_QUEUE, timeScale: 1, rateIn: 0, shotMisses: 0 };
+  readonly stats: NetStats = {
+    snapshots: 0,
+    corrections: 0,
+    bytesIn: 0,
+    bytesOut: 0,
+    queue: TARGET_QUEUE,
+    timeScale: 1,
+    rateIn: 0,
+    rateOut: 0,
+    shotMisses: 0,
+    delay: 0,
+    late: 0,
+  };
+  /** The latest snapshots' arrivals, oldest first. */
+  readonly trace: SnapshotTrace[] = [];
   /** Shots and sounds from the server, for whoever draws and plays the match. */
   onShot: ((shot: NetShot, shooter: ArenaPlayer) => void) | null = null;
   onSound: ((sound: NetSound) => void) | null = null;
@@ -131,6 +163,8 @@ export class NetSession {
   private starving = false;
   private rateFrom = 0;
   private rateBytes = 0;
+  private rateBytesOut = 0;
+  private lastArrival = 0;
   private tick = 0;
   private dt = 1 / 60;
   private respawns = -1;
@@ -296,13 +330,18 @@ export class NetSession {
     const now = performance.now();
     if (now - this.rateFrom >= 1000) {
       this.stats.rateIn = this.rateFrom > 0 ? (this.rateBytes * 1000) / (now - this.rateFrom) : 0;
+      this.stats.rateOut = this.rateFrom > 0 ? ((this.stats.bytesOut - this.rateBytesOut) * 1000) / (now - this.rateFrom) : 0;
       this.rateFrom = now;
       this.rateBytes = 0;
+      this.rateBytesOut = this.stats.bytesOut;
     }
+    const fixes = this.stats.corrections;
     this.interp.push(s.tick, s.players, s.props);
+    this.stats.delay = this.interp.delay;
+    this.stats.late = this.interp.late;
     this.syncPlayers(s);
-    this.applyPortals(s.portals, s.ack);
-    this.sim.orbs?.setNetState(s.orbs);
+    if (s.portals) this.applyPortals(s.portals, s.ack);
+    if (s.orbs) this.sim.orbs?.setNetState(s.orbs);
     // The server's state is from the step that used our command `ack`; this screen has run
     // `since` steps after that one. Hazards and gravity are caught up by as many.
     const since = this.stepsSince(s.ack);
@@ -310,6 +349,9 @@ export class NetSession {
     if (s.hazards) this.sim.syncHazards(s.hazards, since ?? 0, this.dt);
     this.reconcile(s, regravitated);
     this.scheduleEffects(s);
+    this.trace.push({ gap: this.lastArrival > 0 ? now - this.lastArrival : 0, bytes: data.byteLength, fixed: this.stats.corrections > fixes });
+    if (this.trace.length > TRACE) this.trace.shift();
+    this.lastArrival = now;
 
     // Clock sync: steer the number of our commands waiting on the server toward the target.
     // A server that has run dry gets a burst to start it off again.

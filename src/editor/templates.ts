@@ -1,5 +1,8 @@
 import type { MapData } from '../world/maps/MapFormat';
 import highwire from '../world/maps/highwire.json';
+import catwalk from '../world/maps/catwalk.json';
+import shaft from '../world/maps/shaft.json';
+import courtyard from '../world/maps/courtyard.json';
 
 /**
  * What "New map" starts from: a symmetric two-team room with portal walls, a dark ceiling
@@ -53,6 +56,9 @@ export function blankPuzzle(): MapData {
 /** Maps that ship with the game, to open as a starting point. */
 export const BUILT_IN_MAPS: { label: string; data: () => MapData }[] = [
   { label: 'Highwire (PvP)', data: () => structuredClone(highwire as MapData) },
+  { label: 'Catwalk (PvP)', data: () => structuredClone(catwalk as MapData) },
+  { label: 'Shaft (PvP)', data: () => structuredClone(shaft as MapData) },
+  { label: 'Courtyard (PvP)', data: () => structuredClone(courtyard as MapData) },
   { label: 'Blank combat template', data: blankMap },
   { label: 'Blank puzzle template', data: blankPuzzle },
 ];

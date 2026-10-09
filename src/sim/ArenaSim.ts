@@ -369,7 +369,15 @@ export class ArenaSim {
     return this.time < this.noticeUntil ? this.notice : '';
   }
 
-  /** `player` shoots a portal from `eye` along where `look` faces. */
+  /**
+   * Where `player`'s gun is drawn, for their shots' tracers to start from (the shot itself
+   * always goes from the eye). Nothing is drawn here: the tracer starts at the eye.
+   */
+  protected muzzleOf(_player: ArenaPlayer): THREE.Vector3 | undefined {
+    return undefined;
+  }
+
+  /** `player` shoots a portal from `eye` along where `look` faces (the tracer starts at `muzzle`). */
   protected fireFrom(player: ArenaPlayer, color: PortalColor, eye: THREE.Vector3, look: THREE.Quaternion, muzzle?: THREE.Vector3): boolean {
     _fwd.set(0, 0, -1).applyQuaternion(look);
     const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle);
@@ -413,13 +421,13 @@ export class ArenaSim {
    * portal opens here at once (the server has the last word when it gets there); a steal
    * or a switch only shows the shot - what they do is the server's to say.
    */
-  private predictShot(player: ArenaPlayer, color: PortalColor, eye: THREE.Vector3, look: THREE.Quaternion): void {
+  private predictShot(player: ArenaPlayer, color: PortalColor, eye: THREE.Vector3, look: THREE.Quaternion, muzzle?: THREE.Vector3): void {
     _fwd.set(0, 0, -1).applyQuaternion(look);
-    const r = player.gun.fire(color, eye.clone(), _fwd.clone());
+    const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle);
     this.shots.push({
       player: player.id,
       color,
-      from: eye.clone(),
+      from: (muzzle ?? eye).clone(),
       to: r.point?.clone() ?? eye.clone().addScaledVector(_fwd, 60),
       outcome: r.placed ? 'placed' : r.interactable ? 'switch' : r.stolen ? 'stolen' : 'fizzle',
       normal: r.normal?.clone() ?? null,
@@ -518,8 +526,8 @@ export class ArenaSim {
       c.update(dt);
       if (c.inputEnabled && c.command.fire && (auto || this.netClient)) {
         c.viewPose(_eye, _look);
-        if (auto) this.fireFrom(p, c.command.fire, _eye, _look);
-        else this.predictShot(p, c.command.fire, _eye, _look);
+        if (auto) this.fireFrom(p, c.command.fire, _eye, _look, this.muzzleOf(p));
+        else this.predictShot(p, c.command.fire, _eye, _look, this.muzzleOf(p));
       }
     }
     // (Online, on a player's screen, crates are wherever the server had them.)

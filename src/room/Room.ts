@@ -15,7 +15,7 @@ import {
   type ServerMessage,
 } from '../net/protocol';
 import { readInput } from '../net/commands';
-import { writeSnapshot } from '../net/snapshot';
+import { sameBytes, writeSnapshot, writeWorld } from '../net/snapshot';
 import type { SessionEvent, SimShot, SimSound } from '../sim/SimEvents';
 import type { ArenaPlayer } from '../game/ArenaPlayer';
 import { InputQueue } from './InputQueue';
@@ -57,8 +57,15 @@ const LOAD_TIMEOUT = 20;
 const SHOT_SOUNDS: ReadonlySet<string> = new Set(['shootOrange', 'shootBlue', 'portalOpen', 'fizzle']);
 /** Your own portal trips are already heard on your screen: they aren't sent back to you. */
 const HEARD_LOCALLY: ReadonlySet<string> = new Set(['teleport']);
-/** Hazards run on every screen by themselves, exactly as here: their state goes out once a second (and straight after a switch). */
+/** Hazards run on every screen by themselves, exactly as here: their state goes out every this many snapshots (and straight after a switch). */
 const HAZARDS_EVERY = 15;
+/**
+ * Portals and orbs go out in this many snapshots in a row after they change (one lost on
+ * the way is made up by the next), and with the hazards otherwise.
+ */
+const WORLD_REPEAT = 4;
+/** Steps after loading the match during which a player gets everything in every snapshot. */
+const FRESH_STEPS = 30;
 
 export interface Member {
   readonly id: string;
@@ -70,6 +77,8 @@ export interface Member {
   readonly token: string;
   /** Seconds since their connection dropped mid-match, or -1 while connected. */
   awayFor: number;
+  /** Until this room step (just after they loaded the match) their snapshots carry everything. */
+  freshUntil: number;
 }
 
 /** Thrown by room operations a client isn't allowed to do; the manager reports it to them. */
@@ -118,6 +127,9 @@ export class Room {
   private shots: SimShot[] = [];
   private sounds: SimSound[] = [];
   private events: SessionEvent[] = [];
+  /** The portals and orbs as last written, and the step they last changed on. */
+  private world: Uint8Array | null = null;
+  private worldChanged = 0;
 
   constructor(code: string, map: CheckedMap, log: (line: string) => void = () => {}) {
     this.code = code;
@@ -153,7 +165,7 @@ export class Room {
    */
   add(conn: Conn, name: string, skin: string): Member {
     if (this.members.length >= this.map.slots) throw new RoomError('full', `The room is full (${this.map.slots} players).`);
-    const m: Member = { id: `m${nextMember++}`, conn, name, skin, token: newToken(), awayFor: -1 };
+    const m: Member = { id: `m${nextMember++}`, conn, name, skin, token: newToken(), awayFor: -1, freshUntil: 0 };
     if (this.inMatch) {
       let slot = this.freeSlot();
       if (slot < 0) {
@@ -311,6 +323,7 @@ export class Room {
     this.nextPlayer = this.members.length + this.bots + 1;
     this.sim = sim;
     this.step = 0;
+    this.world = null;
     this.phaseTime = 0;
     sim.onNotice = (text, seconds) => this.notice(text, seconds);
     this.log(
@@ -336,6 +349,7 @@ export class Room {
     if (!seat || !this.sim || !this.inMatch) return;
     // Their commands count from the first again (a new screen starts from scratch).
     seat.queue = new InputQueue();
+    m.freshUntil = this.step + FRESH_STEPS;
     if (seat.player) {
       seat.player.controller.commands = seat.queue;
       if (seat.back) this.notice(`${m.name} IS BACK`);
@@ -445,14 +459,29 @@ export class Room {
     const sim = this.sim!;
     const hazards = sim.hazardsTouched || this.step % (SNAPSHOT_EVERY * HAZARDS_EVERY) === 0;
     sim.hazardsTouched = false;
+    const world = writeWorld(sim);
+    if (!sameBytes(world, this.world)) {
+      this.world = world;
+      this.worldChanged = this.step;
+    }
+    const worldNow = hazards || this.shots.length > 0 || this.step - this.worldChanged < SNAPSHOT_EVERY * WORLD_REPEAT;
     for (const m of this.members) {
       if (m.awayFor >= 0) continue;
       const seat = this.seats.get(m);
       const you = seat?.player ?? null;
       const sounds = this.sounds.filter((s) => !(you && s.source === you.id && HEARD_LOCALLY.has(s.name)));
+      const fresh = this.step < m.freshUntil;
       const data = writeSnapshot(
         sim,
-        { tick: this.step, you, ack: seat?.queue.executed ?? 0, idle: seat?.queue.idle ?? 0, queued: seat?.queue.queued ?? 0, hazards },
+        {
+          tick: this.step,
+          you,
+          ack: seat?.queue.executed ?? 0,
+          idle: seat?.queue.idle ?? 0,
+          queued: seat?.queue.queued ?? 0,
+          hazards: hazards || fresh,
+          world: worldNow || fresh ? world : null,
+        },
         this.shots,
         sounds,
       );

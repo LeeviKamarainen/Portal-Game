@@ -16,8 +16,9 @@ import { mapToArena } from '../../src/world/maps/MapFormat';
 import { IdleCommands, emptyCommand, type PlayerCommand } from '../../src/player/PlayerCommand';
 import { NetSession } from '../../src/net/NetSession';
 import { quantizeCommand, readInput, writeInput } from '../../src/net/commands';
-import { readSnapshot, writeSnapshot } from '../../src/net/snapshot';
+import { readSnapshot, writeSnapshot, writeWorld } from '../../src/net/snapshot';
 import { InputQueue } from '../../src/room/InputQueue';
+import { Interpolation } from '../../src/net/Interpolation';
 import { BotController } from '../../src/bots/BotController';
 import { BOT_SKILLS } from '../../src/bots/BotSkill';
 import { DelayLine, type LineQuality } from '../../src/net/DelayLine';
@@ -69,6 +70,36 @@ test('commands survive the wire exactly, and the input queue paces them', () => 
   assert.equal(q.ready(), true);
 });
 
+test('the drawing delay follows the connection: short when snapshots come steadily, longer when they bunch up', () => {
+  const interp = new Interpolation();
+  let tick = 0;
+  let step = 0;
+  /** `seconds` of game steps; a snapshot is sent every 2nd and arrives `lateBy(n)` steps after it was sent. */
+  const run = (seconds: number, lateBy: (n: number) => number) => {
+    const inFlight: { at: number; tick: number }[] = [];
+    for (let i = 0; i < seconds * 60; i++, step++) {
+      if (step % 2 === 0) {
+        tick += 2;
+        const last = inFlight[inFlight.length - 1];
+        // In order, as over TCP: a late one holds up those behind it.
+        inFlight.push({ at: Math.max(last?.at ?? 0, step + lateBy(tick / 2)), tick });
+      }
+      while (inFlight.length > 0 && inFlight[0].at <= step) interp.push(inFlight.shift()!.tick, []);
+      interp.advance();
+    }
+  };
+  run(20, () => 0);
+  assert.equal(interp.delay, 4, `a steady line: drawn 4 steps behind (${interp.delay})`);
+  assert.equal(interp.late, 0);
+  // Every 40th snapshot held up 200 ms (a resend over TCP).
+  run(6, (n) => (n % 40 === 0 ? 12 : 0));
+  assert.ok(interp.delay >= 8, `bunched snapshots: further behind (${interp.delay})`);
+  const late = interp.late;
+  run(20, () => 0);
+  assert.equal(interp.delay, 4, `steady again: back to 4 (${interp.delay})`);
+  assert.equal(interp.late, late, 'and nothing late meanwhile');
+});
+
 test('a snapshot reads back what the server wrote', async () => {
   const sim = await ArenaSim.load(mapToArena(BUILT_IN_ONLINE_MAPS[0].data), {});
   const players = [0, 1, 2].map((slot) => {
@@ -84,7 +115,7 @@ test('a snapshot reads back what the server wrote', async () => {
     shots.push(...sim.shots);
     sounds.push(...sim.sounds.filter((s) => s.source !== 'hazard'));
   }
-  const data = writeSnapshot(sim, { tick: 1200, you: players[1], ack: 77, idle: 1, queued: 3, hazards: true }, shots.slice(-5), sounds.slice(-5));
+  const data = writeSnapshot(sim, { tick: 1200, you: players[1], ack: 77, idle: 1, queued: 3, hazards: true, world: writeWorld(sim) }, shots.slice(-5), sounds.slice(-5));
   const s = readSnapshot(data);
   assert.equal(s.tick, 1200);
   assert.equal(s.ack, 77);
@@ -95,20 +126,25 @@ test('a snapshot reads back what the server wrote', async () => {
   const other = s.players.find((p) => p.slot === 0)!;
   assert.equal(other.own, null);
   assert.ok(other.position.distanceTo(players[0].controller.getPosition()) < 0.01, 'remote positions within 1 cm');
-  assert.equal(s.portals.length, 6);
-  for (const np of s.portals) {
+  assert.equal(s.portals!.length, 6);
+  for (const np of s.portals!) {
     const portal = sim.portalsByNetId.get(np.netId)!;
     assert.equal(np.placement !== null, portal.placed);
     if (np.placement) assert.ok(np.placement.center.distanceTo(portal.surfaceCenter) < 1e-4);
   }
-  assert.equal(s.hazards!.length, sim.arena.hazards.filter((h) => h.netState).length);
+  const states = sim.arena.hazards.filter((h) => h.netState).map((h) => h.netState!());
+  assert.deepEqual(s.hazards, states, 'hazard states exactly (whole numbers as bytes, the rest in full)');
   assert.ok(s.hazards!.length >= 7, 'Highwire: rams, spikes, the trapdoor and switches');
   console.log(`snapshot bytes: full ${data.length}`);
   assert.ok(data.length < 1400, `a 3-player snapshot with hazards, 5 shots and 5 sounds is ${data.length} bytes`);
-  const lean = writeSnapshot(sim, { tick: 1202, you: players[1], ack: 78, idle: 0, queued: 3, hazards: false }, [], []);
-  assert.equal(readSnapshot(lean).hazards, null);
+  const lean = writeSnapshot(sim, { tick: 1202, you: players[1], ack: 78, idle: 0, queued: 3, hazards: false, world: null }, [], []);
+  const leanRead = readSnapshot(lean);
+  assert.equal(leanRead.hazards, null);
+  assert.equal(leanRead.portals, null, 'portals and orbs left out');
+  assert.equal(leanRead.orbs, null);
+  assert.equal(leanRead.players.length, 3);
   console.log(`snapshot bytes: lean ${lean.length}`);
-  assert.ok(lean.length < 400, `without hazards, shots or sounds: ${lean.length} bytes`);
+  assert.ok(lean.length < 200, `without hazards, portals, orbs, shots or sounds: ${lean.length} bytes`);
   sim.dispose();
 });
 
@@ -278,7 +314,7 @@ test('two players and two bots play online: predictions hold, everyone agrees on
     const played = seconds - 3;
     const perMinute = (st.corrections / played) * 60;
     const kbIn = st.bytesIn / played / 1024;
-    console.log(`client: ${st.snapshots} snapshots, ${st.corrections} corrections (${perMinute.toFixed(1)}/min), ${st.shotMisses} own shots placed differently, ${kbIn.toFixed(1)} KB/s in, ${(st.bytesOut / played / 1024).toFixed(2)} KB/s out, queue ${st.queue.toFixed(1)}, clock ×${st.timeScale.toFixed(3)}`);
+    console.log(`client: ${st.snapshots} snapshots, ${st.corrections} corrections (${perMinute.toFixed(1)}/min), ${st.shotMisses} own shots placed differently, ${kbIn.toFixed(1)} KB/s in, ${(st.bytesOut / played / 1024).toFixed(2)} KB/s out, queue ${st.queue.toFixed(1)}, clock ×${st.timeScale.toFixed(3)}, drawn ${st.delay} steps behind, ${st.late} late`);
     for (const w of net.why) console.log(`  ${w}`);
     assert.ok(net.started, 'the match started');
     assert.ok(st.snapshots > played * 25, `about 30 snapshots a second (${st.snapshots})`);
@@ -338,7 +374,7 @@ test('over a bad connection (150 ms, ±30 ms, 2% held back) predictions still ho
   await runFor(seconds, [c], (i) => script(i, 1.7));
   const st = c.net!.stats;
   const perMinute = (st.corrections / (seconds - 3)) * 60;
-  console.log(`bad line: ${st.corrections} corrections (${perMinute.toFixed(1)}/min), queue ${st.queue.toFixed(1)}, clock ×${st.timeScale.toFixed(3)}`);
+  console.log(`bad line: ${st.corrections} corrections (${perMinute.toFixed(1)}/min), queue ${st.queue.toFixed(1)}, clock ×${st.timeScale.toFixed(3)}, drawn ${st.delay} steps behind, ${st.late} late`);
   for (const w of c.net!.why) console.log(`  ${w}`);
   const room = server.rooms.rooms.get(code)!;
   console.log('server inputs:', JSON.stringify(room.inputStats()));

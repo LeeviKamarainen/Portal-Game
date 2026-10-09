@@ -93,6 +93,16 @@ export class ViewModel {
     );
   }
 
+  /**
+   * The point in the world that `camera` (the main one) sees where this gun's muzzle is
+   * drawn - `distance` metres from the eye - so a shot's tracer seems to leave the gun.
+   */
+  muzzleIn(camera: THREE.Camera, out: THREE.Vector3, distance = 0.6): THREE.Vector3 {
+    this.gun.muzzlePosition(out).project(this.camera);
+    out.setZ(0.5).unproject(camera).sub(camera.position).normalize();
+    return out.multiplyScalar(distance).add(camera.position);
+  }
+
   /** The gun is drawn by the engine's overlay pass; this only keeps its projection current. */
   setAspect(aspect: number): void {
     if (this.camera.aspect === aspect) return;

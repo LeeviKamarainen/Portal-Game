@@ -2,6 +2,9 @@ import type { MapData } from '../world/maps/MapFormat';
 import type { MatchRules } from '../game/Match';
 import type { SessionEvent } from '../sim/SimEvents';
 import highwire from '../world/maps/highwire.json';
+import catwalk from '../world/maps/catwalk.json';
+import shaft from '../world/maps/shaft.json';
+import courtyard from '../world/maps/courtyard.json';
 
 /**
  * What the game client and the game server say to each other (see
@@ -10,7 +13,7 @@ import highwire from '../world/maps/highwire.json';
  */
 
 /** Bumped whenever a message changes shape: an old client gets told to reload. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 /** Simulation steps a second, on the server and every client. */
 export const TICK_RATE = 60;
 /** A snapshot goes to each player every this many steps (30 a second). */
@@ -31,7 +34,12 @@ export const MAP_PIECES_MAX = 2000;
 export const WS_PATH = '/ws';
 
 /** Combat maps that ship with the game, playable online by id. */
-export const BUILT_IN_ONLINE_MAPS: readonly { id: string; data: MapData }[] = [{ id: 'highwire', data: highwire as MapData }];
+export const BUILT_IN_ONLINE_MAPS: readonly { id: string; data: MapData }[] = [
+  { id: 'highwire', data: highwire as MapData },
+  { id: 'catwalk', data: catwalk as MapData },
+  { id: 'shaft', data: shaft as MapData },
+  { id: 'courtyard', data: courtyard as MapData },
+];
 
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 export const BOT_DIFFICULTIES: readonly BotDifficulty[] = ['easy', 'normal', 'hard'];

@@ -29,7 +29,7 @@
  *   ?lag=150&jitter=30&loss=2   online: pretend the connection is bad - round trip in ms, give or
  *                       take jitter ms, and loss% of messages held back by a resend.
  *   ?predict=0          online: draw your own player where the server had it (no prediction).
- *   ?net=1              online: show connection stats (ping, bandwidth, corrections).
+ *   ?net=1              online: a connection stats panel (bandwidth, delays, corrections, a graph).
  *   ?debug=bots         draw what each bot knows and plans: view cone, route, remembered
  *                       enemies (red seen, yellow heard), known orbs, aim point, goal label.
  */

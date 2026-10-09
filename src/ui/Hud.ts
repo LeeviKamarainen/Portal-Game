@@ -103,6 +103,11 @@ export class Hud {
     });
   }
 
+  /** The HUD's layer, for panels that come and go with it. */
+  get layer(): HTMLElement {
+    return this.root;
+  }
+
   /** `label` is the small line above the name, e.g. "ARENA 2 / 4". */
   setArena(label: string, name: string, hint: string): void {
     this.el.step.textContent = label;
@@ -168,7 +173,7 @@ export class Hud {
     t.addEventListener('animationend', () => t.remove());
   }
 
-  /** Online: ping (and with ?net=1, more about the connection); null outside a match. */
+  /** Online: the ping; null outside a match. */
   setNet(text: string | null): void {
     if (this.el.net.textContent !== (text ?? '')) this.el.net.textContent = text ?? '';
   }

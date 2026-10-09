@@ -10,6 +10,7 @@ import { ArenaSim } from '../../src/sim/ArenaSim';
 import { simEnv } from '../../src/sim/env';
 import { PVP_ARENA } from '../../src/world/arenas';
 import { mapToArena } from '../../src/world/maps/MapFormat';
+import { BUILT_IN_ONLINE_MAPS } from '../../src/net/protocol';
 import { blankMap } from '../../src/editor/templates';
 import { BotController } from '../../src/bots/BotController';
 import { BOT_SKILLS, seededRandom, type BotDifficulty } from '../../src/bots/BotSkill';
@@ -67,6 +68,16 @@ for (const [name, def] of [
     assert.equal(r.sim.players.length, 4);
     // Highwire has orbs to fight over; the blank template is an empty room, so only check it ran.
     if (def === PVP_ARENA) assert.ok(r.scores.some((s) => s > 0), 'nobody scored in two minutes');
+    r.sim.dispose();
+  });
+}
+
+for (const { id, data } of BUILT_IN_ONLINE_MAPS.filter((m) => m.id !== 'highwire')) {
+  test(`4 bots play the built-in ${data.name} map headless`, async () => {
+    const r = await botMatch(mapToArena(data), 60, 11);
+    console.log(`${data.name} (${id}): ${r.steps} ticks, ${r.msPerTick.toFixed(2)} ms/tick, scores ${r.scores.join('/')}, ${r.deaths} deaths`);
+    assert.equal(r.sim.players.length, 4);
+    assert.ok(r.sim.arena.spawns.length >= 4, 'a built-in map needs spawn pads for four players');
     r.sim.dispose();
   });
 }

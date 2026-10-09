@@ -23,6 +23,7 @@ const PORTAL_LIGHTS = 4;
 const PORTAL_LIGHT_RANGE = 5.5;
 const PORTAL_LIGHT_DECAY = 1.6;
 const _glowAt = new THREE.Vector3();
+const _muzzle = new THREE.Vector3();
 
 /** Who plays at this screen in an online match: their match identity and slot. */
 export interface OnlineSeat {
@@ -193,9 +194,21 @@ export class Session extends ArenaSim {
   }
 
   /** The local player fires, from the camera. */
-  fire(color: PortalColor, muzzle?: THREE.Vector3): boolean {
+  fire(color: PortalColor): boolean {
     const cam = this.engine.camera;
-    return this.fireFrom(this.local, color, cam.position, cam.quaternion, muzzle);
+    return this.fireFrom(this.local, color, cam.position, cam.quaternion, this.muzzleOf(this.local));
+  }
+
+  /**
+   * Where your own gun is drawn on screen, as a point in the world (the game sets it: the
+   * gun in your hands is drawn in a scene of its own).
+   */
+  localMuzzle: ((out: THREE.Vector3) => THREE.Vector3) | null = null;
+
+  /** Where `player`'s gun is drawn: their shots' tracers start there. */
+  override muzzleOf(player: ArenaPlayer): THREE.Vector3 | undefined {
+    if (player.local) return this.localMuzzle?.(_muzzle);
+    return player.gunModel && player.avatar?.object.visible !== false ? player.gunModel.muzzlePosition(_muzzle) : undefined;
   }
 
   override step(dt: number): void {
