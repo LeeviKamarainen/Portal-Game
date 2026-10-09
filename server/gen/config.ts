@@ -28,6 +28,19 @@ export interface GenConfig {
   maxJobTokens: number;
   /** Ask a second opinion on whether the finished map fits the request. */
   critique: boolean;
+  /** Who may spend how much; enforced by the job manager. */
+  limits: {
+    /** Generations one user may start in any 24 hours. */
+    dailyPerUser: number;
+    /** Generations running at once, all users together. */
+    maxConcurrent: number;
+    /** Tokens all users together may spend in any 24 hours; past it the generator pauses (503). */
+    dailyTokenCeiling: number;
+    /** Longest request text, in characters. */
+    promptMax: number;
+    /** Generations one user may start per minute. */
+    startsPerMinute: number;
+  };
 }
 
 export const HAIKU = 'claude-haiku-5-5';
@@ -59,5 +72,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxCallInputTokens: int(env.GEN_MAX_CALL_INPUT_TOKENS, 100_000),
     maxJobTokens: int(env.GEN_MAX_JOB_TOKENS, 100_000),
     critique: env.GEN_CRITIQUE !== 'off',
+    limits: {
+      dailyPerUser: int(env.GEN_DAILY_LIMIT, 10),
+      maxConcurrent: int(env.GEN_MAX_CONCURRENT, 2),
+      // Roughly 100 full generations a day at the typical 30-60K tokens each: well under a dollar at list price.
+      dailyTokenCeiling: int(env.GEN_DAILY_TOKEN_CEILING, 5_000_000),
+      promptMax: int(env.GEN_PROMPT_MAX, 500),
+      startsPerMinute: int(env.GEN_STARTS_PER_MINUTE, 6),
+    },
   };
 }

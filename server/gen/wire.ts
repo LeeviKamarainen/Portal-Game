@@ -93,25 +93,33 @@ export const slug = (s: string): string =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 24) || 'map';
 
+/** One wire piece as a map-file piece; `index` is only for the wording of problems. */
+export function pieceFromWire(w: WirePiece, index: number): { piece: Piece; problems: string[] } {
+  const problems: string[] = [];
+  const p: Piece = { type: w.type, at: w.at as Vec3 };
+  if (w.size.length) p.size = w.size as Vec3;
+  if (w.rot) p.rot = w.rot;
+  if (w.center) p.center = true;
+  const where = `piece #${index} (${w.type})`;
+  for (const { key, value } of w.params) {
+    const f = fieldOf(w.type, key);
+    if (!f) {
+      problems.push(`${where}: unknown parameter "${key}" (allowed: ${(PIECES[w.type].fields ?? []).map((x) => x.key).join(', ') || 'none'})`);
+      continue;
+    }
+    const r = parseValue(f, value);
+    if ('error' in r) problems.push(`${where}: parameter "${key}": ${r.error}`);
+    else p[key] = r.value;
+  }
+  return { piece: p, problems };
+}
+
 export function fromWire(wire: WireMap, opts: WireOptions = {}): FromWire {
   const problems: string[] = [];
   const pieces: Piece[] = wire.pieces.map((w, i) => {
-    const p: Piece = { type: w.type, at: w.at as Vec3 };
-    if (w.size.length) p.size = w.size as Vec3;
-    if (w.rot) p.rot = w.rot;
-    if (w.center) p.center = true;
-    const where = `piece #${i} (${w.type})`;
-    for (const { key, value } of w.params) {
-      const f = fieldOf(w.type, key);
-      if (!f) {
-        problems.push(`${where}: unknown parameter "${key}" (allowed: ${(PIECES[w.type].fields ?? []).map((x) => x.key).join(', ') || 'none'})`);
-        continue;
-      }
-      const r = parseValue(f, value);
-      if ('error' in r) problems.push(`${where}: parameter "${key}": ${r.error}`);
-      else p[key] = r.value;
-    }
-    return p;
+    const r = pieceFromWire(w, i);
+    problems.push(...r.problems);
+    return r.piece;
   });
   const map: MapData = {
     id: opts.id ?? `${slug(wire.name)}-${Math.random().toString(36).slice(2, 6)}`,

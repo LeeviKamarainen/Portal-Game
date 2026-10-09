@@ -8,8 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:server": "tsx --test server/test/*.test.ts",
-    "server": "tsx watch server/main.ts",
-    "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir",
+    "server": "tsx watch --env-file-if-exists=.env server/main.ts",
+    "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir && vite build --ssr server/gen/checkWorker.ts --outDir dist-server --emptyOutDir false",
     "start": "node dist-server/main.js",
     "admin": "tsx server/admin.ts",
     "gen": "tsx --env-file-if-exists=.env server/gen/cli.ts"

@@ -1,8 +1,9 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import type { MapData } from '../../src/world/maps/MapFormat';
+import type { MapData, Piece } from '../../src/world/maps/MapFormat';
 import { checkGenerated, type CheckResult } from './check';
 import type { GenConfig } from './config';
 import { GenError, type Llm } from './llm';
+import { PartialMapReader, type MapHead } from './partial';
 import {
   BriefSchema,
   CritiqueSchema,
@@ -39,11 +40,23 @@ export interface GenEvent {
   problems?: string[];
 }
 
+/**
+ * The map as it is being built, for showing it live. `start` begins a streamed attempt (the
+ * viewer clears and starts again), `piece` adds one piece as the model writes it, and `map`
+ * is the checked, tidied map after each check (replace what is shown with it).
+ */
+export type BuildEvent =
+  | { type: 'start'; stage: 'draft' | 'repair'; head: MapHead }
+  | { type: 'piece'; index: number; piece: Piece }
+  | { type: 'map'; map: MapData; ok: boolean };
+
 export interface GenDeps {
   /** Already wrapped in a `BudgetedLlm` by the caller. */
   llm: Llm;
   config: GenConfig;
   emit?: (event: GenEvent) => void;
+  /** Receives the map piece by piece as the model writes it. Streaming is only requested when this is set. */
+  onPartial?: (event: BuildEvent) => void;
   signal?: AbortSignal;
   /** Replaceable in tests; the default builds the map headless. */
   check?: (map: MapData) => Promise<CheckResult>;
@@ -88,6 +101,15 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
   const { llm, config } = deps;
   const check = deps.check ?? checkGenerated;
   const emit = (e: GenEvent) => deps.emit?.(e);
+  /** A text callback that turns the growing answer into build events, or nothing when nobody is watching. */
+  const streamTo = (stage: 'draft' | 'repair'): ((snapshot: string) => void) | undefined => {
+    const onPartial = deps.onPartial;
+    if (!onPartial) return undefined;
+    const reader = new PartialMapReader();
+    return (snapshot) => {
+      for (const e of reader.feed(snapshot)) onPartial(e.type === 'start' ? { ...e, stage } : e);
+    };
+  };
   const step = (node: GenEvent['node']) => {
     if (deps.signal?.aborted) throw new GenError('aborted', 'The generation was cancelled.');
     return node;
@@ -136,6 +158,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
       effort: config.draft.effort,
       maxTokens: config.draft.maxTokens,
       signal: deps.signal,
+      onText: streamTo('draft'),
     });
     return { wire: r.value, attempt: s.attempt + 1 };
   };
@@ -148,6 +171,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     const problems = [...converted.problems, ...r.problems];
     const ok = r.ok && converted.problems.length === 0;
     const closest = !ok && (!s.closest || problems.length < s.closest.problems.length) ? { map: r.map, problems } : s.closest;
+    deps.onPartial?.({ type: 'map', map: r.map, ok });
     emit({ node: 'check', message: ok ? `The map builds${r.buildMs !== undefined ? ` (${r.buildMs} ms)` : ''}` : `${problems.length} problem${problems.length === 1 ? '' : 's'} found`, problems });
     return {
       map: r.map,
@@ -175,6 +199,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
         effort: config.draft.effort,
         maxTokens: config.draft.maxTokens,
         signal: deps.signal,
+        onText: streamTo('repair'),
       }),
     );
     if (r === 'budget') return { stoppedBy: 'budget' };

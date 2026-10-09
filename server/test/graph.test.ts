@@ -6,10 +6,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILT_IN_MAPS } from '../../src/editor/templates';
 import { loadConfig } from '../gen/config';
-import { generateMap, type GenEvent } from '../gen/graph';
+import { generateMap, type BuildEvent, type GenEvent } from '../gen/graph';
 import { AnthropicLlm, BudgetedLlm, GenError, type AnthropicLike } from '../gen/llm';
 import type { Brief } from '../gen/prompts';
-import { WireMapSchema, toWire, type WireMap } from '../gen/wire';
+import { PartialMapReader } from '../gen/partial';
+import { WireMapSchema, pieceFromWire, toWire, type WireMap } from '../gen/wire';
 import { FakeLlm } from './fakeLlm';
 
 const highwire = () => BUILT_IN_MAPS[0].data();
@@ -236,4 +237,57 @@ for (const [stop, code] of [
 test('AnthropicLlm rejects an answer that does not match the structure', async () => {
   const bad = reply({ content: [{ type: 'text', text: '{"name":"x"}' }] });
   await assert.rejects(new AnthropicLlm(fakeClient(bad)).generate(draftReq), (e: unknown) => e instanceof GenError && e.code === 'bad-output');
+});
+
+// --- live building: the map as it is being written -------------------------------------------
+
+test('PartialMapReader yields the header once and each piece as it completes, however the text is cut', () => {
+  const w = good();
+  w.hint = 'Mind the {braces}, "quotes", a \ backslash and a ] bracket.';
+  w.pieces.find((p) => p.type === 'spikes')!.params.push({ key: 'id', value: 'a}b"c' });
+  const text = JSON.stringify(w);
+  for (const step of [1, 7, 64, text.length]) {
+    const reader = new PartialMapReader();
+    const events = [];
+    for (let n = step; n < text.length + step; n += step) events.push(...reader.feed(text.slice(0, n)));
+    const starts = events.filter((e) => e.type === 'start');
+    const pieces = events.filter((e): e is Extract<typeof e, { type: 'piece' }> => e.type === 'piece');
+    assert.equal(starts.length, 1, `chunk ${step}: one start`);
+    assert.equal((starts[0] as { head: { name: string } }).head.name, 'Highwire');
+    assert.deepEqual(
+      pieces.map((e) => e.index),
+      w.pieces.map((_, i) => i),
+      `chunk ${step}: every piece, in order`,
+    );
+    assert.deepEqual(
+      pieces.map((e) => e.piece),
+      w.pieces.map((p, i) => pieceFromWire(p, i).piece),
+      `chunk ${step}: same pieces as the final conversion`,
+    );
+  }
+});
+
+test('PartialMapReader says nothing about text it cannot read', () => {
+  assert.deepEqual(new PartialMapReader().feed('{"name":"x","hint'), []);
+  assert.deepEqual(new PartialMapReader().feed('not json at all "pieces":[{'), []);
+  assert.deepEqual(new PartialMapReader().feed('{"name":1,"pieces":[{"type":"block"}]}'), [], 'a header that does not match the schema');
+});
+
+test('build events: pieces stream in, then the checked map; a repair starts a new streamed attempt', async () => {
+  const cfg = config();
+  const llm = new FakeLlm({ brief: [brief()], draft: [broken()], repair: [good()] });
+  const seen: BuildEvent[] = [];
+  const outcome = await generateMap(request, { llm: new BudgetedLlm(llm, cfg), config: cfg, onPartial: (e) => seen.push(e) });
+  assert.equal(outcome.ok, true);
+  const shape = seen.map((e) => (e.type === 'start' ? `start:${e.stage}` : e.type === 'map' ? `map:${e.ok}` : 'piece'));
+  const compact = shape.filter((s, i) => s !== 'piece' || shape[i - 1] !== 'piece');
+  assert.deepEqual(compact, ['start:draft', 'piece', 'map:false', 'start:repair', 'piece', 'map:true']);
+  assert.equal(seen.filter((e) => e.type === 'piece').length, broken().pieces.length + good().pieces.length);
+  const finalMap = [...seen].reverse().find((e) => e.type === 'map')!;
+  assert.equal(finalMap.type === 'map' && finalMap.map.pieces.length, highwire().pieces.length);
+});
+
+test('nothing is streamed (no onText) when nobody is watching', async () => {
+  const { llm } = await run({ brief: [brief()], draft: [good()] });
+  assert.ok(llm.requests.every((r) => r.onText === undefined));
 });

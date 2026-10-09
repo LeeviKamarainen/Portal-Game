@@ -9,8 +9,11 @@
  *   COOKIE_SECURE=1         mark the login cookie Secure: set it when the site is served over https
  *   TRUST_PROXY=1           behind one reverse proxy (Caddy): take the client address from X-Forwarded-For
  *   REGISTRATION=closed     no new accounts (the admin tool still makes them)
+ *   ANTHROPIC_API_KEY=...   turns on the AI map generator (/api/generate); without it the endpoint answers 503
+ *                           (limits and model ids: server/gen/config.ts, GEN_* variables)
  *
- * Accounts: /api/... (server/auth/AuthApi.ts), saved maps: /api/maps (MapApi.ts); the admin tool is server/admin.ts.
+ * Accounts: /api/... (server/auth/AuthApi.ts), saved maps: /api/maps (MapApi.ts), the map generator:
+ * /api/generate (server/gen/GenerateApi.ts); the admin tool is server/admin.ts.
  */
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -25,6 +28,11 @@ import { AuthApi } from './auth/AuthApi';
 import { MapApi } from './auth/MapApi';
 import { SqliteStore } from './store/SqliteStore';
 import type { Store } from './store/Store';
+import { CheckWorker } from './gen/checkPool';
+import { loadConfig, type GenConfig } from './gen/config';
+import { GenerateApi } from './gen/GenerateApi';
+import { JobManager } from './gen/JobManager';
+import { AnthropicLlm, type Llm } from './gen/llm';
 
 /** Rooms created or joined per address per minute. */
 const JOIN_LIMIT = 30;
@@ -58,8 +66,15 @@ export interface ServerOptions {
   trustProxy?: boolean;
   /** Whether new accounts may register (default true). */
   registrationOpen?: boolean;
+  /**
+   * The AI map generator. `llm` makes the model client for one generation (null or absent: the
+   * generator is off); tests pass a fake. `check` replaces the worker-thread map check.
+   */
+  generator?: { llm: (() => Llm) | null; config?: GenConfig; check?: JobManagerCheck };
   log?: (line: string) => void;
 }
+
+type JobManagerCheck = NonNullable<ConstructorParameters<typeof JobManager>[0]['check']>;
 
 export interface RunningServer {
   port: number;
@@ -95,9 +110,20 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     log,
   });
   const maps = new MapApi({ store, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
+  // Generated maps are built to check them, which takes up to ~100 ms: on a worker thread, not the one stepping the rooms.
+  const checker = options.generator?.check ? null : new CheckWorker(log);
+  const jobs = new JobManager({
+    store,
+    llm: options.generator?.llm ?? null,
+    config: options.generator?.config ?? loadConfig(),
+    check: options.generator?.check ?? checker!.check,
+    log,
+  });
+  const generate = new GenerateApi({ jobs, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
   const housekeeping = setInterval(() => {
     auth.sweep();
     maps.sweep();
+    jobs.sweep();
   }, 600_000);
 
   const http: Server = createServer((req, res) => {
@@ -110,6 +136,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       }
       if (url.pathname === '/api/maps' || url.pathname.startsWith('/api/maps/')) {
         await maps.handle(req, res, url);
+        return;
+      }
+      if (url.pathname === '/api/generate' || url.pathname.startsWith('/api/generate/')) {
+        await generate.handle(req, res, url);
         return;
       }
       if (url.pathname.startsWith('/api/')) {
@@ -246,6 +276,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       clearInterval(heartbeat);
       clearInterval(stats);
       clearInterval(housekeeping);
+      await jobs.shutdown();
+      await checker?.dispose();
       loop.stop();
       for (const ws of wss.clients) ws.terminate();
       wss.close();
@@ -269,5 +301,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     secureCookies: process.env.COOKIE_SECURE === '1',
     trustProxy: process.env.TRUST_PROXY === '1',
     registrationOpen: process.env.REGISTRATION !== 'closed',
+    generator: { llm: process.env.ANTHROPIC_API_KEY ? () => new AnthropicLlm() : null },
   });
 }

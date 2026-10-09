@@ -35,6 +35,8 @@ export interface LlmRequest<T> {
   effort: Effort;
   maxTokens: number;
   signal?: AbortSignal;
+  /** Called with the whole answer text so far each time more arrives (for showing progress). */
+  onText?: (snapshot: string) => void;
 }
 
 export interface LlmResult<T> {
@@ -74,19 +76,20 @@ export class AnthropicLlm implements Llm {
   async generate<T>(req: LlmRequest<T>): Promise<LlmResult<T>> {
     let message: Anthropic.Message;
     try {
-      message = await this.client.messages
-        .stream(
-          {
-            model: req.model,
-            max_tokens: req.maxTokens,
-            ...(req.thinking === 'off' ? { thinking: { type: 'disabled' as const } } : {}),
-            output_config: { effort: req.effort, format: zodOutputFormat(req.schema) },
-            system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
-            messages: [{ role: 'user', content: req.user }],
-          },
-          { signal: req.signal },
-        )
-        .finalMessage();
+      const stream = this.client.messages.stream(
+        {
+          model: req.model,
+          max_tokens: req.maxTokens,
+          ...(req.thinking === 'off' ? { thinking: { type: 'disabled' as const } } : {}),
+          output_config: { effort: req.effort, format: zodOutputFormat(req.schema) },
+          system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+          messages: [{ role: 'user', content: req.user }],
+        },
+        { signal: req.signal },
+      );
+      const onText = req.onText;
+      if (onText) stream.on('text', (_delta, snapshot) => onText(snapshot));
+      message = await stream.finalMessage();
     } catch (e) {
       if (e instanceof Anthropic.APIUserAbortError || req.signal?.aborted) throw new GenError('aborted', 'The generation was cancelled.');
       if (e instanceof Anthropic.APIError) throw new GenError('api', `The model service answered ${e.status ?? 'with an error'}: ${e.message}`);
