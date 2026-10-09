@@ -31,3 +31,6 @@ data/
 .env
 .env.*
 !.env.example
+
+# Generated maps from "npm run gen"
+generated/

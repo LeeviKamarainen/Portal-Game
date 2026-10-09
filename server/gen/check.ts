@@ -26,6 +26,8 @@ const fmt = (v: ArrayLike<number>) => `[${Array.from(v).map(r2).join(', ')}]`;
 const clean = (s: unknown, max: number) => String(s ?? '').replace(/[<>\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
 const KEPT_KEYS = new Set(['type', 'at', 'size', 'rot', 'center']);
+/** The hazards a switch can set off (the ones that take an id). */
+const TARGETABLE = ['spikes', 'trapdoor', 'crusher', 'ram'];
 
 export interface AutofixResult {
   map: MapData;
@@ -101,7 +103,28 @@ export function autofix(input: MapData): AutofixResult {
       else p.rot = rot;
     }
     if (p.center === false) delete p.center;
+    if (p.type === 'dropper' && isVec3(p.at) && isNum(p.ceiling) && p.ceiling <= p.at[1]) {
+      note(`${where}: ceiling ${p.ceiling} was not above the drop point; set ${r2(p.at[1] + 1)}`);
+      p.ceiling = r2(p.at[1] + 1);
+    }
   });
+
+  // A switch can only set off hazards that exist; drop the ids that point at nothing, and a
+  // trigger switch left with no target does nothing at all, so it goes too.
+  const targetable = new Set(map.pieces.filter((p) => TARGETABLE.includes(p.type) && typeof p.id === 'string' && p.id).map((p) => p.id as string));
+  const reachable = (id: string) => targetable.has(id) || targetable.has(id.replace(/~+$/, ''));
+  const dropped = new Set<number>();
+  map.pieces.forEach((p, i) => {
+    if (p.type !== 'switch' || !Array.isArray(p.targets)) return;
+    const kept = (p.targets as unknown[]).filter((t): t is string => typeof t === 'string' && reachable(t));
+    if (kept.length === (p.targets as unknown[]).length) return;
+    note(`piece #${i} (switch): removed target${(p.targets as unknown[]).length - kept.length === 1 ? '' : 's'} that no spikes, trapdoor, crusher or ram has as id`);
+    if (kept.length === 0 && (p.effect ?? 'trigger') === 'trigger') {
+      dropped.add(i);
+      note(`piece #${i} (switch): removed, it had nothing left to set off`);
+    } else p.targets = kept;
+  });
+  if (dropped.size) map.pieces = map.pieces.filter((_, i) => !dropped.has(i));
 
   const room = map.pieces.find((p) => p.type === 'room');
   if (room && isVec3(room.at) && !map.pieces.some((p) => p.type === 'lights')) {
@@ -143,6 +166,69 @@ function fieldProblem(f: FieldSpec, v: unknown): string | null {
       return Array.isArray(v) && v.every((x) => ok.includes(x)) ? null : `must be a list of ${ok.join(', ')}`;
     }
   }
+}
+
+/** The floors and blocks a player can stand on or run into, from the placed (symmetry-expanded) pieces. */
+function solidsOf(map: MapData, placed: Piece[]): Solid[] {
+  const solids: Solid[] = [];
+  const roomPiece = map.pieces.find((p) => p.type === 'room');
+  if (roomPiece && isVec3(roomPiece.at)) {
+    const r = withDefaults(roomPiece);
+    if (isVec3(r.size) && !(r.skip as string[] | undefined)?.includes('floor'))
+      solids.push({ type: 'room floor', minX: r.at[0] - r.size[0] / 2, maxX: r.at[0] + r.size[0] / 2, minZ: r.at[2] - r.size[2] / 2, maxZ: r.at[2] + r.size[2] / 2, bottom: r.at[1] - 1, top: r.at[1], stairs: false });
+  }
+  for (const p of placed) {
+    if (!['block', 'portal-wall', 'wall', 'floor', 'stairs'].includes(p.type) || !isVec3(p.size) || (p.rot ?? 0) % 90 !== 0) continue;
+    const { min, max } = footprint(p);
+    solids.push({ type: p.type, minX: min.x, maxX: max.x, minZ: min.z, maxZ: max.z, bottom: min.y, top: max.y, stairs: p.type === 'stairs' });
+  }
+  return solids;
+}
+
+const MAX_DROP = 30;
+/** Space a standing player needs above a spawn or goal (the capsule is 2 m tall). */
+const HEADROOM = 2.2;
+
+/**
+ * Puts spawns and goals on the surface they plainly belong to: one buried in a block is lifted
+ * to the top of it (and again if that lands inside the next block up), one hanging in the air
+ * drops onto the highest surface below it. Models get this wrong constantly and the answer is
+ * unambiguous, so it is fixed here instead of costing a repair call. Only the written pieces
+ * move; a mirrored copy follows its original, and one that is still wrong is left to `lint`.
+ */
+export function fixSupport(input: MapData): AutofixResult {
+  const map = structuredClone(input);
+  const fixes: string[] = [];
+  if (!Array.isArray(map.pieces) || map.pieces.some((p) => !PIECES[p.type] || !isVec3(p.at))) return { map, fixes };
+  let placed: Piece[];
+  try {
+    placed = expandPieces(map);
+  } catch {
+    return { map, fixes };
+  }
+  const solids = solidsOf(map, placed);
+  map.pieces.forEach((p, i) => {
+    if (p.type !== 'spawn' && p.type !== 'goal') return;
+    const [x, y0, z] = p.at;
+    let y = y0;
+    for (let n = 0; n < 8; n++) {
+      const under = solids.filter((s) => inside(s, x, z));
+      const buried = under.filter((s) => !s.stairs && s.bottom < y + 1.8 && s.top > y + 0.15);
+      if (buried.length) {
+        y = Math.max(...buried.map((s) => s.top));
+        continue;
+      }
+      if (under.some((s) => (s.stairs ? y >= s.bottom - 0.15 && y <= s.top + 0.15 : Math.abs(s.top - y) <= 0.15))) break;
+      const below = under.filter((s) => !s.stairs && s.top <= y + 0.15 && y - s.top <= MAX_DROP).sort((a, b) => b.top - a.top)[0];
+      if (!below) break;
+      y = below.top;
+    }
+    if (r2(y) !== r2(y0)) {
+      p.at = [x, r2(y), z];
+      fixes.push(`piece #${i} (${p.type}) at x=${r2(x)}, z=${r2(z)} moved from y=${r2(y0)} to y=${r2(y)} so it stands on a surface`);
+    }
+  });
+  return { map, fixes };
 }
 
 /** What is wrong with `map`, in words a model can act on. Empty means it passed. No building: see `buildCheck`. */
@@ -226,18 +312,19 @@ export function lint(map: MapData): string[] {
     }
     if (p.type === 'dropper' && isNum(p.ceiling) && p.ceiling <= p.at[1]) add(`piece #${i} (dropper) at ${fmt(p.at)}: ceiling ${p.ceiling} must be above the drop point (y ${p.at[1]}).`);
   });
+  // A door opens while its receiver is lit, so a receiver with that id has to exist.
+  const receivers = new Set(map.pieces.filter((p) => p.type === 'receiver').map((p) => String(withDefaults(p).id ?? '')));
+  map.pieces.forEach((raw, i) => {
+    if (raw.type !== 'door') return;
+    const id = String(withDefaults(raw).receiver ?? '');
+    if (!receivers.has(id) && !receivers.has(id.replace(/~+$/, '')))
+      add(`piece #${i} (door) at ${fmt(raw.at)}: no receiver piece has the id "${id}"${receivers.size ? ` (receivers: ${[...receivers].join(', ')})` : '; add a receiver piece lit by a laser'}.`);
+  });
 
-  // 4. Spawns and goals against the floor under them.
-  const solids: Solid[] = [];
-  if (bounds && !(roomPiece!.skip as string[] | undefined)?.includes('floor'))
-    solids.push({ type: 'room floor', minX: bounds.minX, maxX: bounds.maxX, minZ: bounds.minZ, maxZ: bounds.maxZ, bottom: bounds.minY - 1, top: bounds.minY, stairs: false });
-  // `placed` includes the mirrored copies of a symmetric map, so they count as solids too.
+  // 4. Spawns and goals against the floor under them. `placed` includes the mirrored copies of a
+  // symmetric map, so they count as solids too.
   const placed = expandPieces(map);
-  for (const p of placed) {
-    if (!['block', 'portal-wall', 'wall', 'floor', 'stairs'].includes(p.type) || !isVec3(p.size) || (p.rot ?? 0) % 90 !== 0) continue;
-    const { min, max } = footprint(p);
-    solids.push({ type: p.type, minX: min.x, maxX: max.x, minZ: min.z, maxZ: max.z, bottom: min.y, top: max.y, stairs: p.type === 'stairs' });
-  }
+  const solids = solidsOf(map, placed);
   const spawns = placed.filter((p) => p.type === 'spawn');
   const goals = placed.filter((p) => p.type === 'goal');
   const standing = (p: Piece, label: string) => {
@@ -245,6 +332,8 @@ export function lint(map: MapData): string[] {
     const under = solids.filter((s) => inside(s, x, z));
     const supported = under.some((s) => (s.stairs ? y >= s.bottom - 0.15 && y <= s.top + 0.15 : Math.abs(s.top - y) <= 0.15));
     const buried = under.find((s) => !s.stairs && s.bottom < y + 1.8 && s.top > y + 0.15);
+    if (bounds && y + HEADROOM > bounds.maxY + 1e-6)
+      add(`${label} at ${fmt(p.at)} has no headroom: the room ceiling is at y=${r2(bounds.maxY)} and a player needs ${HEADROOM} m; lower what it stands on or raise the room.`);
     if (buried) add(`${label} at ${fmt(p.at)} is inside a ${buried.type} that rises to y=${r2(buried.top)}; raise it to y=${r2(buried.top)} or move it.`);
     else if (!supported) {
       const below = under.filter((s) => s.top <= y + 0.15).sort((a, b) => b.top - a.top)[0];
@@ -253,6 +342,12 @@ export function lint(map: MapData): string[] {
   };
   spawns.forEach((p) => standing(p, 'spawn'));
   goals.forEach((p) => standing(p, 'goal'));
+  for (const pool of placed.filter((p) => p.type === 'acid' && isVec3(p.size) && (p.rot ?? 0) % 90 === 0)) {
+    const { min, max } = footprint(pool);
+    for (const p of [...spawns, ...goals])
+      if (p.at[0] >= min.x && p.at[0] <= max.x && p.at[2] >= min.z && p.at[2] <= max.z && p.at[1] <= pool.at[1] + 0.5 && p.at[1] >= pool.at[1] - 6)
+        add(`${p.type} at ${fmt(p.at)} is in an acid pool (surface at y=${r2(pool.at[1])}); move it onto dry ground.`);
+  }
   for (let a = 0; a < spawns.length; a++)
     for (let b = a + 1; b < spawns.length; b++) {
       const [ax, ay, az] = spawns[a].at;
@@ -304,7 +399,10 @@ export interface CheckResult {
 
 /** Autofix, then lint, then (only when lint is clean) build. `ok` means it can be saved and played. */
 export async function checkGenerated(raw: MapData): Promise<CheckResult> {
-  const { map, fixes } = autofix(raw);
+  const tidy = autofix(raw);
+  const support = fixSupport(tidy.map);
+  const map = support.map;
+  const fixes = [...tidy.fixes, ...support.fixes];
   const size = mapProblem(map);
   if (size) return { ok: false, map, fixes, problems: [size] };
   const problems = [...new Set(lint(map))];

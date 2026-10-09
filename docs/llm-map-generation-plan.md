@@ -107,9 +107,25 @@ Puzzles are single-player and client-only (`mapCheck.ts:52`), so none of this to
   The schema compiled on the first call, and the prompt cache wrote 7.9K tokens then read them back on the next call. Takeaway: thinking is the main cost and latency; thinking off plus lint-driven repair looks like the cheapest path to a richer map, and the failures are the kind the lint explains precisely. To decide with the eval in milestone 2/7.
 - **Candidates for milestone 2:** an autofix that lifts a buried spawn onto the surface it is inside (the lint message already says where), and dropping duplicate spawns.
 
-### 2. Graph + CLI
-- [ ] `graph.ts` with fake models (broken then fixed output proves the repair loop).
-- [ ] `npm run gen -- "<prompt>" --out map.json` against real models, tried on both example prompts.
+### 2. Graph + CLI - *done 2026-10-10*
+- [x] **Graph** (`server/gen/graph.ts`): LangGraph.js `StateGraph` with `plan -> draft -> check -> (critique) -> repair loop -> finalize`, direct SDK calls inside the nodes. A node cannot share a state field's name in LangGraph, so the planning node is `plan` while its events and model calls are still labelled `brief`. Progress goes out through an `emit` callback (the events milestone 3 will stream). Stops: success, 3 model drafts, or the token budget; on a stop it returns the closest map and its problems, and a failed second opinion never loses an earlier passing map.
+- [x] **Model layer** (`server/gen/llm.ts`, `config.ts`): `Llm` interface, `AnthropicLlm` (streams, `thinking: disabled` by default, effort, JSON-schema output, cached system prompt, refusal/truncation/bad-output errors) and `BudgetedLlm` (a prompt over 100K tokens is never sent; the job's input + output + cache tokens over all calls stay under 100K, and each call's `max_tokens` is lowered to what is left). Models and thinking mode are env-overridable (`GEN_MODEL_DRAFT`, `GEN_DRAFT_THINKING`, ...); everything defaults to `claude-haiku-5-5`.
+- [x] **Prompts** (`server/gen/prompts.ts`): the big static prompt (catalogue + two worked examples, ~8.5K tokens, cached and shared by draft and every repair), a short planning prompt, and a review prompt.
+- [x] **CLI**: `npm run gen -- "<prompt>" [--out file.json] [--kind combat|puzzle] [--size small|medium|large] [--no-critique] [--thinking] [--effort low|medium|high]`. Prints each step, problems, notes, per-call tokens and an estimated cost. Output goes to `generated/` (gitignored).
+- [x] **Tests** (`server/test/graph.test.ts` + `fakeLlm.ts`, 19 tests, no model calls): happy path; repair loop with the problems and the previous map in the prompt; three bad drafts stop with the closest map; unknown wire parameters are problems; token budget stop; per-call limit; `max_tokens` clamping; review pass / one repair / no second review / earlier good map kept; skipping the review without requirements; cancellation; the Anthropic request shape. Full `npm run test:server`: 113 tests, 0 failures (the netplay "few corrections" test is timing-sensitive and failed once under parallel load, passing alone).
+- **Real runs** (`claude-haiku-5-5`, thinking off, effort low), after the fixes below:
+
+  | Prompt | Drafts | Time | Tokens | Cost (list) |
+  |---|---|---|---|---|
+  | "Pvp map with big height differences, floating platforms with hazards on each platform" | 2 | 22 s | 27.6K | ~$0.003 |
+  | "Copy puzzle map from Portal 1 stage 1" | 2 | 20 s | 26.3K | ~$0.003 |
+
+  The first attempts took 4 drafts, 45 s and ~$0.007, which is what drove the changes below.
+- **Learned and fixed along the way:**
+  - Haiku buries or floats spawns constantly, one slab at a time. `fixSupport` (autofix) now lifts a buried spawn/goal onto the surface it is inside, or drops a floating one onto the highest surface below, and reports it in `fixes`. It also repaired the shipped Shaft map in memory.
+  - More autofixes for mechanical mistakes: a dropper ceiling not above its drop point, switch targets that name no hazard (a trigger switch left with none is removed). New lints: spawn/goal in an acid pool, no headroom under the ceiling, a door whose receiver does not exist.
+  - The review step first judged things it cannot know (it asked for fidelity to the original Portal level and for hazards on platforms nobody asked about). Now the planner extracts explicit, countable `requirements` from the request, the review checks only those against a summary that lists each floating platform and the hazards on it, and with no requirements the review is skipped. It is still only as good as the planner's requirements: it asked for 3 on the Portal prompt, and the review then asked for 3 changes. The eval in milestone 7 decides whether the review earns its extra calls.
+- **Budget accounting decision to confirm:** the 100K job budget counts every token, including prompt-cache reads (8.5K per repair call). A typical job shows 26-58K "tokens" but costs under a cent because cache reads are billed at 10%. Counting cache reads at 10% would let jobs run longer for the same money; left strict for now.
 
 ### 3. Job API
 - [ ] `GenerateApi`, `JobManager`, SSE, gates, migration 1, tests (403 without the right, 429 over quota, cancel, SSE order, interrupted job).

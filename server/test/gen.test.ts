@@ -9,7 +9,8 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { BUILT_IN_MAPS, blankMap, blankPuzzle } from '../../src/editor/templates';
 import { PIECES, expandPieces, type MapData } from '../../src/world/maps/MapFormat';
 import { buildCatalogue, renderExample } from '../gen/catalogue';
-import { autofix, checkGenerated, lint } from '../gen/check';
+import { autofix, checkGenerated, fixSupport, lint } from '../gen/check';
+import { summarizeMap } from '../gen/prompts';
 import { WireMapSchema, fromWire, toWire } from '../gen/wire';
 
 const maps = BUILT_IN_MAPS.map((m) => ({ label: m.label, data: m.data() }));
@@ -73,24 +74,22 @@ test('the catalogue lists every piece type, and is stable between calls', () => 
 });
 
 /**
- * Shipped maps the lint rightly rejects. Shaft's spawns at (+-10, 0, 14) mirror to (-+10, 0, -14),
- * which is inside the 6 m blocks at (+-12, 0, -12): the pads are buried. When the map is fixed
- * this test fails, which is the cue to delete the entry.
+ * Shipped maps that need a fix to pass. Shaft's spawns at (+-10, 0, 14) mirror to (-+10, 0, -14),
+ * which is inside the 6 m blocks at (+-12, 0, -12): the pads are buried, and the support autofix
+ * lifts them onto the blocks (y=6). When the map file itself is fixed this test fails, which is
+ * the cue to delete the entry.
  */
-const KNOWN_BAD: Record<string, RegExp> = { 'Shaft (PvP)': /spawn at \[-?10, 0, -?14\] is inside a block/ };
+const KNOWN_FIXED: Record<string, RegExp> = { 'Shaft (PvP)': /\(spawn\) at x=-?10, z=14 moved from y=0 to y=6/ };
 
 // Hand-made maps that ship with the game are valid by definition: the checks must accept them.
 for (const { label, data } of maps) {
   test(`checkGenerated accepts ${label}`, async () => {
     const r = await checkGenerated(data);
-    const known = KNOWN_BAD[label];
-    if (known) {
-      assert.equal(r.ok, false, `${label} now passes: remove it from KNOWN_BAD`);
-      assert.match(r.problems.join('\n'), known);
-      return;
-    }
     assert.deepEqual(r.problems, [], `${label}: ${r.problems.join(' | ')}`);
     assert.equal(r.ok, true);
+    const known = KNOWN_FIXED[label];
+    if (known) assert.match(r.fixes.join('\n'), known, `${label} needs no fix any more: remove it from KNOWN_FIXED`);
+    else assert.deepEqual(r.fixes, [], `${label} should need no fixes`);
     console.log(`${label}: ok, build ${r.buildMs} ms, ${r.fixes.length} fixes`);
   });
 }
@@ -112,18 +111,80 @@ test('autofix: rounds, snaps quarter turns, drops unknown parameters, adds light
   assert.match(fixes.join('\n'), /added ceiling lights/);
 });
 
+test('a spawn hanging in the air is dropped onto the surface below, and the fix is reported', async () => {
+  const m = highwire();
+  m.pieces.push({ type: 'spawn', at: [-8, 30, 34] });
+  const r = await checkGenerated(m);
+  assert.equal(r.ok, true, r.problems.join(' | '));
+  assert.deepEqual(r.map.pieces[r.map.pieces.length - 1].at, [-8, 8, 34]);
+  assert.match(r.fixes.join('\n'), /\(spawn\) at x=-8, z=34 moved from y=30 to y=8/);
+});
+
+test('a spawn buried in a block is lifted to the top of it', async () => {
+  const m = highwire();
+  m.pieces.push({ type: 'spawn', at: [0, 5, 0], center: true });
+  const r = await checkGenerated(m);
+  assert.equal(r.ok, true, r.problems.join(' | '));
+  assert.deepEqual(r.map.pieces[r.map.pieces.length - 1].at, [0, 16, 0]);
+});
+
+test('a goal gets the same treatment, and a spawn already on its surface is left alone', () => {
+  const m = blankPuzzle();
+  m.pieces = m.pieces.map((p) => (p.type === 'goal' ? { ...p, at: [0, 2, -10] as [number, number, number] } : p));
+  const fixed = fixSupport(m);
+  assert.deepEqual(fixed.map.pieces.find((p) => p.type === 'goal')!.at, [0, 0, -10]);
+  assert.equal(fixed.fixes.length, 1, 'only the goal moved');
+});
+
+test('autofix removes switch targets that point at nothing, and a trigger switch left with none', async () => {
+  const m = highwire();
+  m.pieces.push(
+    { type: 'switch', at: [0, 12, 4], rot: 180, effect: 'trigger', targets: ['trap', 'ghost'] },
+    { type: 'switch', at: [2, 12, 4], rot: 180, effect: 'trigger', targets: ['laserkill'] },
+    { type: 'switch', at: [-2, 12, 4], rot: 180, effect: 'portals', cooldown: 20 },
+  );
+  const before = m.pieces.length;
+  const r = await checkGenerated(m);
+  assert.equal(r.ok, true, r.problems.join(' | '));
+  assert.equal(r.map.pieces.length, before - 1, 'only the switch with nothing left went');
+  assert.deepEqual(r.map.pieces[before - 3].targets, ['trap']);
+  assert.match(r.fixes.join('\n'), /piece #\d+ \(switch\): removed, it had nothing left to set off/);
+});
+
+test('autofix lifts a dropper ceiling that is not above the drop point', () => {
+  const m = highwire();
+  m.pieces.push({ type: 'dropper', at: [0, 13, 0], ceiling: 13 });
+  const { map, fixes } = autofix(m);
+  assert.equal(map.pieces[map.pieces.length - 1].ceiling, 14);
+  assert.match(fixes.join('\n'), /dropper\): ceiling 13 was not above the drop point; set 14/);
+});
+
+test('the review summary says which floating platforms carry a hazard', () => {
+  const m = blankMap();
+  m.pieces.push({ type: 'floor', at: [10, 5, 10], size: [6, 0.4, 6] }, { type: 'spikes', at: [10, 5.4, 10], size: [2, 0, 2] }, { type: 'floor', at: [-10, 5, 10], size: [6, 0.4, 6] });
+  const text = summarizeMap(m);
+  assert.match(text, /Floating surfaces, clear of the floor \(2\):/);
+  assert.match(text, /floor at \[10, 5, 10\], top y=5\.4: spikes/);
+  assert.match(text, /floor at \[-10, 5, 10\], top y=5\.4: no hazard/);
+});
+
 /** Each case breaks a shipped map in one way and names the words the problem must contain. */
 const BROKEN: { name: string; make: () => MapData; expect: RegExp; build?: true }[] = [
   { name: 'unknown piece type', make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'turret', at: [0, 0, 0] }] }), expect: /unknown piece type/ },
   {
-    name: 'a spawn floating above the floor',
-    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'spawn', at: [-16, 30, 34] }] }),
-    expect: /spawn at \[-16, 30, 34\] has no floor under it/,
+    name: 'a spawn with nothing below it',
+    make: () => ({ ...blankMap(), pieces: blankMap().pieces.map((p) => (p.type === 'room' ? { ...p, skip: ['floor'] } : p)) }),
+    expect: /spawn at \[0, 0, 20\] has no floor under it \(nothing below it\)/,
   },
   {
-    name: 'a spawn inside a block',
-    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'spawn', at: [0, 5, 0], center: true }] }),
-    expect: /spawn at \[0, 5, 0\] is inside a block/,
+    name: 'a spawn in the acid',
+    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'spawn', at: [6, -0.6, 6], center: true }] }),
+    expect: /spawn at \[6, -2\.4, 6\] is in an acid pool/,
+  },
+  {
+    name: 'a goal with no headroom under the ceiling',
+    make: () => ({ ...blankPuzzle(), pieces: blankPuzzle().pieces.map((p) => (p.type === 'room' ? { ...p, size: [20, 2, 28] as [number, number, number] } : p)) }),
+    expect: /goal at \[0, 0, -10\] has no headroom: the room ceiling is at y=2/,
   },
   {
     name: 'a piece outside the room',
@@ -166,10 +227,14 @@ const BROKEN: { name: string; make: () => MapData; expect: RegExp; build?: true 
     expect: /centred at \[5, 0, 0\]/,
   },
   {
-    name: 'a switch aimed at nothing',
-    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'switch', at: [0, 12, 4], rot: 180, effect: 'trigger', targets: ['ghost'] }] }),
-    expect: /nothing with id "ghost"/,
-    build: true,
+    name: 'a door with no receiver',
+    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'door', at: [0, 0, 5], receiver: 'ghost' }] }),
+    expect: /\(door\) at \[0, 0, 5\]: no receiver piece has the id "ghost"/,
+  },
+  {
+    name: 'a parameter of the wrong type',
+    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'laser', at: [0, 5, 0], pitch: 'up' }] }),
+    expect: /parameter "pitch" must be a number/,
   },
 ];
 
@@ -183,5 +248,5 @@ for (const c of BROKEN) {
 }
 
 test('lint does not report a clean shipped map', () => {
-  for (const { label, data } of maps) if (!KNOWN_BAD[label]) assert.deepEqual(lint(autofix(data).map), [], label);
+  for (const { label, data } of maps) assert.deepEqual(lint(fixSupport(autofix(data).map).map), [], label);
 });
