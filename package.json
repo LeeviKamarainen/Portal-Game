@@ -22,8 +22,10 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "@dimforge/rapier3d-compat": "^0.20.0",
     "three": "^0.185.1",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   }
 }

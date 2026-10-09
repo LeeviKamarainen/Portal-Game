@@ -17,7 +17,7 @@ Users describe a map in words ("PvP map with big height differences, floating pl
 | Topic | Decision |
 |---|---|
 | Orchestration | **LangGraph.js** inside the existing Node server. Microsoft Agent Framework was considered and dropped: it has .NET and Python (and Go preview) SDKs, no JS/TS. A Python sidecar was rejected (second deploy, validation would be re-implemented). |
-| LLM hosting | **Azure AI Foundry** model deployments via the OpenAI-compatible `/openai/v1/` endpoint. Deployment names come from env, none hard-coded. |
+| LLM provider | **Anthropic API** (`@anthropic-ai/sdk`) for now, changed 2026-10-09 because Azure AI Foundry quota is not available. Claude on Foundry (`@anthropic-ai/foundry-sdk`) or other Foundry models stay a later swap behind a thin model interface in `server/gen/llm.ts`. Model ids come from env, none hard-coded in nodes. |
 | Scope v1 | Combat and puzzle maps. |
 | Delivery | Job + streamed progress (SSE), not one blocking request. |
 | Access | Existing `generate-maps` right (declared in `accounts.ts:15`, not yet enforced anywhere). |
@@ -34,14 +34,26 @@ START -> brief -> draft -> check --ok--> critique --ok--> finalize -> END
                     +------------ repair (max 3 attempts) <-+
 ```
 
-- **brief** (fast model, structured output): kind, size, height tiers, hazard plan, symmetry; for "recreate X" requests, how the original's mechanics map onto ours, reported to the user as notes.
-- **draft** (strong model, structured output): full `MapData`. Prompt is built from `PIECES` (help, fields, defaults), the coordinate conventions, player/jump numbers, and few-shot maps, so it cannot drift from the code. Static content first for prompt caching.
+- **brief** (`claude-haiku-5-5`, structured output): kind, size, height tiers, hazard plan, symmetry; for "recreate X" requests, how the original's mechanics map onto ours, reported to the user as notes.
+- **draft** (`claude-haiku-5-5`, structured output, streamed): the whole map in the wire format of `server/gen/wire.ts` (see milestone 1), converted to `MapData` by `fromWire`. Prompt is built from `PIECES` (help, fields, defaults), the coordinate conventions, player/jump numbers, and few-shot maps, so it cannot drift from the code. Static content first, with `cache_control`, so repeat calls pay ~10% for the big prefix.
 - **check** (no LLM): zod schema from `PIECES`, deterministic autofix (snap to 0.5 m, clamp into the room, add missing room/lights), `mapProblem`, `mapToArena` + headless build (`checkMap` for combat, new `checkPuzzle` for puzzles), lints (finite numbers, spawns on solid ground, spawn count/spread, exactly one goal for puzzles). Error text carries coordinates.
 - **repair**: previous JSON + numbered problems in, whole corrected map out.
-- **critique** (fast model): sees the brief and a compact summary of the map, not raw JSON; at most one extra repair loop.
+- **critique** (`claude-haiku-5-5`): sees the brief and a compact summary of the map, not raw JSON; at most one extra repair loop.
 - **finalize**: id, trimmed name/hint/blurb, markup stripped, notes attached.
 
-Foundry access: `ChatOpenAI` (fallback `AzureChatOpenAI`, then the `@azure/ai-projects` OpenAI client) with key auth in production (`fly secrets`) and Entra ID (`az login`) locally. The JS v1-endpoint + token-provider combination is unverified and is the first spike. Models are injectable so tests use fakes.
+Provider access: graph nodes call Claude through `@anthropic-ai/sdk`, either directly or via `@langchain/anthropic` (existence and fit to be checked at install; direct SDK calls inside nodes are the fallback). `ANTHROPIC_API_KEY` is server-only: `fly secrets` in production, a gitignored `.env` locally. API rules to respect on these models:
+- structured JSON comes from `output_config.format`;
+- Haiku 5.5 thinks adaptively by default; `disabled` is only allowed at effort `high` or below, and `budget_tokens` and non-default sampling values return a 400. Set `output_config.effort` explicitly per node (default is `medium`; `low` for `brief`/`critique`);
+- no temperature/top_p, no assistant prefill;
+- large outputs are streamed (`stream().finalMessage()`), which also feeds the progress events;
+- check `stop_reason` for `max_tokens` and `refusal` before using output (Haiku 5.5 has no server-side refusal fallback; a refusal fails the job with a clear message);
+- log `usage` (input, output, cache read/write) per call into `generation_jobs`.
+Models are injectable so tests use fakes. Switching to Claude on Microsoft Foundry later means swapping the client (`@anthropic-ai/foundry-sdk`) behind the same interface; model ids and any fallback behaviour would be re-checked then.
+
+**Cost rule (2026-10-09): Haiku 5.5 only, every call under 100K tokens.** Haiku 5.5 is $0.10 in / $0.50 out per million tokens for prompts up to 100K tokens, and $0.50 / $2.50 beyond that, so staying under 100K keeps every call in the cheap tier. Enforced in `llm.ts`, all values configurable:
+- **Per call:** prompt (input) tokens must stay under 100K. The static catalogue plus few-shot prefix is expected to be a few thousand tokens, so this is a guard against runaway repair history, checked with `messages.countTokens` or a conservative estimate before sending; over the limit the job fails (or drops to the best partial map) instead of sending. `max_tokens` is capped per node (proposal: 24K for `draft`/`repair`, 2K for `brief`/`critique`).
+- **Per job (interpretation to confirm):** total input + output tokens across all calls of one generation are also capped at 100K by `JobManager`; when the budget would be exceeded the loop stops and returns the best partial result with its remaining problems. With a ~10K prefix and ~15K map this allows roughly 3-4 `draft`/`repair` calls, so `attempt` limit stays 3 and the budget is the harder stop.
+- Haiku is weaker at 3D layout than the larger models, so expect more repair loops and simpler maps; the deterministic autofix and lints carry more of the load, and the eval (milestone 7) decides whether a larger model is ever worth the cost. The model id is an env setting per node, so changing it is one line.
 
 ## Server and client
 
@@ -68,13 +80,32 @@ Puzzles are single-player and client-only (`mapCheck.ts:52`), so none of this to
 ## Milestones
 
 ### 0. Spike + doc
-- [ ] **Foundry:** create the resource and two deployments (strong + fast).
-- [ ] **Node client:** key and Entra auth, `ChatOpenAI` on the v1 endpoint, structured output, abort signal. *Typing check done 2026-10-09:* `@langchain/openai` 1.6.2 takes the `openai` 7.31 `ClientOptions["apiKey"]`, which is `string | (() => Promise<string>)`, so an Entra token provider (`getBearerTokenProvider` from `@azure/identity`) fits without `AzureChatOpenAI`. Not yet run against a real endpoint (the local `az` login has expired).
+- [x] **Anthropic key** *(done 2026-10-09)*: key is in the gitignored `.env` at the project root; `.claude/settings.json` denies Claude Code reads of `.env`; `.env` is in `.gitignore` and `.dockerignore`. Still to do on the Console side: a spend limit.
+- [x] **Node client** *(done 2026-10-09)*: `@anthropic-ai/sdk` ^0.133 and `zod` ^4.6 added to `dependencies`. Spike run with `tsx --env-file=.env` against `claude-haiku-5-5`:
+  - streamed `messages.stream(...).finalMessage()` with `output_config: {effort: 'low', format: zodOutputFormat(schema)}` returned valid JSON that parsed against the zod schema (388 in / 139 out tokens, 3.6 s, content blocks were `["text"]` only, so no thinking text is returned by default);
+  - an `AbortSignal` cancelled a long generation with `APIUserAbortError` after 1.5 s;
+  - prompt caching works on Haiku 5.5: a ~14K-token static system prefix with `cache_control` wrote 14,416 tokens on the first call and read 14,416 from cache on the second (16 uncached input tokens). The real catalogue prefix will be cached the same way.
+  - Still open: `@langchain/anthropic` vs direct SDK calls inside the LangGraph nodes (decide when `graph.ts` is written; direct SDK calls are proven).
+- ~~Foundry resource and deployments~~ *(dropped 2026-10-09: no Foundry quota; revisit later. The `az` login on this machine had also expired. The earlier typing check showed `@langchain/openai` 1.6.2 accepts a token-provider function as `apiKey`, which is the route if OpenAI-compatible Foundry models are ever wanted.)*
 - [x] **Bundle** *(done 2026-10-09)*: the headless build runs in a `worker_threads` worker built as a second SSR bundle with `vite build --ssr <worker entry> --outDir dist-server --no-emptyOutDir` (so `build:server` becomes two commands, `--emptyOutDir` on the first only). Spike on Highwire: 118 ms cold, 30 ms warm, a bad map returns the same `nothing with id "nope"` error text, and a 16 ms timer on the main thread was at most ~15 ms late while it ran. The worker's imports are only `three`, `@dimforge/rapier3d-compat` and `node:worker_threads`, all already in `dependencies`, so the `--omit=dev` image has what it needs. Still to do: confirm in the Docker image, and decide the dev (`tsx`) path for the worker.
 - [x] **This doc.**
 
-### 1. Deterministic core (no LLM)
-- [ ] `catalogue.ts`, zod schema from `PIECES`, `check.ts` autofix + lints, tests with Highwire, `blankMap`, `blankPuzzle` and hand-broken maps.
+### 1. Deterministic core (no LLM) - *done 2026-10-09*
+- [x] **Wire format** (`server/gen/wire.ts`): the schema the model fills in. Anthropic structured outputs allow at most 24 optional fields and 16 union types per schema, `minItems` only 0 or 1, and no `maxItems`/tuples, so a schema with every piece parameter does not fit. Instead every field is required and a piece's own parameters are `{key, value}` string pairs, converted back with the catalogue's `FieldSpec` kinds (`fromWire` / `toWire`). The schema has 0 optional fields and 0 unions (asserted in a test) and the API accepted it. Round-trips all six built-in maps and templates exactly.
+- [x] **Catalogue prompt** (`server/gen/catalogue.ts`): built from `PIECES`, `MAP_KINDS`, face/side names and the player constants, so it follows the code. About 10K characters (~2.9K tokens), plus ~1.6K tokens for the Highwire example (`renderExample`). Byte-stable between calls (cache-friendly); a test asserts every piece type appears.
+- [x] **Checks** (`server/gen/check.ts`): `autofix` (round to 0.01, snap quarter-turn pieces, drop unknown parameters, fix kind/symmetry/fog/killY/id, strip markup from text, add ceiling lights), `lint` (unknown types, bad `at`/`size`/`rot`/parameter values, one room, pieces inside the room and not sticking through walls, unique ids, dropper ceiling, spawn and goal standing on a surface and not buried, spawn spacing, spawn count per kind, one goal for puzzles, symmetric room centred on the origin, every message with coordinates and a suggested fix), `buildCheck` (combat through the existing `checkMap`, puzzle through `ArenaSim.load(..., null)`), and `checkGenerated` chaining them (build only when lint is clean). Deviation from the earlier plan: positions are rounded to 0.01 m rather than snapped to 0.5 m, because shipped maps use values like 7.6 and snapping would break stacking.
+- [x] **Tests** (`server/test/gen.test.ts`, 29 tests, no model calls): wire limits and round trips, catalogue, `checkGenerated` accepting every shipped map, 12 deliberately broken maps each reporting the right problem. Full `npm run test:server`: 86 tests, 0 failures.
+- **Found on the way:** the shipped **Shaft** map has spawn pads buried inside blocks (its spawn at `(-10, 0, 14)` mirrors to `(10, 0, -14)`, inside the 6 m block at `(12, 0, -12)`). The lint rightly rejects it; it is listed in `KNOWN_BAD` in the test until the map is fixed. Highwire, Catwalk, Courtyard and both blank templates pass.
+- **First model drafts (milestone 2 input, one real call each, "pvp map with big height differences, floating platforms with hazards on each platform", `claude-haiku-5-5`, ~7.9K-token cached prefix):**
+
+  | Setting | Time | Output tokens | Result |
+  |---|---|---|---|
+  | effort `medium` (default thinking) | 47 s | 9.5K | 13 pieces, passed every check first time |
+  | effort `low` | 38 s | 7.9K | 18 pieces, 4 spawn problems (buried in a 2 m slab) |
+  | thinking disabled, effort `low` | 11 s | 2.3K (~$0.001) | 27 pieces, 8 spawn/placement problems |
+
+  The schema compiled on the first call, and the prompt cache wrote 7.9K tokens then read them back on the next call. Takeaway: thinking is the main cost and latency; thinking off plus lint-driven repair looks like the cheapest path to a richer map, and the failures are the kind the lint explains precisely. To decide with the eval in milestone 2/7.
+- **Candidates for milestone 2:** an autofix that lifts a buried spawn onto the surface it is inside (the lint message already says where), and dropping duplicate spawns.
 
 ### 2. Graph + CLI
 - [ ] `graph.ts` with fake models (broken then fixed output proves the repair loop).
@@ -98,14 +129,15 @@ Puzzles are single-player and client-only (`mapCheck.ts:52`), so none of this to
 - [ ] Convert 1-2 campaign puzzles (and a new plate/cube one) to JSON as few-shot; Portal substitution table; `checkPuzzle` + spawn-to-goal reachability lint (reuse `NavGraph` if it fits); "unverified" badge; critique tuning.
 
 ### 7. Eval + deploy
-- [ ] `npm run gen:eval` over ~20 golden prompts against real Foundry (build-pass rate, attempts, tokens, latency, cost).
-- [ ] Fly secrets, VM size, budget alerts; update the deploy notes in `online-multiplayer-plan.md`.
+- [ ] `npm run gen:eval` over ~20 golden prompts against the real API (build-pass rate, attempts, tokens, cache hit rate, latency, cost); measure how far Haiku 5.5 gets within the 100K budgets, and only then decide whether a larger model for `draft` is worth its price.
+- [ ] Fly secrets, VM size, spend limit/alerts in the Console; update the deploy notes in `online-multiplayer-plan.md`.
 
 ## Risks
 
 - **Spatial quality.** LLMs place pieces badly; mitigated by brief-first design, autofix and coordinate-bearing errors, but expect an eval-driven prompt loop.
-- **Cost.** Repair loops multiply tokens; capped by attempts, quotas and the global ceiling.
-- **Unverified JS path.** Foundry v1 + Entra from JS is not confirmed; milestone 0 decides.
+- **Haiku-only quality.** Map layout may come out simpler or need more repairs than a larger model would give; the per-job 100K token budget can end a job with a partial result.
+- **Cost.** Repair loops multiply tokens; capped by attempts, the per-call and per-job 100K limits, quotas, the global ceiling and a Console spend limit. Prompt caching on the static prefix is the main saver; verify with `cache_read_input_tokens`. Per-generation cost is unmeasured until milestone 2.
+- **Provider lock.** Keep the model interface thin so Foundry (or another provider) can be swapped in later.
 - **Puzzle solvability.** No solver exists; v1 only lints reachability. Until 5a-5d land, generated puzzles can only use switches, lasers and hazards.
 - **"Copy Portal 1 stage 1".** The model reconstructs an approximate layout from its own knowledge as new geometry; results are labelled "inspired by".
 - **Grab/carry through portals** is the highest-risk game change.

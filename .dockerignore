@@ -5,3 +5,5 @@ data
 .git
 .claude
 *.log
+.env
+.env.*
