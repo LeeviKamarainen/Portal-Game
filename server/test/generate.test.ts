@@ -324,3 +324,34 @@ test('stopping the server marks a running generation interrupted, and it is not 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a refinement sends the map along: no planning, the change is made, bad base maps are refused', async () => {
+  await withGenerator(goodModel(), config(), async (s) => {
+    const ada = await signUp(s, 'Ada');
+    const started = await start(s, ada, { prompt: 'make it taller', baseMap: highwire() });
+    assert.equal(started.status, 202);
+    const { list } = await events(s, started.body.jobId, ada);
+    const steps = list.filter((e) => e.event === 'step').map((e) => e.data.message as string);
+    assert.match(steps[0], /^Reading "Highwire"/);
+    assert.ok(!steps.some((m) => /Planning/.test(m)), 'no planner call');
+    const done = list[list.length - 1];
+    assert.equal(done.event, 'done');
+    assert.equal(done.data.outcome.ok, true);
+    assert.equal(done.data.outcome.map.id, highwire().id, 'the map keeps its id');
+
+    const bad: object[] = [
+      { prompt: 'x change', baseMap: 'a map' },
+      { prompt: 'x change', baseMap: { pieces: [] } },
+      { prompt: 'x change', baseMap: { pieces: [{ type: 'toString', at: [0, 0, 0] }] } },
+      { prompt: 'x change', baseMap: { pieces: [{ type: 'block', at: [0, 'up', 0] }] } },
+      { prompt: 'x change', baseMap: { pieces: Array.from({ length: 151 }, () => ({ type: 'block', at: [0, 0, 0], size: [1, 1, 1] })) } },
+    ];
+    for (const body of bad) {
+      const r = await start(s, ada, body);
+      assert.equal(r.status, 400, JSON.stringify(body).slice(0, 80));
+      assert.equal(r.body.error.code, 'invalid');
+    }
+    const huge = await start(s, ada, { prompt: 'x change', baseMap: { pieces: [], pad: 'x'.repeat(140_000) } });
+    assert.equal(huge.status, 413);
+  });
+});

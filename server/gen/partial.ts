@@ -1,5 +1,8 @@
-import type { MapKind, Piece } from '../../src/world/maps/MapFormat';
+import type { Piece } from '../../src/world/maps/MapFormat';
+import type { MapHead } from '../../src/net/generate';
 import { WireMapSchema, WirePieceSchema, pieceFromWire } from './wire';
+
+export type { MapHead };
 
 /**
  * Reads a map out of the model's answer while it is still being written, so the editor can
@@ -11,14 +14,6 @@ import { WireMapSchema, WirePieceSchema, pieceFromWire } from './wire';
  * never throws: anything it cannot make sense of is skipped here, and the final, complete
  * answer is parsed and checked by the graph as usual.
  */
-
-export interface MapHead {
-  name: string;
-  kind: MapKind;
-  symmetry: 'none' | 'rotate180';
-  fog: { color: string; near: number; far: number };
-  killY: number;
-}
 
 export type PartialEvent =
   | { type: 'start'; head: MapHead }

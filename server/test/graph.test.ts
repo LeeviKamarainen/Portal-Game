@@ -291,3 +291,36 @@ test('nothing is streamed (no onText) when nobody is watching', async () => {
   const { llm } = await run({ brief: [brief()], draft: [good()] });
   assert.ok(llm.requests.every((r) => r.onText === undefined));
 });
+
+test('a refinement skips the planner, shows the model the existing map, and keeps the map id', async () => {
+  const base = highwire();
+  const changed = good();
+  changed.name = 'Highwire, higher';
+  const cfg = config();
+  const llm = new FakeLlm({ draft: [changed] });
+  const events: GenEvent[] = [];
+  const outcome = await generateMap(
+    { prompt: 'make the platforms higher', kind: 'auto', size: 'auto', baseMap: base },
+    { llm: new BudgetedLlm(llm, cfg), config: cfg, emit: (e) => events.push(e) },
+  );
+  assert.deepEqual(llm.labels, ['draft']);
+  const prompt = (llm.requests[0] as { user: string }).user;
+  assert.match(prompt, /Requested change: make the platforms higher/);
+  assert.ok(prompt.includes(`"name":${JSON.stringify(base.name)}`) && prompt.includes('"type":"room"'));
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.attempts, 1);
+  assert.equal(outcome.map!.name, 'Highwire, higher');
+  assert.equal(outcome.map!.id, base.id);
+  assert.match(events[0].message, /^Reading "/);
+});
+
+test('repairing a refinement talks about the change, not a fresh design plan', async () => {
+  const cfg = config();
+  const llm = new FakeLlm({ draft: [broken()], repair: [good()] });
+  const outcome = await generateMap({ prompt: 'add a trap', kind: 'auto', size: 'auto', baseMap: highwire() }, { llm: new BudgetedLlm(llm, cfg), config: cfg });
+  assert.deepEqual(llm.labels, ['draft', 'repair']);
+  assert.equal(outcome.ok, true);
+  const prompt = (llm.requests[1] as { user: string }).user;
+  assert.match(prompt, /Requested change to an existing map: add a trap/);
+  assert.doesNotMatch(prompt, /Plan:/);
+});

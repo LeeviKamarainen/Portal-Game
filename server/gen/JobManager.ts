@@ -2,12 +2,13 @@ import { randomBytes } from 'node:crypto';
 import { hasRight, type Store, type User } from '../store/Store';
 import { ApiError } from '../auth/http';
 import { RateLimiter } from '../auth/RateLimiter';
-import type { MapData, Piece } from '../../src/world/maps/MapFormat';
+import type { MapData } from '../../src/world/maps/MapFormat';
+import { isTerminalEvent, type JobEvent, type PublicOutcome } from '../../src/net/generate';
+import { cleanBaseMap } from './base';
 import type { CheckResult } from './check';
 import type { GenConfig } from './config';
-import { generateMap, type GenEvent, type GenOutcome } from './graph';
+import { generateMap, type GenOutcome } from './graph';
 import { BudgetedLlm, GenError, estimateCostUsd, type Llm } from './llm';
-import type { MapHead } from './partial';
 import type { GenRequest } from './prompts';
 
 /**
@@ -21,35 +22,15 @@ import type { GenRequest } from './prompts';
 
 export type JobStatus = 'running' | 'ok' | 'partial' | 'failed' | 'cancelled';
 
-export interface PublicOutcome {
-  ok: boolean;
-  /** The finished map, or when `ok` is false the closest the generator got. */
-  map: MapData | null;
-  problems: string[];
-  notes: string[];
-  fixes: string[];
-  attempts: number;
-  stoppedBy: GenOutcome['stoppedBy'];
-  tokens: { input: number; output: number };
-  /** List-price estimate in US dollars; the Anthropic Console has the real bill. */
-  costUsd: number;
-}
-
-/** What a viewer is sent, in order. `piece`, `start` and `map` let the editor show the level being built. */
-export type JobEvent =
-  | { type: 'step'; node: GenEvent['node']; message: string; problems?: string[] }
-  | { type: 'start'; stage: 'draft' | 'repair'; head: MapHead }
-  | { type: 'piece'; index: number; piece: Piece }
-  | { type: 'map'; map: MapData; ok: boolean }
-  | { type: 'done'; status: 'ok' | 'partial'; outcome: PublicOutcome }
-  | { type: 'error'; status: 'failed' | 'cancelled'; code: string; message: string };
+// What a viewer is sent is shared with the page (src/net/generate.ts).
+export type { JobEvent, PublicOutcome };
 
 export interface StoredEvent {
   seq: number;
   event: JobEvent;
 }
 
-export const isTerminal = (e: JobEvent): boolean => e.type === 'done' || e.type === 'error';
+export const isTerminal = isTerminalEvent;
 
 export class Job {
   readonly id: string;
@@ -200,7 +181,13 @@ export class JobManager {
     const size = input.size === undefined ? 'auto' : input.size;
     if (!KINDS.includes(kind as never)) throw new ApiError(400, 'invalid', `kind is one of: ${KINDS.join(', ')}.`);
     if (!SIZES.includes(size as never)) throw new ApiError(400, 'invalid', `size is one of: ${SIZES.join(', ')}.`);
-    return { prompt, kind: kind as GenRequest['kind'], size: size as GenRequest['size'] };
+    const request: GenRequest = { prompt, kind: kind as GenRequest['kind'], size: size as GenRequest['size'] };
+    if (input.baseMap !== undefined) {
+      const base = cleanBaseMap(input.baseMap);
+      if ('error' in base) throw new ApiError(400, 'invalid', base.error);
+      request.baseMap = base.map;
+    }
+    return request;
   }
 
   private async run(job: Job, user: User): Promise<void> {

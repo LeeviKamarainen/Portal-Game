@@ -250,3 +250,14 @@ for (const c of BROKEN) {
 test('lint does not report a clean shipped map', () => {
   for (const { label, data } of maps) assert.deepEqual(lint(fixSupport(autofix(data).map).map), [], label);
 });
+
+test('cleanBaseMap accepts a shipped map, tidied, and refuses what cannot be refined', async () => {
+  const { cleanBaseMap, REFINE_PIECES_MAX } = await import('../gen/base');
+  const ok = cleanBaseMap({ ...BUILT_IN_MAPS[0].data(), name: '  Mine\u0000<b>  ' });
+  assert.ok('map' in ok);
+  assert.ok(!('map' in ok && /[<>\u0000]/.test(ok.map.name)), 'the name is cleaned like a generated one');
+  const piece = { type: 'block', at: [0, 0, 0], size: [1, 1, 1] };
+  for (const raw of [null, [], {}, { pieces: [] }, { pieces: [{ ...piece, type: 'constructor' }] }, { pieces: [{ ...piece, at: [0, NaN, 0] }] }, { pieces: [{ ...piece, size: [1, 1] }] }, { pieces: Array(REFINE_PIECES_MAX + 1).fill(piece) }]) {
+    assert.ok('error' in cleanBaseMap(raw), JSON.stringify(raw)?.slice(0, 60));
+  }
+});

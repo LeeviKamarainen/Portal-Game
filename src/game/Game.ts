@@ -428,6 +428,13 @@ export class Game {
     this.editor ??= new Editor(this.container, this.engine.renderer, this.engine.envMap, {
       playtest: (map) => this.playtest(map),
       saveToAccount: (map, id) => this.saveToAccount(map, id),
+      generator: {
+        allowed: () => this.accounts.canGenerate,
+        quota: () => this.accounts.generationQuota(),
+        start: (request) => this.accounts.startGeneration(request),
+        watch: (jobId, onEvent, onLost) => this.accounts.watchGeneration(jobId, onEvent, onLost),
+        cancel: (jobId) => this.accounts.cancelGeneration(jobId),
+      },
       exit: () => {
         this.editor?.close();
         this.input.lockEnabled = true;

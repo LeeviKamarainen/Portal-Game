@@ -2,7 +2,8 @@
  * The map generator over HTTP (docs/llm-map-generation-plan.md). Logged-in users with the
  * `generate-maps` right describe a map and watch it being built:
  *
- *   POST   /api/generate              { prompt, kind?, size? }  -> 202 { jobId, quota }
+ *   POST   /api/generate              { prompt, kind?, size?, baseMap? }  -> 202 { jobId, quota }
+ *                                     (baseMap: change that map instead of designing a new one)
  *   GET    /api/generate/quota        what you may do today: { used, limit, allowed, enabled }
  *   GET    /api/generate/:id          the job's state and, once finished, its outcome
  *   GET    /api/generate/:id/events   server-sent events: step, start, piece, map, then done or error.
@@ -18,6 +19,8 @@ import { isTerminal, type Job, type JobEvent, type JobManager, type StoredEvent 
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{6,32}$/;
 const HEARTBEAT_MS = 15_000;
+/** A request is a short description, or with a refinement also the map being changed (150 pieces is about 30 KB). */
+const BODY_MAX = 128 * 1024;
 
 export interface GenerateApiOptions {
   jobs: JobManager;
@@ -47,7 +50,7 @@ export class GenerateApi {
 
     if (parts.length === 0) {
       if (method !== 'POST') throw new ApiError(405, 'method', 'Use POST.');
-      const job = this.jobs.start(user, await readJsonBody(req, 4096));
+      const job = this.jobs.start(user, await readJsonBody(req, BODY_MAX));
       return sendJson(res, 202, { jobId: job.id, quota: this.jobs.quota(user) });
     }
     if (parts[0] === 'quota' && parts.length === 1) {

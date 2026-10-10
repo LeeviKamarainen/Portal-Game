@@ -15,6 +15,8 @@ export interface GenRequest {
   prompt: string;
   kind: 'auto' | MapKind;
   size: 'auto' | RoomSize;
+  /** A refinement: change this map as the prompt says instead of designing a new one (already cleaned, see base.ts). */
+  baseMap?: MapData;
 }
 
 export const BriefSchema = z.object({
@@ -105,8 +107,14 @@ export function draftUser(req: GenRequest, brief: Brief): string {
   return `Design this map: ${req.prompt}\n\nPlan to follow:\n${planText(req, brief)}\n\nUse enough pieces to make the level feel built, not a bare room. Reply with the complete map.`;
 }
 
+/** A refinement: the existing map, as the model writes maps, and what to change in it. */
+export function refineUser(req: GenRequest, mapJson: string): string {
+  return `Change this existing map as asked. Keep its name (unless the change is about it), its layout and every piece that the request does not mention.\n\nRequested change: ${req.prompt}\n\nThe existing map (pieces are numbered from 0 in this order):\n${mapJson}\n\nReply with the complete changed map.`;
+}
+
 export function repairUser(req: GenRequest, brief: Brief, previousJson: string, problems: string[]): string {
-  return `Design request: ${req.prompt}\n\nPlan:\n${planText(req, brief)}\n\nHere is the map you produced, after automatic tidying (pieces are numbered from 0 in this order):\n${previousJson}\n\nThese problems were found. Fix every one of them:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nReturn the complete corrected map. Keep everything that works; change only what is needed to fix the problems.`;
+  const intro = req.baseMap ? `Requested change to an existing map: ${req.prompt}` : `Design request: ${req.prompt}\n\nPlan:\n${planText(req, brief)}`;
+  return `${intro}\n\nHere is the map you produced, after automatic tidying (pieces are numbered from 0 in this order):\n${previousJson}\n\nThese problems were found. Fix every one of them:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nReturn the complete corrected map. Keep everything that works; change only what is needed to fix the problems.`;
 }
 
 export function critiqueSystem(): string {

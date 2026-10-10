@@ -1,5 +1,5 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import type { MapData, Piece } from '../../src/world/maps/MapFormat';
+import { mapKind, type MapData, type Piece } from '../../src/world/maps/MapFormat';
 import { checkGenerated, type CheckResult } from './check';
 import type { GenConfig } from './config';
 import { GenError, type Llm } from './llm';
@@ -13,6 +13,7 @@ import {
   critiqueUser,
   draftSystem,
   draftUser,
+  refineUser,
   repairUser,
   summarizeMap,
   type Brief,
@@ -127,6 +128,16 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
 
   const brief = async (s: S): Promise<Partial<S>> => {
     step('brief');
+    const base = s.request.baseMap;
+    if (base) {
+      // A refinement needs no plan: the map is the plan, and its kind and symmetry stay as they are.
+      emit({ node: 'brief', message: `Reading "${base.name}" (${base.pieces.length} pieces)` });
+      const kind = mapKind(base);
+      return {
+        brief: { kind, size: 'medium', symmetric: base.symmetry === 'rotate180', concept: s.request.prompt, tiers: [], hazards: [], portalPlan: '', notes: [], requirements: [] },
+        wire: toWire(base),
+      };
+    }
     emit({ node: 'brief', message: 'Planning the level' });
     const r = await llm.generate({
       label: 'brief',
@@ -147,12 +158,12 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
 
   const draft = async (s: S): Promise<Partial<S>> => {
     step('draft');
-    emit({ node: 'draft', message: 'Drafting the map' });
+    emit({ node: 'draft', message: s.request.baseMap ? 'Changing the map' : 'Drafting the map' });
     const r = await llm.generate({
       label: 'draft',
       model: config.draft.model,
       system: draftSystem(),
-      user: draftUser(s.request, s.brief!),
+      user: s.request.baseMap ? refineUser(s.request, JSON.stringify(s.wire)) : draftUser(s.request, s.brief!),
       schema: WireMapSchema,
       thinking: config.draft.thinking,
       effort: config.draft.effort,
@@ -280,6 +291,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     .addEdge('finalize', END)
     .compile();
 
-  const final = await graph.invoke({ request });
+  // A refinement keeps the map's id (the map starts as the base, so the check reuses it).
+  const final = await graph.invoke({ request, map: request.baseMap ?? null });
   return final.outcome!;
 }

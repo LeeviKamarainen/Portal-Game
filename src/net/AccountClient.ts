@@ -1,4 +1,5 @@
-import type { MapListing, MapSummary, PublicUser, Visibility } from './accounts';
+import { hasRight, type MapListing, type MapSummary, type PublicUser, type Visibility } from './accounts';
+import { isTerminalEvent, type GenQuota, type GenStartRequest, type JobEvent } from './generate';
 
 /** Something the server (or the network) refused, in words for the player. */
 export class AccountError extends Error {
@@ -74,6 +75,61 @@ export class AccountClient {
 
   async deleteMap(id: string): Promise<void> {
     await this.request('DELETE', `/api/maps/${encodeURIComponent(id)}`);
+  }
+
+  // ---- the map generator (server/gen/, src/net/generate.ts)
+
+  /** The logged-in user has the map generator right (the server decides again on every request). */
+  get canGenerate(): boolean {
+    return this.user !== null && hasRight(this.user, 'generate-maps');
+  }
+
+  async generationQuota(): Promise<GenQuota> {
+    return (await this.request('GET', '/api/generate/quota')) as GenQuota;
+  }
+
+  /** Starts a generation; watch it with `watchGeneration`. */
+  async startGeneration(body: GenStartRequest): Promise<{ jobId: string; quota: GenQuota }> {
+    return (await this.request('POST', '/api/generate', body)) as { jobId: string; quota: GenQuota };
+  }
+
+  async cancelGeneration(jobId: string): Promise<void> {
+    await this.request('DELETE', `/api/generate/${encodeURIComponent(jobId)}`);
+  }
+
+  /**
+   * Delivers a generation's events in order (everything so far first, then live) until it
+   * ends. The browser reconnects by itself after a dropped connection and the server resumes
+   * from the last event it was sent. `onLost` is called when the stream cannot be had at all
+   * (the job is gone, or the server is). Returns the way to stop watching.
+   */
+  watchGeneration(jobId: string, onEvent: (event: JobEvent) => void, onLost: (message: string) => void): () => void {
+    const source = new EventSource(`/api/generate/${encodeURIComponent(jobId)}/events`);
+    let closed = false;
+    const close = () => {
+      closed = true;
+      source.close();
+    };
+    for (const type of ['step', 'start', 'piece', 'map', 'done', 'error'] as const) {
+      source.addEventListener(type, (m) => {
+        let event: JobEvent;
+        try {
+          event = JSON.parse((m as MessageEvent<string>).data) as JobEvent;
+        } catch {
+          // The browser's own connection-error event is also called "error" and has no data.
+          return;
+        }
+        if (closed) return;
+        if (isTerminalEvent(event)) close();
+        onEvent(event);
+      });
+    }
+    source.onerror = () => {
+      if (closed || source.readyState !== EventSource.CLOSED) return;
+      close();
+      onLost('Lost the connection to the map generator.');
+    };
+    return close;
   }
 
   private set(user: PublicUser | null): void {
