@@ -8,7 +8,8 @@ import { BUILT_IN_MAPS } from '../../src/editor/templates';
 import { loadConfig } from '../gen/config';
 import { generateMap, type BuildEvent, type GenEvent } from '../gen/graph';
 import { AnthropicLlm, BudgetedLlm, GenError, type AnthropicLike } from '../gen/llm';
-import type { Brief } from '../gen/prompts';
+import type { Blueprint } from '../gen/blueprint';
+import { combatExample } from '../gen/blueprintExamples';
 import { PartialMapReader } from '../gen/partial';
 import { WireMapSchema, pieceFromWire, toWire, type WireMap } from '../gen/wire';
 import { FakeLlm } from './fakeLlm';
@@ -21,17 +22,9 @@ const broken = (): WireMap => {
   w.pieces.push({ type: 'spikes', at: [-8, 0, 0], size: [2, 0, 2], rot: 0, center: false, params: [{ key: 'id', value: 'trap' }] });
   return w;
 };
-const brief = (over: Partial<Brief> = {}): Brief => ({
-  kind: 'combat',
-  size: 'medium',
-  symmetric: true,
-  concept: 'Three tiers around a central pit',
-  tiers: [
-    { name: 'floor', floorY: 0, purpose: 'start' },
-    { name: 'ledge', floorY: 8, purpose: 'ranged fights' },
-  ],
-  hazards: ['spikes on the ledge'],
-  portalPlan: 'portal walls on every tier',
+/** The plan the fake planner answers with: the structure of Highwire, so the shipped map conforms to it. */
+const brief = (over: Partial<Blueprint> = {}): Blueprint => ({
+  ...combatExample(),
   notes: ['The map is a loose take on the idea.'],
   requirements: ['floating platforms carry hazards'],
   ...over,
@@ -281,7 +274,7 @@ test('build events: pieces stream in, then the checked map; a repair starts a ne
   assert.equal(outcome.ok, true);
   const shape = seen.map((e) => (e.type === 'start' ? `start:${e.stage}` : e.type === 'map' ? `map:${e.ok}` : 'piece'));
   const compact = shape.filter((s, i) => s !== 'piece' || shape[i - 1] !== 'piece');
-  assert.deepEqual(compact, ['start:draft', 'piece', 'map:false', 'start:repair', 'piece', 'map:true']);
+  assert.deepEqual(compact, ['map:false', 'start:draft', 'piece', 'map:false', 'start:repair', 'piece', 'map:true']);
   assert.equal(seen.filter((e) => e.type === 'piece').length, broken().pieces.length + good().pieces.length);
   const finalMap = [...seen].reverse().find((e) => e.type === 'map')!;
   assert.equal(finalMap.type === 'map' && finalMap.map.pieces.length, highwire().pieces.length);

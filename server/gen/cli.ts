@@ -56,6 +56,7 @@ const llm = new BudgetedLlm(new AnthropicLlm(), config);
 const t0 = Date.now();
 const emit = (e: GenEvent) => {
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1).padStart(5)}s] ${e.node.padEnd(8)} ${e.message}`);
+  for (const d of e.detail ?? []) console.log(`           . ${d}`);
   for (const p of e.problems ?? []) console.log(`           - ${p}`);
 };
 

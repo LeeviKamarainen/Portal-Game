@@ -30,7 +30,8 @@ const fmtDefaults = (d: PieceSpec['defaults']): string =>
 function pieceLine(type: string, s: PieceSpec): string {
   const turn = s.turn === 'quarter' ? 'rot in multiples of 90' : s.turn === 'free' ? 'any rot' : 'no rot (use 0)';
   const size = s.sizeLabels ? `size [${s.sizeLabels.join(', ')}]` : 'no size (use [])';
-  const params = (s.fields ?? []).map((f) => `${f.key} (${kindHelp(f)}${f.hint ? `; ${f.hint}` : ''})`).join('; ') || 'none';
+  // "hide" is left out on purpose: models used it on the undersides of floating blocks, which then show nothing from below.
+  const params = (s.fields ?? []).filter((f) => f.key !== 'hide').map((f) => `${f.key} (${kindHelp(f)}${f.hint ? `; ${f.hint}` : ''})`).join('; ') || 'none';
   return [`- ${type} [${s.group}] ${s.help}`, `    ${size}; ${turn}; defaults: ${fmtDefaults(s.defaults)}`, `    params: ${params}`].join('\n');
 }
 
@@ -65,7 +66,7 @@ ${kinds}
 - fogColor "#rrggbb", fogNear and fogFar in metres (for example "#0c1018", 45, 170). killY: anything falling below it dies (for example -2 with a pit, -6 otherwise).
 
 ## Structure of every map
-1. First piece: a room shell. at = the centre of the floor, size = [width, height, depth]. Everything must fit inside it. Use portal=walls for portal walls, and skip=floor if you build your own floor with a pit.
+1. First piece: a room shell. at = the centre of the floor, size = [width, height, depth]. Everything must fit inside it. Use portal=walls for portal walls. The room has its own floor at its y; leave "skip" out so it stays. Only a level that is islands over a void uses skip=floor, and then every place a player stands needs a block or floor piece under it.
 2. Add a lights piece over the room (at the ceiling height) so the level is lit.
 3. Spawns: type spawn with at on a solid floor, rot facing the action. A spawn's y must equal the top surface it stands on, exactly: the room's floor top is the room's own y (usually 0), and the top of a block or floor piece is its at.y + size[1]. A spawn whose y is lower than the top of a block it overlaps is buried and invalid, and one higher than the surface hangs in the air. Combat maps need at least 2 spawns after symmetry (a spawn that is not marked center doubles). Spawn at least 3 m apart, never inside a solid. Check the mirrored position of every spawn against the mirrored blocks.
 4. A puzzle map needs exactly one goal piece (at = floor centre) and at least one spawn.

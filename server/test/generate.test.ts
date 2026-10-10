@@ -15,23 +15,14 @@ import { BUILT_IN_MAPS } from '../../src/editor/templates';
 import { checkGenerated } from '../gen/check';
 import { loadConfig, type GenConfig } from '../gen/config';
 import { GenError, type Llm } from '../gen/llm';
-import type { Brief } from '../gen/prompts';
+import type { Blueprint } from '../gen/blueprint';
+import { combatExample } from '../gen/blueprintExamples';
 import { toWire } from '../gen/wire';
 import { SqliteStore } from '../store/SqliteStore';
 import { FakeLlm } from './fakeLlm';
 
 const highwire = () => BUILT_IN_MAPS[0].data();
-const brief: Brief = {
-  kind: 'combat',
-  size: 'medium',
-  symmetric: true,
-  concept: 'Tiers around a pit',
-  tiers: [{ name: 'floor', floorY: 0, purpose: 'start' }],
-  hazards: ['spikes'],
-  portalPlan: 'portal walls',
-  notes: ['Approximate.'],
-  requirements: [],
-};
+const brief: Blueprint = { ...combatExample(), notes: ['Approximate.'] };
 
 function config(limits: Partial<GenConfig['limits']> = {}): GenConfig {
   const c = loadConfig({ GEN_CRITIQUE: 'off' });
@@ -148,10 +139,12 @@ test('a generation streams its steps and pieces, ends with done, and is recorded
     const kinds = list.map((e) => e.event);
     assert.equal(kinds[kinds.length - 1], 'done');
     const order = kinds.filter((k, i) => k !== kinds[i - 1]);
-    assert.deepEqual(order, ['step', 'start', 'piece', 'step', 'map', 'step', 'done'], 'planning, the streamed pieces, the check, then the checked map and the result');
+    assert.deepEqual(order, ['step', 'map', 'step', 'start', 'piece', 'step', 'map', 'step', 'done'], 'planning, the structure built from the plan, the streamed pieces, the check, then the checked map and the result');
     assert.equal(list.filter((e) => e.event === 'piece').length, highwire().pieces.length, 'every piece was streamed');
     assert.equal(list.find((e) => e.event === 'start')!.data.head.name, 'Highwire');
-    assert.equal(list.find((e) => e.event === 'map')!.data.ok, true);
+    const maps = list.filter((e) => e.event === 'map');
+    assert.equal(maps[0].data.ok, false, 'the structure built from the plan comes first, unchecked');
+    assert.equal(maps[maps.length - 1].data.ok, true);
 
     const done = list[list.length - 1].data;
     assert.equal(done.status, 'ok');

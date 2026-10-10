@@ -71,6 +71,7 @@ const CSS = `
 .gen .steps li.now::before { content:'›'; color:var(--accent); animation:genpulse 0.9s infinite alternate; }
 .gen .steps li.bad::before { content:'!'; color:#ffb060; }
 .gen .steps li .why { display:block; color:#ffb3b3; font-size:11px; }
+.gen .steps li .plan { margin:3px 0 4px; padding:5px 7px; max-height:150px; overflow:auto; background:rgba(0,0,0,0.3); border-radius:4px; font-size:11px; line-height:1.45; color:#aeb8cb; }
 .gen .result { margin-top:10px; padding:8px 10px; border-radius:6px; background:rgba(255,255,255,0.05); line-height:1.4; }
 .gen .result.ok { border-left:3px solid #8de0a8; }
 .gen .result.warn { border-left:3px solid #ffb060; }
@@ -87,6 +88,8 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 interface Step {
   text: string;
   problems: string[];
+  /** More lines under the step: the plan, for the planning step. */
+  detail: string[];
   bad: boolean;
 }
 
@@ -245,7 +248,7 @@ export class GeneratePanel {
       case 'step': {
         const prev = this.steps[this.steps.length - 1];
         if (prev && prev.text === event.message) break;
-        this.steps.push({ text: event.message, problems: event.problems ?? [], bad: (event.problems?.length ?? 0) > 0 });
+        this.steps.push({ text: event.message, problems: event.problems ?? [], detail: event.detail ?? [], bad: (event.problems?.length ?? 0) > 0 });
         this.host.status(event.message);
         break;
       }
@@ -379,7 +382,8 @@ export class GeneratePanel {
     const steps = this.steps
       .map((s, i) => {
         const now = busy && i === this.steps.length - 1;
-        return `<li class="${now ? 'now' : s.bad ? 'bad' : ''}">${esc(s.text)}${s.problems.slice(0, 4).map((p) => `<span class="why">${esc(p)}</span>`).join('')}</li>`;
+        const detail = s.detail.length ? `<div class="plan">${s.detail.map((l) => `<div>${esc(l)}</div>`).join('')}</div>` : '';
+        return `<li class="${now ? 'now' : s.bad ? 'bad' : ''}">${esc(s.text)}${detail}${s.problems.slice(0, 4).map((p) => `<span class="why">${esc(p)}</span>`).join('')}</li>`;
       })
       .join('');
 

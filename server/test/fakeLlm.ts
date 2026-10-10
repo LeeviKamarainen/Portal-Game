@@ -2,7 +2,7 @@ import type { Llm, LlmRequest, LlmResult, Usage } from '../gen/llm';
 
 /** A scripted stand-in for the model: queues of answers per graph node, and a record of what was asked. */
 type Answer = unknown | ((req: LlmRequest<unknown>) => unknown);
-type Script = Partial<Record<'brief' | 'draft' | 'repair' | 'critique', Answer[]>>;
+type Script = Partial<Record<'brief' | 'replan' | 'draft' | 'repair' | 'critique', Answer[]>>;
 
 export class FakeLlm implements Llm {
   readonly requests: LlmRequest<unknown>[] = [];

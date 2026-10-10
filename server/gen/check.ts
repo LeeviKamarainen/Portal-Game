@@ -76,6 +76,7 @@ export function autofix(input: MapData): AutofixResult {
 
   if (!Array.isArray(map.pieces)) return { map, fixes };
   map.pieces = map.pieces.filter((p) => p && typeof p === 'object');
+  let hiddenFaces = 0;
   map.pieces.forEach((p, i) => {
     const spec = PIECES[p.type];
     const where = `piece #${i} (${p.type})`;
@@ -103,11 +104,19 @@ export function autofix(input: MapData): AutofixResult {
       else p.rot = rot;
     }
     if (p.center === false) delete p.center;
+    // "Hidden faces" is for hand-built maps. Generated ones used it on the undersides of floating
+    // blocks, which then show nothing from below, so every face is drawn.
+    if (p.hide !== undefined) {
+      delete p.hide;
+      hiddenFaces++;
+    }
     if (p.type === 'dropper' && isVec3(p.at) && isNum(p.ceiling) && p.ceiling <= p.at[1]) {
       note(`${where}: ceiling ${p.ceiling} was not above the drop point; set ${r2(p.at[1] + 1)}`);
       p.ceiling = r2(p.at[1] + 1);
     }
   });
+
+  if (hiddenFaces) note(`showed the hidden faces of ${hiddenFaces} piece${hiddenFaces === 1 ? '' : 's'} (platform undersides must be drawn)`);
 
   // A switch can only set off hazards that exist; drop the ids that point at nothing, and a
   // trigger switch left with no target does nothing at all, so it goes too.
@@ -135,7 +144,8 @@ export function autofix(input: MapData): AutofixResult {
   return { map, fixes };
 }
 
-interface Solid {
+/** A box a player can stand on or run into, from the placed pieces. */
+export interface Solid {
   type: string;
   minX: number;
   maxX: number;
@@ -146,7 +156,7 @@ interface Solid {
   stairs: boolean;
 }
 
-const inside = (s: Solid, x: number, z: number) => x >= s.minX - 1e-6 && x <= s.maxX + 1e-6 && z >= s.minZ - 1e-6 && z <= s.maxZ + 1e-6;
+export const inside = (s: Solid, x: number, z: number) => x >= s.minX - 1e-6 && x <= s.maxX + 1e-6 && z >= s.minZ - 1e-6 && z <= s.maxZ + 1e-6;
 
 function fieldProblem(f: FieldSpec, v: unknown): string | null {
   switch (f.kind) {
@@ -169,7 +179,7 @@ function fieldProblem(f: FieldSpec, v: unknown): string | null {
 }
 
 /** The floors and blocks a player can stand on or run into, from the placed (symmetry-expanded) pieces. */
-function solidsOf(map: MapData, placed: Piece[]): Solid[] {
+export function solidsOf(map: MapData, placed: Piece[]): Solid[] {
   const solids: Solid[] = [];
   const roomPiece = map.pieces.find((p) => p.type === 'room');
   if (roomPiece && isVec3(roomPiece.at)) {

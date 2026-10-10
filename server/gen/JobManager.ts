@@ -201,7 +201,7 @@ export class JobManager {
         config: this.config,
         check: this.opts.check,
         signal: job.abort.signal,
-        emit: (e) => job.push({ type: 'step', node: e.node, message: e.message, ...(e.problems ? { problems: e.problems } : {}) }),
+        emit: (e) => job.push({ type: 'step', node: e.node, message: e.message, ...(e.problems ? { problems: e.problems } : {}), ...(e.detail ? { detail: e.detail } : {}) }),
         onPartial: (e) => job.push(e),
       });
       status = outcome.ok ? 'ok' : 'partial';

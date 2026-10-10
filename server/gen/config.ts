@@ -60,7 +60,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       model: env.GEN_MODEL_FAST || HAIKU,
       thinking: 'off',
       effort: 'low',
-      maxTokens: 2_000,
+      maxTokens: 6_000,
     },
     draft: {
       model: env.GEN_MODEL_DRAFT || HAIKU,

@@ -61,7 +61,7 @@ export interface PublicOutcome {
 
 /** What a viewer is sent, in order. `start`, `piece` and `map` let the editor show the level being built. */
 export type JobEvent =
-  | { type: 'step'; node: GenStep; message: string; problems?: string[] }
+  | { type: 'step'; node: GenStep; message: string; problems?: string[]; /** More lines under the message (the plan). */ detail?: string[] }
   | { type: 'start'; stage: 'draft' | 'repair'; head: MapHead }
   | { type: 'piece'; index: number; piece: Piece }
   | { type: 'map'; map: MapData; ok: boolean }

@@ -1,22 +1,22 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
-import { mapKind, type MapData, type Piece } from '../../src/world/maps/MapFormat';
+import type { MapData, Piece } from '../../src/world/maps/MapFormat';
+import { BlueprintSchema, applyGround, blueprintLines, blueprintProblems, conformance, repairBlueprint, scaffold, type Blueprint } from './blueprint';
 import { checkGenerated, type CheckResult } from './check';
 import type { GenConfig } from './config';
 import { GenError, type Llm } from './llm';
 import { PartialMapReader, type MapHead } from './partial';
 import {
-  BriefSchema,
   CritiqueSchema,
-  briefSystem,
   briefUser,
   critiqueSystem,
   critiqueUser,
   draftSystem,
-  draftUser,
+  fillUser,
+  planSystem,
   refineUser,
   repairUser,
+  replanUser,
   summarizeMap,
-  type Brief,
   type GenRequest,
 } from './prompts';
 import { WireMapSchema, fromWire, toWire, type WireMap } from './wire';
@@ -24,14 +24,20 @@ import { WireMapSchema, fromWire, toWire, type WireMap } from './wire';
 /**
  * The generation graph (docs/llm-map-generation-plan.md):
  *
- *   plan -> draft -> check --ok--> critique --fits--> finalize
- *                       |                |
- *                       +--problems--> repair <--misses--+
- *                  (repair loops back to check, at most `maxAttempts` model drafts in all)
+ *   plan -> build -> draft -> check --ok--> critique --fits--> finalize
+ *                               |                |
+ *                               +--problems--> repair <--misses--+
+ *                          (repair loops back to check, at most `maxAttempts` model drafts in all)
  *
- * The model is only used in plan (events and calls call it "brief": a node cannot share a state field's name), draft, repair and critique; check and finalize are the
- * deterministic code of check.ts. The graph is built per generation and holds no state of its
- * own, so any number can run at once.
+ * plan: the model writes a blueprint (areas with positions and heights, how they connect,
+ * spawns); code checks it and the model corrects it until it is sound. build: code builds
+ * the structure of the map from the blueprint, so the floor and every platform exist and sit
+ * where planned. draft: the model completes that map with hazards and detail. check: the map
+ * is tidied, linted, built, and compared with the blueprint. repair and critique as before.
+ * A refinement of an existing map skips plan and build: the map is the plan.
+ *
+ * Events and calls call the plan "brief": a node cannot share a state field's name. The graph
+ * is built per generation and holds no state of its own, so any number can run at once.
  */
 
 export interface GenEvent {
@@ -39,12 +45,15 @@ export interface GenEvent {
   message: string;
   /** Problems found, for `check` events. */
   problems?: string[];
+  /** More lines to show under the message (the plan, for the planning step). */
+  detail?: string[];
 }
 
 /**
  * The map as it is being built, for showing it live. `start` begins a streamed attempt (the
  * viewer clears and starts again), `piece` adds one piece as the model writes it, and `map`
- * is the checked, tidied map after each check (replace what is shown with it).
+ * is the map after code has changed it (the structure built from the plan, then each checked,
+ * tidied draft): replace what is shown with it.
  */
 export type BuildEvent =
   | { type: 'start'; stage: 'draft' | 'repair'; head: MapHead }
@@ -74,14 +83,22 @@ export interface GenOutcome {
   /** Model drafts used (the first draft counts as 1). */
   attempts: number;
   stoppedBy: 'ok' | 'attempts' | 'budget';
-  brief: Brief | null;
+  /** The blueprint the map was built from (null for a refinement). */
+  plan: Blueprint | null;
 }
+
+/** Most plan corrections asked for; each is one model call. */
+const MAX_REPLANS = 2;
+/** The longest list of problems put in a repair prompt. */
+const MAX_PROBLEMS = 14;
 
 const last = <T>(init: () => T) => Annotation<T>({ reducer: (_old: T, next: T) => next, default: init });
 
 const State = Annotation.Root({
   request: last<GenRequest>(() => ({ prompt: '', kind: 'auto', size: 'auto' })),
-  brief: last<Brief | null>(() => null),
+  blueprint: last<Blueprint | null>(() => null),
+  /** The plan passed its checks, so the finished map is held to it. */
+  planSound: last<boolean>(() => false),
   wire: last<WireMap | null>(() => null),
   map: last<MapData | null>(() => null),
   problems: last<string[]>(() => []),
@@ -97,6 +114,9 @@ const State = Annotation.Root({
   outcome: last<GenOutcome | null>(() => null),
 });
 type S = typeof State.State;
+
+const limited = (problems: string[]): string[] =>
+  problems.length > MAX_PROBLEMS ? [...problems.slice(0, MAX_PROBLEMS), `...and ${problems.length - MAX_PROBLEMS} more of the same kind; fix these first.`] : problems;
 
 export async function generateMap(request: GenRequest, deps: GenDeps): Promise<GenOutcome> {
   const { llm, config } = deps;
@@ -126,44 +146,76 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     }
   };
 
-  const brief = async (s: S): Promise<Partial<S>> => {
-    step('brief');
-    const base = s.request.baseMap;
-    if (base) {
-      // A refinement needs no plan: the map is the plan, and its kind and symmetry stay as they are.
-      emit({ node: 'brief', message: `Reading "${base.name}" (${base.pieces.length} pieces)` });
-      const kind = mapKind(base);
-      return {
-        brief: { kind, size: 'medium', symmetric: base.symmetry === 'rotate180', concept: s.request.prompt, tiers: [], hazards: [], portalPlan: '', notes: [], requirements: [] },
-        wire: toWire(base),
-      };
-    }
-    emit({ node: 'brief', message: 'Planning the level' });
-    const r = await llm.generate({
-      label: 'brief',
+  const askPlan = (label: string, user: string) =>
+    llm.generate({
+      label,
       model: config.fast.model,
-      system: briefSystem(),
-      user: briefUser(s.request),
-      schema: BriefSchema,
+      system: planSystem(),
+      user,
+      schema: BlueprintSchema,
       thinking: config.fast.thinking,
       effort: config.fast.effort,
       maxTokens: config.fast.maxTokens,
       signal: deps.signal,
     });
-    // An explicit request overrides what the planner picked.
-    const planned = { ...r.value, kind: s.request.kind === 'auto' ? r.value.kind : s.request.kind };
-    emit({ node: 'brief', message: `Plan: ${planned.kind}, ${planned.size} room - ${planned.concept}` });
-    return { brief: planned };
+  /** An explicit request overrides what the planner picked. */
+  const settle = (bp: Blueprint): Blueprint => ({ ...bp, kind: request.kind === 'auto' ? bp.kind : request.kind, symmetric: (request.kind === 'auto' ? bp.kind : request.kind) === 'combat' ? bp.symmetric : false });
+
+  const plan = async (s: S): Promise<Partial<S>> => {
+    step('brief');
+    const base = s.request.baseMap;
+    if (base) {
+      // A refinement needs no plan: the map is the plan, and its kind and symmetry stay as they are.
+      emit({ node: 'brief', message: `Reading "${base.name}" (${base.pieces.length} pieces)` });
+      return { wire: toWire(base), blueprint: null };
+    }
+    emit({ node: 'brief', message: 'Planning the level' });
+    const adjustments: string[] = [];
+    /** What the model wrote, with its arithmetic settled by code. */
+    const tidy = (written: Blueprint): Blueprint => {
+      const r = repairBlueprint(settle(written));
+      adjustments.push(...r.fixes);
+      return r.plan;
+    };
+    let bp = tidy((await askPlan('brief', briefUser(s.request))).value);
+    let problems = blueprintProblems(bp);
+    for (let i = 0; i < MAX_REPLANS && problems.length > 0; i++) {
+      step('brief');
+      emit({ node: 'brief', message: `The plan has ${problems.length} problem${problems.length === 1 ? '' : 's'} code cannot settle; asking for a correction`, problems: limited(problems) });
+      const again = await budgeted(() => askPlan('replan', replanUser(s.request, bp, limited(problems))));
+      if (again === 'budget') break;
+      adjustments.length = 0;
+      bp = tidy(again.value);
+      problems = blueprintProblems(bp);
+    }
+    const sound = problems.length === 0;
+    emit({
+      node: 'brief',
+      message: `Plan: ${bp.kind}, ${bp.roomWidth} x ${bp.roomHeight} x ${bp.roomDepth} m room, ${bp.areas.length} parts - ${bp.concept}`,
+      detail: [...blueprintLines(bp), ...(adjustments.length ? ['Adjusted automatically:', ...adjustments.map((a) => `  ${a}`)] : [])],
+      ...(sound ? {} : { problems: limited(problems) }),
+    });
+    return { blueprint: bp, planSound: sound };
+  };
+
+  /** Code, not the model: the structure of the map exactly as planned, shown at once. */
+  const build = async (s: S): Promise<Partial<S>> => {
+    step('draft');
+    if (!s.blueprint) return {};
+    const structure = scaffold(s.blueprint);
+    emit({ node: 'draft', message: `Built the structure from the plan (${structure.pieces.length} pieces)` });
+    deps.onPartial?.({ type: 'map', map: structure, ok: false });
+    return { map: structure, wire: toWire(structure) };
   };
 
   const draft = async (s: S): Promise<Partial<S>> => {
     step('draft');
-    emit({ node: 'draft', message: s.request.baseMap ? 'Changing the map' : 'Drafting the map' });
+    emit({ node: 'draft', message: s.request.baseMap ? 'Changing the map' : 'Adding hazards and detail' });
     const r = await llm.generate({
       label: 'draft',
       model: config.draft.model,
       system: draftSystem(),
-      user: s.request.baseMap ? refineUser(s.request, JSON.stringify(s.wire)) : draftUser(s.request, s.brief!),
+      user: s.request.baseMap ? refineUser(s.request, JSON.stringify(s.wire)) : fillUser(s.request, s.blueprint!, JSON.stringify(s.wire)),
       schema: WireMapSchema,
       thinking: config.draft.thinking,
       effort: config.draft.effort,
@@ -178,9 +230,12 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     step('check');
     emit({ node: 'check', message: 'Checking the map' });
     const converted = fromWire(s.wire!, s.map ? { id: s.map.id } : {});
-    const r = await check(converted.map);
-    const problems = [...converted.problems, ...r.problems];
-    const ok = r.ok && converted.problems.length === 0;
+    // The plan decides whether there is a floor; the model often leaves it out or builds a partial one.
+    const grounded = s.blueprint ? applyGround(s.blueprint, converted.map) : { map: converted.map, fixes: [] as string[] };
+    const r = await check(grounded.map);
+    const missing = s.blueprint && s.planSound ? conformance(s.blueprint, r.map) : [];
+    const problems = limited([...converted.problems, ...r.problems, ...missing]);
+    const ok = r.ok && converted.problems.length === 0 && missing.length === 0;
     const closest = !ok && (!s.closest || problems.length < s.closest.problems.length) ? { map: r.map, problems } : s.closest;
     deps.onPartial?.({ type: 'map', map: r.map, ok });
     emit({ node: 'check', message: ok ? `The map builds${r.buildMs !== undefined ? ` (${r.buildMs} ms)` : ''}` : `${problems.length} problem${problems.length === 1 ? '' : 's'} found`, problems });
@@ -188,7 +243,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
       map: r.map,
       wire: toWire(r.map),
       problems,
-      fixes: r.fixes,
+      fixes: [...grounded.fixes, ...r.fixes],
       checkOk: ok,
       okMap: ok ? r.map : s.okMap,
       closest,
@@ -204,7 +259,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
         label: 'repair',
         model: config.draft.model,
         system: draftSystem(),
-        user: repairUser(s.request, s.brief!, JSON.stringify(s.wire), s.problems),
+        user: repairUser(s.request, s.blueprint, JSON.stringify(s.wire), s.problems),
         schema: WireMapSchema,
         thinking: config.draft.thinking,
         effort: config.draft.effort,
@@ -219,7 +274,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
 
   const critique = async (s: S): Promise<Partial<S>> => {
     step('critique');
-    const requirements = s.brief?.requirements ?? [];
+    const requirements = s.blueprint?.requirements ?? [];
     if (requirements.length === 0) {
       emit({ node: 'critique', message: 'No checkable requirements in the request; skipping the review' });
       return { critiqued: true };
@@ -256,11 +311,11 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
       ok,
       map: winner,
       problems: ok ? [] : (s.closest?.problems ?? s.problems),
-      notes: s.brief?.notes ?? [],
+      notes: s.blueprint?.notes ?? [],
       fixes: s.fixes,
       attempts: s.attempt,
       stoppedBy: ok ? 'ok' : s.stoppedBy,
-      brief: s.brief,
+      plan: s.blueprint,
     };
     emit({ node: 'finalize', message: ok ? `Done: ${winner!.name}` : `Stopped with ${outcome.problems.length} problem${outcome.problems.length === 1 ? '' : 's'} (${outcome.stoppedBy})` });
     return { outcome };
@@ -276,14 +331,16 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
   const afterRepair = (s: S): 'check' | 'finalize' => (s.stoppedBy === 'budget' ? 'finalize' : 'check');
 
   const graph = new StateGraph(State)
-    .addNode('plan', brief)
+    .addNode('plan', plan)
+    .addNode('build', build)
     .addNode('draft', draft)
     .addNode('check', checkNode)
     .addNode('repair', repair)
     .addNode('critique', critique)
     .addNode('finalize', finalize)
     .addEdge(START, 'plan')
-    .addEdge('plan', 'draft')
+    .addEdge('plan', 'build')
+    .addEdge('build', 'draft')
     .addEdge('draft', 'check')
     .addConditionalEdges('check', afterCheck, ['critique', 'repair', 'finalize'])
     .addConditionalEdges('critique', afterCritique, ['repair', 'finalize'])

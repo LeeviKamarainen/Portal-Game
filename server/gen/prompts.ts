@@ -2,14 +2,17 @@ import { z } from 'zod';
 import { BUILT_IN_MAPS, blankPuzzle } from '../../src/editor/templates';
 import { PIECES, mapKind, withDefaults, type MapData, type MapKind, type Vec3 } from '../../src/world/maps/MapFormat';
 import { buildCatalogue, renderExample } from './catalogue';
+import { HAZARD_TYPES, blueprintText, roomSizeFor, type Blueprint, type RoomSize } from './blueprint';
+import { combatExample, puzzleExample } from './blueprintExamples';
 
 /**
- * Every prompt the graph sends, and the small structured answers of the planning and review
- * steps. The big static prompt (`draftSystem`) is identical for the draft and every repair so
- * its cache is shared between them.
+ * Every prompt the graph sends, and the small structured answer of the review step. The big
+ * static prompt (`draftSystem`) is identical for the draft and every repair so its cache is
+ * shared between them; the planner has its own static prompt (`planSystem`).
  */
 
-export type RoomSize = 'small' | 'medium' | 'large';
+export type { RoomSize };
+export { roomSizeFor };
 
 export interface GenRequest {
   prompt: string;
@@ -19,21 +22,6 @@ export interface GenRequest {
   baseMap?: MapData;
 }
 
-export const BriefSchema = z.object({
-  kind: z.enum(['combat', 'puzzle']),
-  size: z.enum(['small', 'medium', 'large']),
-  symmetric: z.boolean(),
-  concept: z.string(),
-  tiers: z.array(z.object({ name: z.string(), floorY: z.number(), purpose: z.string() })),
-  hazards: z.array(z.string()),
-  portalPlan: z.string(),
-  /** What to tell the user: approximations, mechanics the game lacks, anything the map does differently from the request. */
-  notes: z.array(z.string()),
-  /** Explicit, countable things the request asks for, which the review step checks the finished map against. */
-  requirements: z.array(z.string()),
-});
-export type Brief = z.infer<typeof BriefSchema>;
-
 export const CritiqueSchema = z.object({
   satisfies: z.boolean(),
   /** Concrete changes to make, only when something explicit in the request is missing. */
@@ -41,17 +29,13 @@ export const CritiqueSchema = z.object({
 });
 export type Critique = z.infer<typeof CritiqueSchema>;
 
-const ROOMS: Record<MapKind, Record<RoomSize, Vec3>> = {
-  combat: { small: [32, 16, 32], medium: [48, 20, 48], large: [64, 28, 64] },
-  puzzle: { small: [16, 6, 20], medium: [20, 8, 28], large: [28, 10, 40] },
-};
-export const roomSizeFor = (kind: MapKind, size: RoomSize): Vec3 => ROOMS[kind][size];
-
 let cachedSystem: string | undefined;
 /** The static prompt of the draft and the repair: catalogue, rules, worked examples. Built once. */
 export function draftSystem(): string {
   if (cachedSystem) return cachedSystem;
   const highwire = BUILT_IN_MAPS.find((m) => m.label.startsWith('Highwire'))!.data();
+  // The shipped maps hide faces nobody sees; a model that copies that leaves floating platforms open underneath.
+  for (const p of highwire.pieces) delete p.hide;
   cachedSystem =
     buildCatalogue() +
     '\n# Worked examples\nThese are complete, valid maps. Study how heights line up and where spawns stand.\n\n' +
@@ -63,48 +47,99 @@ export function draftSystem(): string {
 
 /** Game limits the planning step has to know about. Update when milestone 5 adds mechanics. */
 const MISSING_MECHANICS =
-  'The game does not have turrets, pressure plates, weighted cubes, fizzlers, light bridges, funnels or gel yet. When the request asks for these (or for a copy of a level that uses them), approximate with what exists - shootable switches, laser + receiver + door, crates, hazards, portal surfaces - and say what was substituted in notes. You cannot reproduce another game\'s level exactly; recreate its idea and rough layout from memory as new geometry and say it is approximate in notes.';
+  "The game does not have turrets, pressure plates, weighted cubes, fizzlers, light bridges, funnels or gel yet. When the request asks for these (or for a copy of a level that uses them), approximate with what exists - shootable switches, laser + receiver + door, crates, hazards, portal surfaces - and say what was substituted in notes. You cannot reproduce another game's level exactly; recreate its idea and rough layout from memory as new geometry and say it is approximate in notes.";
 
-export function briefSystem(): string {
-  const pieces = Object.entries(PIECES)
-    .map(([t, s]) => `- ${t}: ${s.help}`)
-    .join('\n');
-  return `You plan levels for a first-person portal-gun game, before anyone places a single piece. Reply only in the requested structure.
+let cachedPlan: string | undefined;
+/** The static prompt of the planner (and of its corrections). */
+export function planSystem(): string {
+  if (cachedPlan) return cachedPlan;
+  const hazards = HAZARD_TYPES.map((t) => `- ${t}: ${PIECES[t]?.help ?? ''}`).join('\n');
+  const example = (bp: Blueprint) => JSON.stringify(bp);
+  cachedPlan = `You are the level architect for a first-person portal-gun game. Before anything is built you write a blueprint: every part of the level as a rectangle seen from above with its heights, what it is for, how players get from each part to the next, and where they start. Code checks the blueprint and builds the structure directly from it, so the numbers must be exact and every part must connect. Reply only in the requested structure.
 
-Pieces the level can use:
-${pieces}
+## Space
+- Metres, y up. x runs east-west and z north-south: north is -z, south is +z, east is +x, west is -x. The room is centred on x=0, z=0, its floor is at y=0 and its ceiling at roomHeight. You choose roomWidth (x), roomHeight and roomDepth (z): combat 24-90 m wide and deep and 10-40 m tall; puzzle 10-40 m wide, 5-14 m tall and 10-50 m deep. Taller rooms for bigger height differences.
+- An area is a rectangle: centre (x, z), width along x, depth along z. It must lie entirely inside the room.
+- A player is 2 m tall, jumps about 1.8 m up and about 3.5 m across (5 m across on the level), and needs 2.5 m of free height above any surface they stand on. Keep heights on a 0.5 m grid.
+
+## Ground
+- ground "floor": the room has its own floor at y=0 under everything. Use this unless the level is about a void. A level on a floor needs no ground areas; every area you list stands on the floor or floats above it.
+- ground "void": there is no floor and players fall to their death below the islands. Then you must list the islands as role "ground" areas with topY 0 (together they cover at least 12% of the room's footprint), and every spawn stands on an area.
+
+## Area roles
+- ground: a flat island of floor at y=0 (void levels).
+- raised: a solid mass from baseY (normally 0) up to topY: a ledge, tower or terrace. Players stand on its top.
+- floating: a thin slab hanging in the air with its top surface at topY and its underside at baseY (about 0.5 m lower).
+- stairs: a staircase. baseY is its low end, topY its high end, climbs says which way it goes up. Its run (depth for north/south, width for east/west) must be at least as long as its rise.
+- wall: a standing wall or portal wall; topY is its top edge. The smaller of width and depth is its thickness.
+- hazard-zone: a patch where a hazard is the point (an acid pool, a spike field); list the hazard in hazards. Not walkable.
+Set portals=true on areas whose top (for raised areas also their sides, for walls both faces) should take portals; give every tier and important wall some.
+Use hazards to say which hazard types belong on or in an area, so "hazards on each platform" means every floating area lists at least one:
+${hazards}
+
+## Links: how players move between walkable areas
+Every ground, raised, floating and stairs area must be reachable from a spawn through links (FLOOR names the room floor in floor levels; raised areas 0.3 m high or less join it automatically).
+- walk: the areas touch (gap at most 0.5 m) and their surfaces differ by at most 0.3 m (stairs touch at their low and high ends).
+- jump: up at most 1.8 m with a gap of at most 3.5 m, or level with a gap of at most 5 m; down at most 10 m.
+- portal: both areas have portals=true; the player shoots portals to cross.
+- drop: one way, from a higher area onto a lower one (0.5-12 m down, gap at most 6 m).
+Say the reason in note ("the stairs start on the landing").
+
+## Spawns and goal
+- spawns: x, z and the area they stand on (inside its rectangle, on flat ground, not on stairs). Combat needs at least 2 in total (a spawn on a mirrored area counts twice), at least 3 m apart.
+- goal: puzzles have exactly one exit, on a flat walkable area. Combat levels set goal.area to "".
+
+## Symmetry
+For fair combat levels set symmetric=true: write only one half of the level; every area is copied with x -> -x, z -> -z (ids get a "~") unless its center flag is true, which you set for areas that lie across the centre point and are their own mirror image. Puzzles are never symmetric.
+
+## A good plan
+- A handful of clear parts (6-14), each with a purpose: spawn, fight space, high ground, hazard crossing, portal wall.
+- Different heights, connected: no ledge without a way up, no island without a way across.
+- Put hazards and portal surfaces where the request wants them, not everywhere.
+- name is at most 40 characters; hint is one or two sentences telling the player how to play.
+- notes: things the player should be told (approximations, missing mechanics); empty when the level is exactly what was asked.
+- requirements: at most 4 explicit things the request asks for that can be checked from numbers (a count, a height difference, hazards on every platform). Empty when the request only names a style, a mood or another game's level.
 
 ${MISSING_MECHANICS}
 
-Planning rules:
-- kind "combat" is a scored match for 2-4 players (needs spawns, symmetric layouts are fair); kind "puzzle" is solo, ends at an exit goal. Pick what the request implies; when it does not say, pick combat.
-- size: small, medium or large room. Big height differences need a tall room.
-- tiers: the walkable levels from the floor up, each with a floorY in metres and what it is for. Adjacent tiers need a way up (stairs, or portals, or a platform within a 2 m jump). Keep floorY values on a 0.5 m grid.
-- hazards: which hazards go where, as short sentences. Hazards on platforms stand on the platform top.
-- portalPlan: where portal surfaces go so portals are useful (one sentence).
-- notes: things the player of this map should be told. Empty when the map does exactly what was asked.
-- requirements: at most 4 explicit things the request asks for that can be checked from numbers - a count, a height difference, hazards placed on every platform, a kind of piece. Write each as a short checkable statement. Leave it empty when the request only names a style, a mood, or another game's level ("copy level X"): resemblance cannot be checked.`;
+## Example blueprints (they pass every check)
+Combat, symmetric, over a void:
+${example(combatExample())}
+
+Puzzle, on a floor:
+${example(puzzleExample())}`;
+  return cachedPlan;
 }
 
 export function briefUser(req: GenRequest): string {
-  const hints = [req.kind !== 'auto' ? `It must be a ${req.kind} map.` : '', req.size !== 'auto' ? `Use a ${req.size} room.` : ''].filter(Boolean).join(' ');
-  return `Plan this map: ${req.prompt}${hints ? `\n${hints}` : ''}`;
+  const hints: string[] = [];
+  if (req.kind !== 'auto') hints.push(`It must be a ${req.kind} map.`);
+  if (req.size !== 'auto') {
+    const [w, h, d] = roomSizeFor(req.kind === 'puzzle' ? 'puzzle' : 'combat', req.size);
+    hints.push(`Use a ${req.size} room, about ${w} x ${h} x ${d} m.`);
+  }
+  return `Write the blueprint for this map: ${req.prompt}${hints.length ? `\n${hints.join(' ')}` : ''}`;
 }
 
-function planText(req: GenRequest, brief: Brief): string {
-  const [w, h, d] = roomSizeFor(brief.kind, req.size === 'auto' ? brief.size : req.size);
-  return [
-    `Kind: ${brief.kind}. Symmetric: ${brief.symmetric ? 'yes, symmetry rotate180 (author one half, mark centre pieces center=true)' : 'no, symmetry none'}.`,
-    `Room: about ${w} x ${h} x ${d} m (width x height x depth), centred on x=0, z=0, floor at y=0.`,
-    `Concept: ${brief.concept}`,
-    `Tiers (floor height - purpose): ${brief.tiers.map((t) => `${t.floorY} m - ${t.name}: ${t.purpose}`).join('; ') || 'one level'}.`,
-    `Hazards: ${brief.hazards.join('; ') || 'none planned'}.`,
-    `Portal surfaces: ${brief.portalPlan}`,
-  ].join('\n');
+export function replanUser(req: GenRequest, plan: Blueprint, problems: string[]): string {
+  return `Request: ${req.prompt}\n\nYour blueprint:\n${JSON.stringify(plan)}\n\nThe checker found these problems with it. Fix every one:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nReturn the complete corrected blueprint. Change only what is needed.`;
 }
 
-export function draftUser(req: GenRequest, brief: Brief): string {
-  return `Design this map: ${req.prompt}\n\nPlan to follow:\n${planText(req, brief)}\n\nUse enough pieces to make the level feel built, not a bare room. Reply with the complete map.`;
+/** The drawing step: the structure is already built from the plan; the model adds what the plan lists and the request asks for. */
+export function fillUser(req: GenRequest, plan: Blueprint, scaffoldJson: string): string {
+  return `Design request: ${req.prompt}
+
+The blueprint of the level:
+${blueprintText(plan)}
+
+The structure has already been built from the blueprint. This is the map so far (pieces are numbered from 0 in this order):
+${scaffoldJson}
+
+Finish the map and return the complete map. It must contain every piece above, unchanged in position and size and still in the same order, and in addition:
+- the hazards each area lists, placed on or in that area (a hazard on a platform stands on its top surface; spikes and acid pools take the footprint they cover),
+- the portal walls, cover, switches and other detail that the request and the concept call for; lights are added for you,
+- a better name or hint if the concept calls for it.
+Do not move, resize or remove the built pieces, do not add another room, and do not put hazards on spawns or the goal.`;
 }
 
 /** A refinement: the existing map, as the model writes maps, and what to change in it. */
@@ -112,8 +147,8 @@ export function refineUser(req: GenRequest, mapJson: string): string {
   return `Change this existing map as asked. Keep its name (unless the change is about it), its layout and every piece that the request does not mention.\n\nRequested change: ${req.prompt}\n\nThe existing map (pieces are numbered from 0 in this order):\n${mapJson}\n\nReply with the complete changed map.`;
 }
 
-export function repairUser(req: GenRequest, brief: Brief, previousJson: string, problems: string[]): string {
-  const intro = req.baseMap ? `Requested change to an existing map: ${req.prompt}` : `Design request: ${req.prompt}\n\nPlan:\n${planText(req, brief)}`;
+export function repairUser(req: GenRequest, plan: Blueprint | null, previousJson: string, problems: string[]): string {
+  const intro = plan ? `Design request: ${req.prompt}\n\nThe blueprint:\n${blueprintText(plan)}` : `Requested change to an existing map: ${req.prompt}`;
   return `${intro}\n\nHere is the map you produced, after automatic tidying (pieces are numbered from 0 in this order):\n${previousJson}\n\nThese problems were found. Fix every one of them:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nReturn the complete corrected map. Keep everything that works; change only what is needed to fix the problems.`;
 }
 
