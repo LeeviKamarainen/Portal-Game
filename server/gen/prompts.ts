@@ -78,7 +78,7 @@ Use hazards to say which hazard types belong on or in an area, so "hazards on ea
 ${hazards}
 
 ## Links: how players move between walkable areas
-Every ground, raised, floating and stairs area must be reachable from a spawn through links (FLOOR names the room floor in floor levels; raised areas 0.3 m high or less join it automatically).
+Every ground, raised, floating and stairs area must be reachable from a spawn through links (FLOOR names the room floor in floor levels; areas whose top is at most 1.5 m above the floor join it automatically).
 - walk: the areas touch (gap at most 0.5 m) and their surfaces differ by at most 0.3 m (stairs touch at their low and high ends).
 - jump: up at most 1.8 m with a gap of at most 3.5 m, or level with a gap of at most 5 m; down at most 10 m.
 - portal: both areas have portals=true; the player shoots portals to cross.

@@ -24,10 +24,11 @@ export interface GenerateHost {
   currentMap(): MapData;
   /** Editing is locked from here until `end`. */
   begin(): void;
-  /** The model started writing a map (again): show an empty one. */
+  /** The model started writing a map (again): what is shown stays, and the pieces that differ replace it. */
   liveStart(head: MapHead): void;
-  livePiece(piece: Piece): void;
-  /** The checked, tidied map, to show instead of the pieces so far. */
+  /** Piece number `index` of the map being written, as the model finishes it. */
+  livePiece(piece: Piece, index: number): void;
+  /** The map after code changed it (built from the plan, or a checked draft): changes are patched in. */
   liveMap(map: MapData, ok: boolean): void;
   /** Editing is unlocked. `map` becomes the editor's map (undoable); null leaves what was there. */
   end(map: MapData | null, options: { keepSavedLink: boolean }): void;
@@ -256,7 +257,7 @@ export class GeneratePanel {
         this.host.liveStart(event.head);
         break;
       case 'piece':
-        this.host.livePiece(event.piece);
+        this.host.livePiece(event.piece, event.index);
         break;
       case 'map':
         this.host.liveMap(event.map, event.ok);

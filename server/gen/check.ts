@@ -195,6 +195,47 @@ export function solidsOf(map: MapData, placed: Piece[]): Solid[] {
   return solids;
 }
 
+
+/** A portal wall whose base is off the ground beside it by more than this (and at most MAX_WALL_SNAP) is a mistake. */
+const WALL_FLUSH = 0.02;
+const MAX_WALL_SNAP = 1.5;
+
+interface WallLevels {
+  base: number;
+  top: number;
+  /** The ground beside each of the two faces (null: none, or far below), in `sides` order. */
+  floors: (number | null)[];
+  sides: [string, string];
+}
+
+/**
+ * The ground level on each side of a free-standing wall, measured just beside its faces at a
+ * few points along it. Only surfaces below the wall's top count, so a tall block next to it
+ * is not mistaken for ground.
+ */
+function wallLevels(p: Piece, solids: Solid[]): WallLevels {
+  const { min, max } = footprint(p);
+  const alongX = max.x - min.x >= max.z - min.z;
+  const len = alongX ? max.x - min.x : max.z - min.z;
+  const cx = (min.x + max.x) / 2;
+  const cz = (min.z + max.z) / 2;
+  const same = (s: Solid) =>
+    Math.abs(s.minX - min.x) < 1e-6 && Math.abs(s.maxX - max.x) < 1e-6 && Math.abs(s.minZ - min.z) < 1e-6 && Math.abs(s.maxZ - max.z) < 1e-6 && Math.abs(s.bottom - min.y) < 1e-6;
+  const fractions = len < 3 ? [0] : [-0.35, 0, 0.35];
+  const floors: (number | null)[] = [];
+  for (const sign of [-1, 1]) {
+    let best: number | null = null;
+    for (const f of fractions)
+      for (const out of [0.4, 1.0]) {
+        const x = alongX ? cx + f * len : (sign < 0 ? min.x : max.x) + sign * out;
+        const z = alongX ? (sign < 0 ? min.z : max.z) + sign * out : cz + f * len;
+        for (const s of solids) if (!s.stairs && !same(s) && inside(s, x, z) && s.top <= max.y - 0.5) best = Math.max(best ?? -Infinity, s.top);
+      }
+    floors.push(best);
+  }
+  return { base: min.y, top: max.y, floors, sides: alongX ? ['north', 'south'] : ['west', 'east'] };
+}
+
 const MAX_DROP = 30;
 /** Space a standing player needs above a spawn or goal (the capsule is 2 m tall). */
 const HEADROOM = 2.2;
@@ -237,6 +278,49 @@ export function fixSupport(input: MapData): AutofixResult {
       p.at = [x, r2(y), z];
       fixes.push(`piece #${i} (${p.type}) at x=${r2(x)}, z=${r2(z)} moved from y=${r2(y0)} to y=${r2(y)} so it stands on a surface`);
     }
+  });
+  // Nobody starts or finishes in acid. Models draw a pool over the middle of the floor and the
+  // spawns that stood there with it; the nearest dry spot on the same surface is unambiguous.
+  const pools = placed.filter((p) => p.type === 'acid' && isVec3(p.size) && isVec3(p.at) && (p.rot ?? 0) % 90 === 0).map((p) => ({ ...footprint(p), y: p.at[1] }));
+  const inPool = (x: number, z: number, y: number, m: number) => pools.some((q) => x >= q.min.x - m && x <= q.max.x + m && z >= q.min.z - m && z <= q.max.z + m && y <= q.y + 0.5 && y >= q.y - 6);
+  const standingOn = (x: number, z: number, y: number) => solids.some((sd) => inside(sd, x, z) && (sd.stairs ? false : Math.abs(sd.top - y) <= 0.15));
+  const roomBox = placed.find((p) => p.type === 'room' && isVec3(p.size));
+  const others = placed.filter((p) => p.type === 'spawn' || p.type === 'goal');
+  map.pieces.forEach((p, i) => {
+    if ((p.type !== 'spawn' && p.type !== 'goal') || !isVec3(p.at)) return;
+    const [x, y, z] = p.at;
+    if (!inPool(x, z, y, 0)) return;
+    const half = roomBox && isVec3(roomBox.size) ? [roomBox.size[0] / 2 - 1, roomBox.size[2] / 2 - 1] : [40, 40];
+    const cx = roomBox ? roomBox.at[0] : 0;
+    const cz = roomBox ? roomBox.at[2] : 0;
+    let best: [number, number] | null = null;
+    let bestD = Infinity;
+    for (let gx = Math.round(cx - half[0]); gx <= cx + half[0]; gx += 1)
+      for (let gz = Math.round(cz - half[1]); gz <= cz + half[1]; gz += 1) {
+        const d = Math.hypot(gx - x, gz - z);
+        if (d >= bestD || inPool(gx, gz, y, 1.5) || !standingOn(gx, gz, y)) continue;
+        if (others.some((o) => o !== p && Math.abs(o.at[1] - y) < 2 && Math.hypot(o.at[0] - gx, o.at[2] - gz) < 3)) continue;
+        best = [gx, gz];
+        bestD = d;
+      }
+    if (!best) return;
+    p.at = [best[0], y, best[1]];
+    fixes.push(`piece #${i} (${p.type}) moved from x=${r2(x)}, z=${r2(z)} to x=${best[0]}, z=${best[1]}, out of the acid pool`);
+  });
+  // A portal wall stands level with the ground beside it. One a little too low is buried (a portal
+  // there opens into the ground); one a little too high leaves a step nobody can climb into the opening.
+  map.pieces.forEach((p, i) => {
+    if (p.type !== 'portal-wall') return;
+    const w = withDefaults(p);
+    if (!isVec3(w.size) || !isVec3(w.at) || (w.rot ?? 0) % 90 !== 0) return;
+    const lv = wallLevels(w, solids);
+    const found = lv.floors.filter((f): f is number => f !== null);
+    if (found.length === 0 || found.some((f) => Math.abs(f - found[0]) > 0.05)) return;
+    const d = found[0] - lv.base;
+    if (Math.abs(d) <= WALL_FLUSH || Math.abs(d) > MAX_WALL_SNAP || lv.top - found[0] < 1) return;
+    p.at = [w.at[0], r2(found[0]), w.at[2]];
+    p.size = [w.size[0], r2(lv.top - found[0]), w.size[2]];
+    fixes.push(`piece #${i} (portal-wall) at x=${r2(w.at[0])}, z=${r2(w.at[2])} moved from y=${r2(lv.base)} to y=${r2(found[0])} to stand level with the ground beside it (its top stays at y=${r2(lv.top)})`);
   });
   return { map, fixes };
 }
@@ -357,6 +441,15 @@ export function lint(map: MapData): string[] {
     for (const p of [...spawns, ...goals])
       if (p.at[0] >= min.x && p.at[0] <= max.x && p.at[2] >= min.z && p.at[2] <= max.z && p.at[1] <= pool.at[1] + 0.5 && p.at[1] >= pool.at[1] - 6)
         add(`${p.type} at ${fmt(p.at)} is in an acid pool (surface at y=${r2(pool.at[1])}); move it onto dry ground.`);
+  }
+  for (const p of placed.filter((x) => x.type === 'portal-wall' && isVec3(x.size) && (x.rot ?? 0) % 90 === 0)) {
+    const lv = wallLevels(p, solids);
+    lv.floors.forEach((f, k) => {
+      if (f === null || Math.abs(f - lv.base) <= WALL_FLUSH || Math.abs(f - lv.base) > MAX_WALL_SNAP) return;
+      add(
+        `portal wall at ${fmt(p.at)} has its base at y=${r2(lv.base)}, but the ground beside its ${lv.sides[k]} face is at y=${r2(f)}: a portal there opens into the ground or above a step too high to climb. Make the ground on both sides y=${r2(lv.base)}, or set the wall's at.y to ${r2(f)} (height ${r2(lv.top - f)}).`,
+      );
+    });
   }
   for (let a = 0; a < spawns.length; a++)
     for (let b = a + 1; b < spawns.length; b++) {

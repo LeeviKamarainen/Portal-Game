@@ -203,3 +203,57 @@ test('repairBlueprint makes a floor-level plan reachable through portals when no
   assert.equal(r.plan.areas[2].portals, true);
   assert.equal(r.plan.links[0].how, 'portal');
 });
+
+test('repairBlueprint stands a wall on the ground it is built on', () => {
+  const bp = combatExample();
+  bp.areas.push({ id: 'W', role: 'wall', what: 'portal wall on the terrace', x: 0, z: 33, width: 6, depth: 0.6, baseY: 7.5, topY: 12, climbs: 'none', portals: true, center: false, hazards: [] });
+  const r = repairBlueprint(bp);
+  assert.equal(r.plan.areas.find((a) => a.id === 'W')!.baseY, 8, 'on the terrace top, not half a metre into it');
+  assert.ok(r.fixes.some((f) => /wall "W" stands level/.test(f)));
+  assert.deepEqual(blueprintProblems(r.plan), []);
+});
+
+test('spawns and the goal are moved out of acid and spike zones', () => {
+  const bp = puzzleExample();
+  // The acid pool covers the middle of the room; the spawn stands in it.
+  bp.spawns = [{ area: 'FLOOR', x: 0, z: 1 }];
+  assert.ok(blueprintProblems(bp).some((p) => /spawn at \(0, 1\) is inside hazard zone "P1"/.test(p)));
+  const r = repairBlueprint(bp);
+  assert.deepEqual(blueprintProblems(r.plan), [], r.fixes.join(' | '));
+  const s = r.plan.spawns[0];
+  assert.ok(Math.abs(s.z) > 5, `moved clear of the pool (z ${s.z})`);
+  assert.ok(r.fixes.some((f) => /a spawn moved from \(0, 1\)/.test(f)));
+});
+
+test('repairBlueprint joins an unreachable part once, to something that is reachable, never to an unreachable floor', () => {
+  const bp = puzzleExample();
+  bp.spawns = [{ area: 'L1', x: -3, z: -11 }];
+  bp.links = [];
+  bp.areas.push({ id: 'X', role: 'raised', what: 'a tall pillar', x: 5, z: 10, width: 4, depth: 4, baseY: 0, topY: 4, climbs: 'none', portals: false, center: false, hazards: [] });
+  const r = repairBlueprint(bp);
+  assert.deepEqual(blueprintProblems(r.plan), [], r.fixes.join(' | '));
+  assert.equal(r.plan.links.filter((l) => l.to === 'X').length, 1);
+  assert.ok(r.plan.links.every((l) => l.from !== 'FLOOR' || l.to !== 'X'), 'the floor is not reachable from this spawn, so it cannot be the way in');
+  assert.equal(r.fixes.filter((f) => /could not be reached/.test(f)).length, 1, 'the pillar is joined once');
+});
+
+test('a ledge standing above an acid pool is a fine place to spawn; a plan that lists both halves is not mirrored twice', () => {
+  const bp = combatExample();
+  bp.ground = 'floor';
+  bp.symmetric = false;
+  bp.areas = [
+    { id: 'P1', role: 'hazard-zone', what: 'acid over the whole floor', x: 0, z: 0, width: 40, depth: 40, baseY: 0, topY: 0.4, climbs: 'none', portals: false, center: true, hazards: ['acid'] },
+    { id: 'R1', role: 'raised', what: 'ledge', x: -11, z: 11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] },
+    { id: 'R2', role: 'raised', what: 'ledge', x: 11, z: -11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] },
+  ];
+  bp.links = [];
+  bp.spawns = [{ area: 'R1', x: -11, z: 11 }, { area: 'R2', x: 11, z: -11 }];
+  bp.roomWidth = 40;
+  bp.roomDepth = 40;
+  assert.deepEqual(blueprintProblems(bp), []);
+  const sym = { ...bp, symmetric: true };
+  const r = repairBlueprint(sym);
+  assert.equal(r.plan.symmetric, false);
+  assert.ok(r.fixes.some((f) => /lists both halves/.test(f)));
+  assert.equal(expandAreas(r.plan).length, 3, 'nothing is copied');
+});

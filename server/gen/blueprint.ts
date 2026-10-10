@@ -261,7 +261,8 @@ function analyse(bp: Blueprint): Analysis {
   }
   if (bp.ground === 'floor')
     for (const a of bp.areas) {
-      if (!isWalkable(a) || a.topY > 0.35 || a.role === 'stairs') continue;
+      // Anything up to a standing jump (1.5 m) above the floor can be climbed onto from it.
+      if (!isWalkable(a) || a.topY > 1.5 || a.role === 'stairs') continue;
       link(FLOOR, a.id);
       link(a.id, FLOOR);
       if (mirrorsOf(bp) && !a.center) {
@@ -310,6 +311,19 @@ function analyse(bp: Blueprint): Analysis {
     }
   }
 
+  // Nobody starts or finishes in acid or on spikes (a ledge standing above the pool is fine).
+  const harmful = bp.areas.filter((a) => a.role === 'hazard-zone' && a.hazards.some((h) => h === 'acid' || h === 'spikes'));
+  const inZone = (x: number, z: number, level: number, m: number) =>
+    harmful.find((a) => level <= a.topY + 0.3 && x >= a.x - a.width / 2 - m && x <= a.x + a.width / 2 + m && z >= a.z - a.depth / 2 - m && z <= a.z + a.depth / 2 + m);
+  for (const s of bp.spawns) {
+    const zone = inZone(s.x, s.z, surfaceOf(bp, s.area)?.levels[0] ?? 0, 0.5);
+    if (zone) add(`The spawn at (${s.x}, ${s.z}) is inside hazard zone "${zone.id}" (${zone.what}); move the spawn or shrink the zone.`);
+  }
+  if (bp.goal.area) {
+    const zone = inZone(bp.goal.x, bp.goal.z, surfaceOf(bp, bp.goal.area)?.levels[0] ?? 0, 0.5);
+    if (zone) add(`The goal at (${bp.goal.x}, ${bp.goal.z}) is inside hazard zone "${zone.id}" (${zone.what}); move the goal or shrink the zone.`);
+  }
+
   // Everything walkable must be reachable from a spawn.
   if (starts.length) {
     const seen = reached;
@@ -348,6 +362,17 @@ export function repairBlueprint(input: Blueprint): { plan: Blueprint; fixes: str
   const W = bp.roomWidth;
   const D = bp.roomDepth;
 
+  // A symmetric plan lists one half. If an area's half-turn image is another listed area, both
+  // halves were written out: the plan is complete as it stands and must not be mirrored again.
+  if (bp.symmetric && bp.kind === 'combat') {
+    const twin = (a: Area, b: Area) =>
+      a !== b && !a.center && !b.center && a.role === b.role && Math.hypot(a.x + b.x, a.z + b.z) <= 1 && Math.abs(a.width - b.width) <= 1 && Math.abs(a.depth - b.depth) <= 1 && Math.abs(a.topY - b.topY) <= 0.5;
+    if (bp.areas.some((a) => bp.areas.some((b) => twin(a, b)))) {
+      bp.symmetric = false;
+      note('the plan lists both halves of the level, so it is not mirrored again');
+    }
+  }
+
   for (const a of bp.areas) {
     const before = JSON.stringify([a.x, a.z, a.width, a.depth, a.baseY, a.topY]);
     a.width = clamp(Math.max(0.5, half(a.width)), 0.5, W);
@@ -364,6 +389,20 @@ export function repairBlueprint(input: Blueprint): { plan: Blueprint; fixes: str
     if (a.role === 'hazard-zone' && a.topY < a.baseY) a.topY = a.baseY;
     if (a.role !== 'stairs') a.climbs = 'none';
     if (before !== JSON.stringify([a.x, a.z, a.width, a.depth, a.baseY, a.topY])) note(`area "${a.id}": numbers tidied to 0.1 m and put inside the room`);
+  }
+  // A wall stands on the ground it is built on; a base a little off it buries the bottom of the
+  // portal opening or leaves a step nobody can climb into it.
+  for (const a of bp.areas) {
+    if (a.role !== 'wall') continue;
+    const rect = rectOf(a);
+    const under = bp.areas
+      .filter((g) => g !== a && isWalkable(g) && g.role !== 'stairs' && g.topY <= a.topY - 1 && rectGap(rectOf(g), rect) <= 0.6)
+      .sort((p, q) => (rectGap(rectOf(p), rect) === rectGap(rectOf(q), rect) ? Math.abs(p.topY - a.baseY) - Math.abs(q.topY - a.baseY) : rectGap(rectOf(p), rect) - rectGap(rectOf(q), rect)))[0];
+    const level = under ? under.topY : bp.ground === 'floor' && Math.abs(a.baseY) <= 1.5 ? 0 : null;
+    if (level !== null && Math.abs(level - a.baseY) > 0.02 && Math.abs(level - a.baseY) <= 1.5) {
+      note(`wall "${a.id}" stands level with the ground beside it: base y=${r1(a.baseY)} -> y=${r1(level)}`);
+      a.baseY = level;
+    }
   }
   for (const a of bp.areas) {
     if (a.role !== 'stairs' || a.climbs === 'none') continue;
@@ -423,15 +462,45 @@ export function repairBlueprint(input: Blueprint): { plan: Blueprint; fixes: str
   for (const s of bp.spawns) inset(s.area, s, 'a spawn');
   if (bp.goal.area) inset(bp.goal.area, bp.goal, 'the goal');
 
+  // Nobody starts or finishes inside a hazard zone: move them to the nearest dry spot of their area.
+  const zones = bp.areas.filter((a) => a.role === 'hazard-zone' && a.hazards.some((h) => h === 'acid' || h === 'spikes'));
+  const wet = (x: number, z: number, level: number, m: number) =>
+    zones.some((a) => level <= a.topY + 0.3 && x >= a.x - a.width / 2 - m && x <= a.x + a.width / 2 + m && z >= a.z - a.depth / 2 - m && z <= a.z + a.depth / 2 + m);
+  const dodge = (areaId: string, p: { x: number; z: number }, what: string, others: { x: number; z: number }[]) => {
+    const surf = surfaceOf(bp, areaId);
+    if (!surf) return;
+    const level = surf.levels[0];
+    if (!wet(p.x, p.z, level, 0.5)) return;
+    const r = surf.rect;
+    let best: { x: number; z: number } | null = null;
+    let bestD = Infinity;
+    for (let x = Math.ceil(r.minX + 1); x <= r.maxX - 1; x += 1)
+      for (let z = Math.ceil(r.minZ + 1); z <= r.maxZ - 1; z += 1) {
+        if (wet(x, z, level, 1.5) || others.some((o) => Math.hypot(o.x - x, o.z - z) < 3.5)) continue;
+        const d = Math.hypot(x - p.x, z - p.z);
+        if (d < bestD) (best = { x, z }), (bestD = d);
+      }
+    if (!best) return;
+    note(`${what} moved from (${p.x}, ${p.z}) to (${best.x}, ${best.z}), out of the hazard zone`);
+    p.x = best.x;
+    p.z = best.z;
+  };
+  bp.spawns.forEach((s, i) => dodge(s.area, s, 'a spawn', bp.spawns.filter((_, j) => j !== i)));
+  if (bp.goal.area) dodge(bp.goal.area, bp.goal, 'the goal', bp.spawns);
+
   // Parts nothing reaches get a way in.
+  const joined = new Set<string>();
   for (let guard = 0; guard < 30; guard++) {
     const an = analyse(bp);
-    if (an.unreachable.length === 0 || an.reached.size === 0) break;
-    const target = bp.areas.find((a) => a.id === an.unreachable[0])!;
+    if (an.reached.size === 0) break;
+    const next = an.unreachable.find((id) => !joined.has(id));
+    if (next === undefined) break;
+    joined.add(next);
+    const target = bp.areas.find((a) => a.id === next)!;
     const ts = surfaceOf(bp, target.id)!;
     const candidates: { id: string; surf: Surface }[] = [];
     for (const a of bp.areas) if (a.id !== target.id && isWalkable(a) && an.reached.has(a.id)) candidates.push({ id: a.id, surf: surfaceOf(bp, a.id)! });
-    if (bp.ground === 'floor') candidates.push({ id: FLOOR, surf: surfaceOf(bp, FLOOR)! });
+    if (bp.ground === 'floor' && an.reached.has(FLOOR)) candidates.push({ id: FLOOR, surf: surfaceOf(bp, FLOOR)! });
     if (candidates.length === 0) break;
     const dist = (c: { surf: Surface }) => rectGap(c.surf.rect, ts.rect) + Math.abs(c.surf.levels[0] - ts.levels[0]) * 0.25;
     candidates.sort((a, b) => dist(a) - dist(b));
@@ -533,6 +602,8 @@ function pieceOfArea(a: Area): Piece | null {
 export function scaffold(bp: Blueprint): MapData {
   const pieces: Piece[] = [
     { type: 'room', at: [0, 0, 0], size: [bp.roomWidth, bp.roomHeight, bp.roomDepth], center: true, portal: ['walls'], ...(bp.ground === 'void' ? { skip: ['floor'] } : {}) },
+    // Written out here so the tidy-up that adds lights to a map without any does not shift every piece after it by one.
+    { type: 'lights', at: [0, bp.roomHeight, 0], size: [bp.roomWidth, 0, bp.roomDepth], center: true },
   ];
   for (const a of bp.areas) {
     const p = pieceOfArea(a);

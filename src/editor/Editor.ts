@@ -164,6 +164,23 @@ interface LiveBuild {
   framed: boolean;
   /** The model has started writing, so the editor's own map is hidden. */
   shown: boolean;
+  /** What is drawn, piece by piece (index = piece index), so a new version only redraws what differs. */
+  pieces: Piece[];
+  views: THREE.Object3D[];
+  /** Green boxes round pieces that just changed. */
+  marks: { helper: THREE.Box3Helper; until: number }[];
+}
+
+/** Same piece, ignoring the order of keys and the defaults a model may or may not write out. */
+function samePiece(a: Piece, b: Piece): boolean {
+  const canon = (p: Piece) => {
+    const { rot, center, ...rest } = p;
+    const o: Record<string, unknown> = { ...rest };
+    if (rot) o.rot = rot;
+    if (center) o.center = true;
+    return JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  };
+  return canon(a) === canon(b);
 }
 
 export class Editor {
@@ -308,6 +325,7 @@ export class Editor {
   }
 
   render(dt: number): void {
+    this.expireMarks();
     this.panCamera(dt);
     this.controls.update();
     const w = window.innerWidth;
@@ -474,7 +492,7 @@ export class Editor {
       currentMap: () => this.map,
       begin: () => this.beginLive(),
       liveStart: (head) => this.liveStart(head),
-      livePiece: (piece) => this.livePiece(piece),
+      livePiece: (piece, index) => this.livePiece(piece, index),
       liveMap: (map) => this.liveMap(map),
       end: (map, options) => this.endLive(map, options.keepSavedLink),
       status: (text, error) => this.status(text, error),
@@ -487,24 +505,37 @@ export class Editor {
     this.drag = null;
     this.marquee = null;
     this.el.marquee.style.display = 'none';
-    this.live?.group.removeFromParent();
-    this.live = { group: new THREE.Group(), symmetric: false, cursor: null, framed: false, shown: false };
+    if (this.live) this.discardLive(this.live);
+    this.live = { group: new THREE.Group(), symmetric: false, cursor: null, framed: false, shown: false, pieces: [], views: [], marks: [] };
     this.scene.add(this.live.group);
     this.root.classList.add('live');
   }
 
-  private clearLive(live: LiveBuild): void {
-    for (const v of [...live.group.children]) this.disposeView(v);
-    if (live.cursor) {
-      live.cursor.removeFromParent();
-      live.cursor.geometry.dispose();
-      live.cursor = null;
-    }
+  private dropHelper(h: THREE.Box3Helper): void {
+    h.removeFromParent();
+    h.geometry.dispose();
   }
 
-  /** Swaps the editor's map for the generated one's view (the first time), and empties it. */
-  private showLive(live: LiveBuild, symmetric: boolean): void {
+  /** Removes every view and marker of a live build. */
+  private clearLive(live: LiveBuild): void {
+    for (const v of live.views) this.disposeView(v);
+    live.views = [];
+    live.pieces = [];
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
+    for (const m of live.marks) this.dropHelper(m.helper);
+    live.marks = [];
+  }
+
+  private discardLive(live: LiveBuild): void {
     this.clearLive(live);
+    live.group.removeFromParent();
+  }
+
+  /** Hides the editor's own map behind the generated one (the first time it is needed). */
+  private showLive(live: LiveBuild, symmetric: boolean): void {
+    // Only a change of mirroring redraws everything: the views of a mirrored map carry ghost copies.
+    if (live.symmetric !== symmetric) this.clearLive(live);
     live.symmetric = symmetric;
     live.shown = true;
     this.world.visible = false;
@@ -513,30 +544,49 @@ export class Editor {
 
   private frameLive(live: LiveBuild): void {
     const box = new THREE.Box3();
-    for (const v of live.group.children) box.expandByObject(v.children[0] ?? v);
+    for (const v of live.views) box.expandByObject(v.children[0] ?? v);
     if (box.isEmpty()) return;
     live.framed = true;
     this.frameBox(box);
   }
 
-  /** The model began writing a map (a first draft, or a repair): an empty view to build in. */
-  private liveStart(head: MapHead): void {
-    if (this.live) this.showLive(this.live, isSymmetric({ kind: head.kind, symmetry: head.symmetry } as MapData));
+  /**
+   * Makes piece `index` of the live view `piece`, redrawing it only if it differs from what is
+   * shown. A repair sends the whole map again; nearly all of it is what is already on screen,
+   * and only the changes should appear. Returns the new view, or null when nothing changed.
+   */
+  private liveSet(live: LiveBuild, index: number, piece: Piece): THREE.Object3D | null {
+    const old = live.pieces[index];
+    if (old && samePiece(old, piece)) return null;
+    if (live.views[index]) this.disposeView(live.views[index]);
+    const view = this.viewFor(piece, index, live.symmetric);
+    live.group.add(view);
+    live.views[index] = view;
+    live.pieces[index] = piece;
+    return view;
   }
 
-  /** One more piece, as the model finishes writing it; a yellow box marks the newest. */
-  private livePiece(piece: Piece): void {
+  private boxOf(view: THREE.Object3D): THREE.Box3 {
+    return new THREE.Box3().setFromObject(view.children[0] ?? view);
+  }
+
+  /** The model began writing a map (a first draft, or a repair): what is shown stays, and changes patch it. */
+  private liveStart(head: MapHead): void {
+    const live = this.live;
+    if (!live) return;
+    this.showLive(live, isSymmetric({ kind: head.kind, symmetry: head.symmetry } as MapData));
+  }
+
+  /** One piece, as the model finishes writing it; a yellow box marks the newest one that changed. */
+  private livePiece(piece: Piece, index: number): void {
     const live = this.live;
     if (!live?.shown) return;
-    const view = this.viewFor(piece, live.group.children.length, live.symmetric);
-    live.group.add(view);
-    if (live.cursor) {
-      live.cursor.removeFromParent();
-      live.cursor.geometry.dispose();
-      live.cursor = null;
-    }
+    const view = this.liveSet(live, index, piece);
+    if (!view) return;
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
     if (piece.type !== 'room') {
-      const box = new THREE.Box3().setFromObject(view.children[0] ?? view);
+      const box = this.boxOf(view);
       if (!box.isEmpty()) {
         live.cursor = new THREE.Box3Helper(box.expandByScalar(0.06), 0xffd040);
         this.scene.add(live.cursor);
@@ -545,21 +595,50 @@ export class Editor {
     if (!live.framed && piece.type === 'room') this.frameLive(live);
   }
 
-  /** The checked, tidied map: shown instead of the pieces so far. */
+  /**
+   * The map after code changed it (the structure built from the plan, or a checked draft):
+   * what differs from what is shown is redrawn, and flashed green for a moment.
+   */
   private liveMap(map: MapData): void {
     const live = this.live;
     if (!live) return;
     this.showLive(live, isSymmetric(map));
-    map.pieces.forEach((p, i) => live.group.add(this.viewFor(p, i, live.symmetric)));
+    const first = live.pieces.length === 0;
+    const now = performance.now();
+    map.pieces.forEach((p, i) => {
+      const view = this.liveSet(live, i, p);
+      if (!view || first) return;
+      const box = this.boxOf(view);
+      if (box.isEmpty() || live.marks.length >= 40) return;
+      const helper = new THREE.Box3Helper(box.expandByScalar(0.08), 0x40ff90);
+      this.scene.add(helper);
+      live.marks.push({ helper, until: now + 1600 });
+    });
+    while (live.pieces.length > map.pieces.length) {
+      this.disposeView(live.views.pop()!);
+      live.pieces.pop();
+    }
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
     if (!live.framed) this.frameLive(live);
+  }
+
+  /** Called every frame: lets the green change markers go. */
+  private expireMarks(): void {
+    const live = this.live;
+    if (!live || live.marks.length === 0) return;
+    const now = performance.now();
+    live.marks = live.marks.filter((m) => {
+      if (m.until > now) return true;
+      this.dropHelper(m.helper);
+      return false;
+    });
   }
 
   /** Unlocks editing. A map becomes the editor's (undoable, so Undo brings back the previous one). */
   private endLive(map: MapData | null, keepSavedLink: boolean): void {
-    const live = this.live;
-    if (live) {
-      this.clearLive(live);
-      live.group.removeFromParent();
+    if (this.live) {
+      this.discardLive(this.live);
       this.live = null;
     }
     this.root.classList.remove('live');

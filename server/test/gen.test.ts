@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { BUILT_IN_MAPS, blankMap, blankPuzzle } from '../../src/editor/templates';
-import { PIECES, expandPieces, type MapData } from '../../src/world/maps/MapFormat';
+import { PIECES, expandPieces, type MapData, type Piece } from '../../src/world/maps/MapFormat';
 import { buildCatalogue, renderExample } from '../gen/catalogue';
 import { autofix, checkGenerated, fixSupport, lint } from '../gen/check';
 import { summarizeMap } from '../gen/prompts';
@@ -260,4 +260,58 @@ test('cleanBaseMap accepts a shipped map, tidied, and refuses what cannot be ref
   for (const raw of [null, [], {}, { pieces: [] }, { pieces: [{ ...piece, type: 'constructor' }] }, { pieces: [{ ...piece, at: [0, NaN, 0] }] }, { pieces: [{ ...piece, size: [1, 1] }] }, { pieces: Array(REFINE_PIECES_MAX + 1).fill(piece) }]) {
     assert.ok('error' in cleanBaseMap(raw), JSON.stringify(raw)?.slice(0, 60));
   }
+});
+
+test('a portal wall is made level with the ground beside it, and a mismatch it cannot fix is reported', async () => {
+  const room: Piece = { type: 'room', at: [0, 0, 0], size: [20, 8, 20], center: true, portal: ['walls'] };
+  const mapWith = (...pieces: Piece[]): MapData => ({
+    id: 'wall-level',
+    name: 'Wall level',
+    hint: '',
+    kind: 'puzzle',
+    pieces: [room, { type: 'spawn', at: [0, 0, 8] }, { type: 'goal', at: [0, 0, -8] }, ...pieces],
+  });
+  const wall = (y: number, h: number): Piece => ({ type: 'portal-wall', at: [0, y, 0], size: [6, h, 0.6] });
+  const slab = (z: number): Piece => ({ type: 'block', at: [0, 0, z], size: [10, 0.5, 4] });
+
+  // Ground 0.5 m up on both sides, the wall's base at the floor: buried by 0.5 m. Both sides agree, so it is raised.
+  const fixedSupport = fixSupport(mapWith(wall(0, 4), slab(-3), slab(3)));
+  const w = fixedSupport.map.pieces.find((p) => p.type === 'portal-wall')!;
+  assert.deepEqual([w.at[1], (w.size as number[])[1]], [0.5, 3.5], 'raised to the ground, top unchanged');
+  assert.match(fixedSupport.fixes.join(' | '), /portal-wall.*to stand level with the ground/);
+  assert.deepEqual(lint(fixedSupport.map).filter((p) => /portal wall/.test(p)), []);
+
+  // The two sides differ: no single level fits, so it is a problem for the model.
+  const split = mapWith(wall(0, 4), slab(-3));
+  assert.equal(fixSupport(split).fixes.length, 0);
+  const problems = lint(split).filter((p) => /portal wall/.test(p));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /ground beside its north face is at y=0.5/);
+
+  // Flush on both sides: fine.
+  const flush = mapWith(wall(0.5, 3.5), slab(-3), slab(3));
+  assert.deepEqual(lint(flush).filter((p) => /portal wall/.test(p)), []);
+  assert.equal(fixSupport(flush).fixes.length, 0);
+});
+
+test('a spawn drawn inside an acid pool is moved to the nearest dry spot on the same floor', () => {
+  const map: MapData = {
+    id: 'acid-spawn',
+    name: 'Acid spawn',
+    hint: '',
+    kind: 'combat',
+    pieces: [
+      { type: 'room', at: [0, 0, 0], size: [30, 10, 30], center: true, portal: ['walls'] },
+      { type: 'acid', at: [0, 0.4, 0], size: [16, 0, 16], center: true },
+      { type: 'spawn', at: [-3, 0, 0] },
+      { type: 'spawn', at: [10, 0, 10] },
+    ],
+  };
+  const r = fixSupport(map);
+  const moved = r.map.pieces[2];
+  assert.ok(Math.abs(moved.at[0]) >= 9 || Math.abs(moved.at[2]) >= 9, `clear of the pool (${moved.at.join(',')})`);
+  assert.equal(moved.at[1], 0);
+  assert.deepEqual(r.map.pieces[3].at, [10, 0, 10], 'a spawn already dry stays');
+  assert.match(r.fixes.join(' | '), /out of the acid pool/);
+  assert.deepEqual(lint(r.map).filter((p) => /acid/.test(p)), []);
 });
