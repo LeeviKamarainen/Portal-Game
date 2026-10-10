@@ -18,6 +18,10 @@ const WAIT_LIMIT = 4;
 const PROGRESS = 0.3;
 const PROGRESS_WINDOW = 1.2;
 const MAX_REPLANS = 3;
+/** Making no headway this long with the next waypoint this much higher than its feet: jump. */
+const STEP_UP_AFTER = 0.35;
+const STEP_UP_NEEDS = 0.25;
+const STEP_UP_STILL = 0.12;
 /** Knocked off the route: this far sideways from it. */
 const OFF_ROUTE = 1.5;
 /** Hopping needs this many flat, safe links ahead, and safe floor under it at these times into the hop, s. */
@@ -164,6 +168,17 @@ export class PathFollower {
     const fz = -Math.cos(yaw);
     cmd.forward = (_d.x * fx + _d.z * fz) * speed;
     cmd.right = (_d.x * -fz + _d.z * fx) * speed;
+
+    // Down in a hollow (landed on a ledge below the walkway, a lip it can't step over) and
+    // going nowhere: a jump gets it up.
+    if (
+      this.body.isGrounded &&
+      this.progressTimer > STEP_UP_AFTER &&
+      pos.distanceTo(this.progressAt) < STEP_UP_STILL &&
+      next.y - (pos.y - PLAYER_FEET_OFFSET) > STEP_UP_NEEDS
+    ) {
+      cmd.jump = true;
+    }
 
     if (link?.kind === 'jump' && this.body.isGrounded) {
       const from = nodes[this.index];

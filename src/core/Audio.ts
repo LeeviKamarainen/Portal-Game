@@ -157,6 +157,12 @@ export class Audio {
       case 'click':
         this.tone(out, 'square', 1400, 1400, t, 0.03, 0.08);
         break;
+      case 'launch':
+        // A spring thunk, then a rising whoosh.
+        this.tone(out, 'sine', 160, 55, t, 0.18, 0.5);
+        this.tone(out, 'sawtooth', 220, 880, t + 0.02, 0.35, 0.1);
+        this.burst(out, t + 0.03, 0.3, 2400, 0.18);
+        break;
     }
   }
 

@@ -1,19 +1,21 @@
 import * as THREE from 'three';
 import { Level, type BoxOptions } from './Level';
 import { Goal, addLightStrip, addSpawnPad } from './Markers';
-import type { Hazard } from './hazards/Hazard';
+import type { Hazard, PowerSource } from './hazards/Hazard';
 import { PropBox } from './hazards/PropBox';
 import { AcidPool } from './hazards/AcidPool';
 import { Crusher } from './hazards/Crusher';
 import { LaserEmitter, LaserReceiver } from './hazards/Laser';
 import { Door } from './hazards/Door';
+import { FloorButton, type FloorButtonOptions } from './hazards/FloorButton';
+import { FaithPlate, type FaithPlateOptions } from './hazards/FaithPlate';
 import { MovingPlatform } from './hazards/MovingPlatform';
 import { Dropper } from './hazards/Dropper';
 import { Ram, type RamOptions } from './hazards/Ram';
 import { Spikes, type SpikeOptions } from './hazards/Spikes';
 import { Trapdoor, type TrapdoorOptions } from './hazards/Trapdoor';
 import { Switch, type SwitchOptions } from './hazards/Switch';
-import { glowMaterial } from './Materials';
+import { glowMaterial, materials } from './Materials';
 
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 
@@ -123,7 +125,7 @@ export class ArenaBuilder {
     return r;
   }
 
-  door(min: THREE.Vector3, max: THREE.Vector3, receiver: LaserReceiver): Door {
+  door(min: THREE.Vector3, max: THREE.Vector3, receiver: PowerSource): Door {
     const d = new Door(this.level, min, max, receiver);
     this.hazards.push(d);
     return d;
@@ -154,6 +156,57 @@ export class ArenaBuilder {
     return t;
   }
 
+  /** A pressure pad in the floor; name it as a door's power source. */
+  button(o: FloorButtonOptions): FloorButton {
+    const b = new FloorButton(this.level, o);
+    this.hazards.push(b);
+    return b;
+  }
+
+  /** A jump pad that throws whoever steps on it (or whatever lands on it) to `o.target`. */
+  jumpPad(o: FaithPlateOptions): FaithPlate {
+    const p = new FaithPlate(this.level, o);
+    this.hazards.push(p);
+    return p;
+  }
+
+  /**
+   * A pane of glass: solid, see-through, and nothing sticks to it - portal shots and
+   * beams stop at it. `min`/`max` are the pane's corners; `tint` is its colour.
+   */
+  glass(min: THREE.Vector3, max: THREE.Vector3, tint = 0x9fd4ff): void {
+    const solid = this.level.box(min, max, { faces: [] });
+    this.level.physics.registerOwner(solid.collider.handle, { type: 'glass', ref: solid });
+    const size = max.clone().sub(min);
+    const center = min.clone().add(max).multiplyScalar(0.5);
+    const pane = new THREE.Mesh(
+      this.level.own(new THREE.BoxGeometry(size.x, size.y, size.z)),
+      this.level.own(
+        new THREE.MeshStandardMaterial({ color: tint, transparent: true, opacity: 0.2, roughness: 0.05, metalness: 0.1, depthWrite: false, envMapIntensity: 1.2 }),
+      ),
+    );
+    pane.position.copy(center);
+    pane.renderOrder = 2;
+    this.level.scene.add(pane);
+    this.level.addBlocker(pane);
+    // A thin steel frame round the edge, so a clear pane still reads as a wall.
+    const bar = 0.1;
+    const lengthX = size.x >= size.z;
+    const length = lengthX ? size.x : size.z;
+    const thick = (lengthX ? size.z : size.x) + 0.06;
+    const strut = (along: number, y: number, l: number, h: number) => {
+      const g = lengthX ? new THREE.BoxGeometry(l, h, thick) : new THREE.BoxGeometry(thick, h, l);
+      const m = new THREE.Mesh(this.level.own(g), materials().trim);
+      m.position.set(center.x + (lengthX ? along : 0), y, center.z + (lengthX ? 0 : along));
+      m.castShadow = true;
+      this.level.scene.add(m);
+    };
+    strut(0, max.y - bar / 2, length, bar);
+    strut(0, min.y + bar / 2, length, bar);
+    strut(-(length - bar) / 2, center.y, bar, size.y);
+    strut((length - bar) / 2, center.y, bar, size.y);
+  }
+
   /** A shootable switch; wire `trigger` switches up with setTargets. */
   switch(o: SwitchOptions): Switch {
     const s = new Switch(this.level, o);
@@ -168,8 +221,8 @@ export class ArenaBuilder {
     return p;
   }
 
-  dropper(point: THREE.Vector3, ceilingY: number): Dropper {
-    const d = new Dropper(this.level, point, ceilingY, this.killY);
+  dropper(point: THREE.Vector3, ceilingY: number, auto = true): Dropper {
+    const d = new Dropper(this.level, point, ceilingY, this.killY, auto);
     this.hazards.push(d);
     this.props.push(d.box);
     return d;

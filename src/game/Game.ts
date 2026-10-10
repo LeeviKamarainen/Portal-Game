@@ -53,7 +53,7 @@ const RESPAWN_FADE = 0.25;
 const COMPLETE_HOLD = 1.6;
 const LEVEL_FADE = 0.35;
 /** The arena behind the main menu, and how fast the camera turns there (rad/s). */
-const MENU_BACKDROP = ARENAS.length - 1;
+const MENU_BACKDROP = ARENAS.findIndex((a) => a.id === 'proving-grounds');
 const MENU_TURN = 0.05;
 
 const IN_PLAY: ReadonlySet<State> = new Set(['playing', 'entering', 'dying', 'respawning', 'complete', 'finished']);

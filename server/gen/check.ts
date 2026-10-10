@@ -27,7 +27,7 @@ const clean = (s: unknown, max: number) => String(s ?? '').replace(/[<>\u0000-\u
 
 const KEPT_KEYS = new Set(['type', 'at', 'size', 'rot', 'center']);
 /** The hazards a switch can set off (the ones that take an id). */
-const TARGETABLE = ['spikes', 'trapdoor', 'crusher', 'ram'];
+const TARGETABLE = ['spikes', 'trapdoor', 'crusher', 'ram', 'dropper'];
 
 export interface AutofixResult {
   map: MapData;
@@ -127,7 +127,7 @@ export function autofix(input: MapData): AutofixResult {
     if (p.type !== 'switch' || !Array.isArray(p.targets)) return;
     const kept = (p.targets as unknown[]).filter((t): t is string => typeof t === 'string' && reachable(t));
     if (kept.length === (p.targets as unknown[]).length) return;
-    note(`piece #${i} (switch): removed target${(p.targets as unknown[]).length - kept.length === 1 ? '' : 's'} that no spikes, trapdoor, crusher or ram has as id`);
+    note(`piece #${i} (switch): removed target${(p.targets as unknown[]).length - kept.length === 1 ? '' : 's'} that no spikes, trapdoor, crusher, ram or dropper has as id`);
     if (kept.length === 0 && (p.effect ?? 'trigger') === 'trigger') {
       dropped.add(i);
       note(`piece #${i} (switch): removed, it had nothing left to set off`);
@@ -506,13 +506,13 @@ export function lint(map: MapData): string[] {
     }
     if (p.type === 'dropper' && isNum(p.ceiling) && p.ceiling <= p.at[1]) add(`piece #${i} (dropper) at ${fmt(p.at)}: ceiling ${p.ceiling} must be above the drop point (y ${p.at[1]}).`);
   });
-  // A door opens while its receiver is lit, so a receiver with that id has to exist.
-  const receivers = new Set(map.pieces.filter((p) => p.type === 'receiver').map((p) => String(withDefaults(p).id ?? '')));
+  // A door opens while its receiver is lit or its floor button held down, so one with that id has to exist.
+  const receivers = new Set(map.pieces.filter((p) => p.type === 'receiver' || p.type === 'button').map((p) => String(withDefaults(p).id ?? '')));
   map.pieces.forEach((raw, i) => {
     if (raw.type !== 'door') return;
     const id = String(withDefaults(raw).receiver ?? '');
     if (!receivers.has(id) && !receivers.has(id.replace(/~+$/, '')))
-      add(`piece #${i} (door) at ${fmt(raw.at)}: no receiver piece has the id "${id}"${receivers.size ? ` (receivers: ${[...receivers].join(', ')})` : '; add a receiver piece lit by a laser'}.`);
+      add(`piece #${i} (door) at ${fmt(raw.at)}: no receiver piece has the id "${id}"${receivers.size ? ` (receivers and buttons: ${[...receivers].join(', ')})` : '; add a receiver piece lit by a laser, or a floor button'}.`);
   });
 
   // 4. Spawns and goals against the floor under them. `placed` includes the mirrored copies of a

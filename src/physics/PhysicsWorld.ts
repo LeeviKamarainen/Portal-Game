@@ -3,6 +3,8 @@ import RAPIER from '@dimforge/rapier3d-compat';
 export type ColliderOwnerType =
   | 'player'
   | 'solid'
+  /** A pane that blocks bodies, portal shots and beams but not sight. */
+  | 'glass'
   | 'prop'
   | 'portal-tunnel'
   | 'hazard'

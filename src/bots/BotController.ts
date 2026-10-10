@@ -139,7 +139,11 @@ export class BotController implements CommandSource {
   read(cmd: PlayerCommand, dt: number): void {
     clearCommand(cmd);
     const { session, self, perception, follower, brain } = this;
-    if (!session || !self || !perception || self.dead) return;
+    if (!session || !self || !perception) return;
+    if (self.dead) {
+      if (this.autonomous) brain?.died();
+      return;
+    }
     const now = session.time;
     perception.update(dt);
 

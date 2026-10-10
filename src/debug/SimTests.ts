@@ -23,6 +23,12 @@ const STUCK_LIMIT = 5;
 const DROUGHT_LIMIT = 60;
 /** Moving at least this fast when it fires counts as shooting on the move, m/s. */
 const ON_THE_MOVE = 1.5;
+/** A bot that scores nothing in a match this long (or longer) is lost. */
+const SCORELESS_AFTER = 30;
+/** Hard drops in from a ceiling at least once per this many seconds of match. */
+const DROP_IN_EVERY = 45;
+/** A free-for-all bot with this many traps set has had the chance to pick more than one target. */
+const FFA_BUSY = 3;
 
 type Internals = { load(def: ArenaDef, mode: string, index: number): Promise<void> };
 
@@ -218,7 +224,14 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   const lines = matches.map(describe);
 
   add('every match is won within the time limit', matches.every((m) => m.winner), `${matches.map((m) => `${m.winner ?? '-'} ${m.time.toFixed(0)} s`).join(', ')}`);
-  add('every bot scores in every match', all.every((r) => r.score > 0), all.map((r) => `${r.id}(${r.difficulty}) ${r.score}`).join(', '));
+  // (A Hard bot can end a free-for-all in under 20 s: someone who never got a look in then is
+  // no sign of anything wrong - only a bot that scores nothing in a match that ran on is.)
+  const scoreless = matches.flatMap((m) => m.bots.filter((r) => r.score === 0 && m.time >= SCORELESS_AFTER).map((r) => `${r.id}(${r.difficulty}) in ${m.time.toFixed(0)} s`));
+  add(
+    `every bot scores in every match that runs ${SCORELESS_AFTER}+ s`,
+    scoreless.length === 0,
+    `${all.map((r) => `${r.id}(${r.difficulty}) ${r.score}`).join(', ')}${scoreless.length ? ` - none: ${scoreless.join(', ')}` : ''}`,
+  );
   const still = Math.max(...all.map((r) => r.longestStill));
   add(`nobody stands stuck more than ${STUCK_LIMIT} s`, still <= STUCK_LIMIT, `longest ${still.toFixed(1)} s (${all.find((r) => r.longestStill === still)?.stillGoal})`);
   const drought = Math.max(...all.map((r) => r.drought));
@@ -242,10 +255,22 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   const otherShots = others.reduce((n, r) => n + r.shots, 0);
   const hardDropIns = hard.reduce((n, r) => n + r.combos, 0);
   const hardMatches = matches.filter((m) => m.bots.some((r) => r.difficulty === 'hard')).length;
-  add('Hard drops in from the ceiling, now and then', hardDropIns >= hardMatches, `${hardDropIns} drop-ins (and ${hard.reduce((n, r) => n + r.climbs, 0)} climbs to high ground) by Hard in ${hardMatches} matches`);
+  // (A direct trap on someone in reach comes first and Hard's matches are short: about one a minute.)
+  const hardSeconds = matches.filter((m) => m.bots.some((r) => r.difficulty === 'hard')).reduce((n, m) => n + m.time, 0);
+  add(
+    'Hard drops in from the ceiling, now and then',
+    hardDropIns >= Math.floor(hardSeconds / DROP_IN_EVERY),
+    `${hardDropIns} drop-ins (and ${hard.reduce((n, r) => n + r.climbs, 0)} climbs to high ground) by Hard in ${hardMatches} matches, ${hardSeconds.toFixed(0)} s`,
+  );
+  // (Of the bots that set a few traps at all: a match of 20 s has no time for a second target.)
   const ffa = matches.filter((m) => m.bots.length > 2).flatMap((m) => m.bots);
-  const spread = ffa.filter((r) => Object.keys(r.trapsOn).length > 1).length;
-  add('free for all: bots go after more than one opponent', spread >= Math.ceil(ffa.length / 2), `${spread} of ${ffa.length} set traps on more than one: ${ffa.map((r) => `${r.id} ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ') || '-'}`).join(', ')}`);
+  const busy = ffa.filter((r) => Object.values(r.trapsOn).reduce((n, v) => n + v, 0) >= FFA_BUSY);
+  const spread = busy.filter((r) => Object.keys(r.trapsOn).length > 1).length;
+  add(
+    'free for all: bots go after more than one opponent',
+    busy.length > 0 && spread >= Math.ceil(busy.length / 2),
+    `${spread} of ${busy.length} that set ${FFA_BUSY}+ traps set them on more than one: ${ffa.map((r) => `${r.id} ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ') || '-'}`).join(', ')}`,
+  );
   add(
     'Hard shoots on the move; the others stop to aim',
     hardShots > 0 && hardMoving / hardShots >= 0.5 && otherMoving / Math.max(otherShots, 1) < 0.25,

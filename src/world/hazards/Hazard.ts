@@ -41,6 +41,11 @@ export interface Triggerable {
   trigger(): void;
 }
 
+/** Something that is on or off and can hold a door open: a lit laser receiver, a pressed floor button. */
+export interface PowerSource {
+  readonly powered: boolean;
+}
+
 export interface Hazard {
   /** Before the physics step - kinematic movers set their next pose here. */
   prePhysics?(dt: number, ctx: HazardContext): void;
@@ -64,6 +69,18 @@ export interface Hazard {
   dangerNow?(): boolean;
   /** For bots: deadly whatever its phase (static spikes) - left off the navigation map, like acid. */
   readonly alwaysDeadly?: boolean;
+  /**
+   * For bots: when whoever is on the floor it `covers` dies - seconds from now, `from` to
+   * `to` (a body that lands inside that window is killed on the spot). Null: not in the
+   * foreseeable future. Hazards that don't say are treated as not timeable and left out of
+   * portal-trap planning (acid, which has no phases, is always deadly).
+   */
+  deadlyWindow?(): DeadlyWindow | null;
+}
+
+export interface DeadlyWindow {
+  from: number;
+  to: number;
 }
 
 /** Volume falloff for positional one-shot sounds. */

@@ -190,6 +190,19 @@ export class PropBox implements PortalTraversable {
     this.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
   }
 
+  /** A throw (a jump pad): exactly `v`, and no spin, so it flies the arc that was worked out. */
+  launch(v: THREE.Vector3): void {
+    this.body.setLinvel({ x: v.x, y: v.y, z: v.z }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
+  /** Comes down where it is: drops its sideways speed and spin (a throw's last moment). */
+  stopSliding(): void {
+    const v = this.body.linvel();
+    this.body.setLinvel({ x: 0, y: v.y, z: 0 }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+  }
+
   getCrossingPoint(): THREE.Vector3 {
     return this.getPosition();
   }

@@ -60,13 +60,32 @@ export interface BotSkill {
    */
   readonly portalClimb: boolean;
   /**
-   * Chance, rolled every few seconds, that it drops in on someone from a ceiling for the fun
+   * Chance, rolled every `comboEvery` seconds, that it drops in on someone from a ceiling for the fun
    * of it (high ground or not): exit in the ceiling, a portal beside itself, in, and a trap
    * on them while it falls. Needs `portalClimb`.
    */
   readonly comboChance: number;
   /** Top running speed, times a person's (harder bots are a little quicker on their feet). */
   readonly moveSpeed: number;
+  /**
+   * How long it waits after springing (or giving up) a trap, a portal climb, before the
+   * next one, seconds - and how often it rolls for a drop-in.
+   */
+  readonly trapCooldown: number;
+  readonly climbCooldown: number;
+  readonly comboEvery: number;
+  /** Looks at where a shot it fired landed this soon after it, seconds. */
+  readonly checkDelay: number;
+  /**
+   * Its trap and steal shots are ones it decided on itself, not something it has to react
+   * to: it turns to them with no reaction delay (as climb shots always do).
+   */
+  readonly decisive: boolean;
+  /**
+   * Sets up a trap exit in a deadly spot it can see while it is still looking for someone
+   * to use it on, so the trap itself is one shot when they turn up.
+   */
+  readonly anticipate: boolean;
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
@@ -100,6 +119,12 @@ export const BOT_SKILLS = {
     portalClimb: false,
     comboChance: 0,
     moveSpeed: 1,
+    trapCooldown: 3,
+    climbCooldown: 6,
+    comboEvery: 3,
+    checkDelay: 0.15,
+    decisive: false,
+    anticipate: false,
   },
   normal: {
     name: 'Normal',
@@ -129,24 +154,30 @@ export const BOT_SKILLS = {
     portalClimb: false,
     comboChance: 0,
     moveSpeed: 1.1,
+    trapCooldown: 2.4,
+    climbCooldown: 6,
+    comboEvery: 3,
+    checkDelay: 0.15,
+    decisive: false,
+    anticipate: false,
   },
   hard: {
     name: 'Hard',
     fovH: deg(58),
     fovV: deg(45),
     viewRange: 80,
-    acquireTime: 0.16,
+    acquireTime: 0.1,
     hearing: 1.25,
     memory: 7,
-    reaction: 0.15,
-    turnRate: deg(620),
-    turnAccel: deg(5500),
-    aimError: deg(1.2),
-    aimSettle: 0.28,
-    aimWobble: deg(0.2),
-    overshoot: 1.05,
-    thinkInterval: 0.08,
-    shotCooldown: 0.25,
+    reaction: 0.06,
+    turnRate: deg(900),
+    turnAccel: deg(9000),
+    aimError: deg(0.8),
+    aimSettle: 0.15,
+    aimWobble: deg(0.15),
+    overshoot: 1.03,
+    thinkInterval: 0.04,
+    shotCooldown: 0.12,
     aimTolerance: deg(1),
     trapChance: 1,
     trapRange: 45,
@@ -156,8 +187,14 @@ export const BOT_SKILLS = {
     omniscient: true,
     hops: true,
     portalClimb: true,
-    comboChance: 0.4,
-    moveSpeed: 1.22,
+    comboChance: 0.6,
+    moveSpeed: 1.3,
+    trapCooldown: 0.5,
+    climbCooldown: 2.5,
+    comboEvery: 1.2,
+    checkDelay: 0.05,
+    decisive: true,
+    anticipate: true,
   },
 } satisfies Record<string, BotSkill>;
 

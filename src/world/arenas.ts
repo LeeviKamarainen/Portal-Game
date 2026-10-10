@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { ArenaDef } from './ArenaBuilder';
 import { mapToArena, type MapData } from './maps/MapFormat';
 import highwire from './maps/highwire.json';
+import catapult from './maps/catapult.json';
 
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 const V2 = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -16,6 +17,8 @@ const PLAYER_Y = 1.02;
  *  4. Proving Grounds - everything at once: sweeping laser, droppers, a crusher on the
  *                       stairs, and an acid ring around the exit pillar that can only be
  *                       reached by coming up out of a floor portal.
+ *  5. Catapult        - jump pads over an acid pit, a cube released by a switch, and a floor
+ *                       button locked behind glass: a map file (maps/catapult.json).
  *
  * Portal surfaces are the pale panels; dark metal never takes a portal.
  */
@@ -151,6 +154,7 @@ export const ARENAS: ArenaDef[] = [
       b.bounds.set(V(-31, -3, -31), V(31, 12, 31));
     },
   },
+  mapToArena(catapult as MapData),
 ];
 
 /**

@@ -3,7 +3,7 @@ import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
 import { PLAYER_FEET_OFFSET, PLAYER_RADIUS } from '../../player/PlayerController';
 import { BOX_HALF } from './PropBox';
-import { type Hazard, type HazardContext, type Triggerable } from './Hazard';
+import { type DeadlyWindow, type Hazard, type HazardContext, type Triggerable } from './Hazard';
 
 export type SpikeMode = 'static' | 'cycle' | 'trigger';
 type SpikePhase = 'down' | 'warn' | 'up' | 'retract';
@@ -122,6 +122,37 @@ export class Spikes implements Hazard, Triggerable {
   /** Out, or about to be (warning), or still going back in. */
   dangerNow(): boolean {
     return this.mode === 'static' || this.phase !== 'down';
+  }
+
+  /**
+   * The bed kills from the moment the tips are a third out, until they have sunk back that
+   * far: after its warning plus the quick rise, through the up time and the first of the
+   * retract. A cycling bed repeats; a triggered one only goes once it has been set off.
+   */
+  deadlyWindow(): DeadlyWindow | null {
+    if (this.mode === 'static') return { from: 0, to: Infinity };
+    // Time from a phase's start until the tips are out far enough / sink back that far.
+    const reach = SPIKE_WARN_TIME + RISE_TIME * 0.35;
+    const sink = SPIKE_WARN_TIME + UP_TIME + RETRACT_TIME * 0.65;
+    switch (this.phase) {
+      case 'down': {
+        if (this.mode !== 'cycle') return null;
+        const wait = Math.max(0, this.rest - this.t);
+        return { from: wait + reach, to: wait + sink };
+      }
+      case 'warn':
+        return { from: reach - this.t, to: sink - this.t };
+      case 'up':
+        return { from: Math.max(0, reach - SPIKE_WARN_TIME - this.t), to: sink - SPIKE_WARN_TIME - this.t };
+      default: {
+        // Retracting: still deadly until it sinks below a third.
+        const left = RETRACT_TIME * 0.65 - this.t;
+        if (left > 0) return { from: 0, to: left };
+        if (this.mode !== 'cycle') return null;
+        const wait = this.rest + (RETRACT_TIME - this.t);
+        return { from: wait + reach, to: wait + sink };
+      }
+    }
   }
 
   prePhysics(dt: number, ctx: HazardContext): void {

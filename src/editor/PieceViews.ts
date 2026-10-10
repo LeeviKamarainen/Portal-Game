@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { materials, glowMaterial, type MaterialName } from '../world/Materials';
 import { EFFECT_COLORS, iconTexture, type SwitchEffect } from '../world/hazards/Switch';
+import { PLATE_HEIGHT, faithArcs } from '../world/hazards/FaithPlate';
+import { BUTTON_HEIGHT } from '../world/hazards/FloorButton';
 import { FACE_NAMES, ROOM_SIDES, TEAM_COLORS, color, faces, footprint, front, turn, type Piece, type Team } from '../world/maps/MapFormat';
 import type { FaceKey } from '../world/Level';
 
@@ -118,6 +120,15 @@ function build(p: Piece): THREE.Object3D {
     case 'floor':
       group.add(solidBox(p));
       break;
+    case 'glass': {
+      const { min, max } = footprint(p);
+      const tint = color(p.tint, 0x9fd4ff);
+      const pane = new THREE.Mesh(worldBox(min, max), basic(tint, 0.28));
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(pane.geometry), line(0xdfeeff));
+      edges.raycast = () => {};
+      group.add(pane, edges);
+      break;
+    }
     case 'ceiling-slot': {
       const t = size[1];
       group.add(solidBox({ ...p, at: [p.at[0], p.at[1] - t, p.at[2]], portal: ['bottom'], material: 'trim' }));
@@ -285,6 +296,39 @@ function build(p: Piece): THREE.Object3D {
       lens.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), fwd);
       lens.position.copy(at);
       group.add(lens);
+      break;
+    }
+    case 'button': {
+      const { min, max } = footprint(p);
+      const w = max.x - min.x;
+      const d = max.z - min.z;
+      const mid = new THREE.Vector3((min.x + max.x) / 2, at.y, (min.z + max.z) / 2);
+      group.add(new THREE.Mesh(worldBox(new THREE.Vector3(min.x, at.y, min.z), new THREE.Vector3(max.x, at.y + BUTTON_HEIGHT, max.z)), solidMaterial('trim')));
+      group.add(flat(w + 0.36, d + 0.36, mid, solidMaterial('hazard'), 0.004));
+      group.add(flat(Math.max(0.1, w - 0.5), Math.max(0.1, d - 0.5), mid, glow(p.needs === 'crate' ? 0xff7a1a : 0xffc040, 1), BUTTON_HEIGHT + 0.006));
+      break;
+    }
+    case 'jump-pad': {
+      const { min, max } = footprint(p);
+      const mid = new THREE.Vector3((min.x + max.x) / 2, at.y, (min.z + max.z) / 2);
+      const to = Array.isArray(p.to) ? V(p.to as [number, number, number]) : at.clone().setZ(at.z - 12);
+      group.add(new THREE.Mesh(worldBox(new THREE.Vector3(min.x, at.y, min.z), new THREE.Vector3(max.x, at.y + PLATE_HEIGHT, max.z)), solidMaterial('trim')));
+      group.add(flat(max.x - min.x + 0.2, max.z - min.z + 0.2, mid, solidMaterial('hazard'), 0.004));
+      group.add(flat(Math.max(0.1, max.x - min.x - 0.5), Math.max(0.1, max.z - min.z - 0.5), mid, glow(0x40d0ff, 1), PLATE_HEIGHT + 0.006));
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.78, 0.9, 32), glow(0x40d0ff));
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.copy(to).setY(to.y + 0.02);
+      group.add(ring);
+      // The arc a player takes.
+      const arc = faithArcs(at.clone().setY(at.y + PLATE_HEIGHT), to, typeof p.apex === 'number' ? p.apex : 3);
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i <= 24; i++) {
+        const t = (arc.time * i) / 24;
+        pts.push(new THREE.Vector3(at.x + arc.player.x * t, at.y + PLATE_HEIGHT + arc.player.y * t - 10 * t * t, at.z + arc.player.z * t));
+      }
+      const path = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), line(0x40d0ff));
+      path.raycast = () => {};
+      group.add(path);
       break;
     }
     case 'door': {

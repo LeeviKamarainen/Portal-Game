@@ -12,8 +12,17 @@ const CELL = 1;
 const STEP = 0.4;
 /** Height differences a walk link may cover in one cell (stairs climb ~0.4 per metre). */
 const WALK_DY = 0.65;
-/** Drops up to this are free of fall damage (13 m/s impact ≈ 4.2 m). */
-const MAX_DROP = 4;
+/**
+ * Drops up to ~4 m are free of fall damage (13 m/s impact); longer ones hurt but can be
+ * survived (an 8 m one costs ~20 of 100 health). They are in the graph so that no tier is a
+ * trap to be stuck on for good (a bridge only a ceiling portal gets you to), at a price per
+ * point of damage high enough that nobody drops for convenience.
+ */
+const MAX_HURT_DROP = 12;
+const HURT_COST = 8;
+const GRAVITY = 20;
+const SAFE_IMPACT = 13;
+const IMPACT_DAMAGE = 4;
 /** A jump clears about 2 m; ledges up to this are worth trying. */
 const MAX_JUMP_UP = 1.4;
 /** Gap jumps: this many cells across at most (a running jump carries ~6 m). */
@@ -27,6 +36,12 @@ const BODY_HALF = 0.3;
 const BLOCKED_COST = 25;
 
 export type LinkKind = 'walk' | 'drop' | 'jump';
+
+/** Damage from falling `height` metres from rest (what the player controller deals on landing). */
+function fallDamage(height: number): number {
+  const speed = Math.sqrt(2 * GRAVITY * Math.max(0, height));
+  return Math.max(0, (speed - SAFE_IMPACT) * IMPACT_DAMAGE);
+}
 
 export interface NavLink {
   readonly to: number;
@@ -252,7 +267,8 @@ export class NavGraph {
         const kind = this.linkKind(a, b);
         if (!kind) continue;
         reached ||= kind === 'walk';
-        const cost = CELL * (1 + b.penalty) + (kind === 'drop' ? 1 + (a.y - b.y) * 0.3 : kind === 'jump' ? 2 : 0);
+        const hurt = kind === 'drop' ? fallDamage(a.y - b.y) : 0;
+        const cost = CELL * (1 + b.penalty) + (kind === 'drop' ? 1 + (a.y - b.y) * 0.3 + hurt * HURT_COST : kind === 'jump' ? 2 : 0);
         a.links.push({ to: b.id, kind, cost });
       }
       // Across a gap: only where there is no floor at this height in between.
@@ -276,7 +292,7 @@ export class NavGraph {
       }
       return this.clear(a.x, hi + 1.0, a.z, b.x, hi + 1.0, b.z) && this.clear(a.x, hi + 1.7, a.z, b.x, hi + 1.7, b.z) ? 'walk' : null;
     }
-    if (dy < 0 && -dy <= MAX_DROP) {
+    if (dy < 0 && -dy <= MAX_HURT_DROP) {
       // Walk off the edge at our height, then fall clear.
       return this.clear(a.x, a.y + 1.0, a.z, b.x, a.y + 1.0, b.z) && this.clear(b.x, a.y + 1.0, b.z, b.x, b.y + 0.1, b.z) ? 'drop' : null;
     }

@@ -58,6 +58,15 @@ export interface PublicUser {
   rights: Right[];
 }
 
+/** One player as the admin page lists them (GET /api/admin/users). */
+export interface AdminUser extends PublicUser {
+  disabled: boolean;
+  createdAt: number;
+  lastLoginAt: number | null;
+  /** Map generations started in the last 24 hours (the ones that count against the daily quota). */
+  generationsToday: number;
+}
+
 /** A saved map in a list: everything but the map itself. */
 export interface MapSummary {
   id: string;

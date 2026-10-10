@@ -4,6 +4,8 @@ import type { Session, SessionEvent } from '../game/Session';
 import type { ArenaPlayer } from '../game/ArenaPlayer';
 import type { ArenaDef } from '../world/ArenaBuilder';
 import { ARENAS, PVP_ARENA } from '../world/arenas';
+import { mapToArena } from '../world/maps/MapFormat';
+import { BUILT_IN_ONLINE_MAPS } from '../net/protocol';
 import { BotController } from '../bots/BotController';
 import { BOT_SKILLS, seededRandom, type BotSkill } from '../bots/BotSkill';
 import { TrapSpots } from '../bots/TrapSpots';
@@ -100,7 +102,26 @@ export async function runBrainTests(game: Game): Promise<{ text: string; results
   let { s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0);
   const traps = TrapSpots.for(s, s.arena, s.level, s.physics);
   const sideways = traps.spots.every((t) => Math.abs(t.normal.y) < 0.5 || t.normal.y < -0.5);
-  add('finds deadly portal exits on the PvP map', traps.spots.length >= 20 && sideways, `${traps.spots.length} exits that drop whoever comes out into the acid, found in ${traps.buildMs.toFixed(0)} ms`);
+  const lethal = traps.spots.filter((t) => t.kind === 'lethal');
+  add(
+    'finds deadly portal exits on the PvP map',
+    lethal.length >= 20 && lethal.every((t) => t.cause === 'acid') && sideways,
+    `${lethal.length} exits that drop whoever comes out into the acid, ${traps.spots.length - lethal.length} that only hurt (long falls), found in ${traps.buildMs.toFixed(0)} ms`,
+  );
+
+  // --- ...and on the other maps, with no acid in sight -----------------------------------------
+  const perMap: string[] = [];
+  let everyMapHasExits = true;
+  for (const m of BUILT_IN_ONLINE_MAPS) {
+    const sess = (await setup(game, mapToArena(m.data), 0)).s;
+    const spots = TrapSpots.for(sess, sess.arena, sess.level, sess.physics);
+    const ceilings = spots.spots.filter((t) => t.drop).length;
+    perMap.push(`${m.data.name}: ${spots.spots.length} (${ceilings} from ceilings)`);
+    everyMapHasExits &&= spots.spots.length > 0;
+  }
+  add('finds trap exits on every built-in map, not only the acid ones', everyMapHasExits, perMap.join('; '));
+  // (Loading those maps replaced the session: a fresh one for the tests that follow.)
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0));
 
   // --- Goes for an orb it can see ---------------------------------------------------------
   bench(you);
@@ -199,7 +220,7 @@ export async function runBrainTests(game: Game): Promise<{ text: string; results
   // Your exit, on a deadly spot the bot can see from where it stands.
   const eye = bot.controller.getPosition().setY(bot.controller.getPosition().y + 0.8);
   const exitSpot = traps.spots
-    .filter((t) => t.normal.dot(eye.clone().sub(t.point)) > 0.3 * eye.distanceTo(t.point) && brain.perception!.lineOfSight(t.point.clone().addScaledVector(t.normal, 0.05)))
+    .filter((t) => t.kind === 'lethal' && t.normal.dot(eye.clone().sub(t.point)) > 0.3 * eye.distanceTo(t.point) && brain.perception!.lineOfSight(t.point.clone().addScaledVector(t.normal, 0.05)))
     .sort((a, b) => a.point.distanceTo(eye) - b.point.distanceTo(eye))[0];
   // (Shot from just outside the bot's body, along its line of sight.)
   const toSpot = exitSpot ? exitSpot.point.clone().sub(eye).normalize() : V(0, 0, -1);
@@ -248,8 +269,9 @@ export async function runBrainTests(game: Game): Promise<{ text: string; results
   );
 
   // --- Hard drops in on you from a ceiling (same level as it, or not) -------------------------
-  // (Always rolling for it here; in play it's a chance every few seconds.)
-  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 7, { ...BOT_SKILLS.hard, comboChance: 1 }));
+  // (Always rolling for it here, and with no direct traps on offer - in play a direct trap on
+  // someone in reach comes first, and the drop-in is a chance every few seconds when none is.)
+  ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 7, { ...BOT_SKILLS.hard, comboChance: 1, trapChance: 0 }));
   place(s, bot, V(-8, 1.02, 10), 0);
   place(s, you, V(8, 1.02, 18), Math.PI);
   const dropShots: string[] = [];
@@ -318,6 +340,19 @@ export async function runBrainTests(game: Game): Promise<{ text: string; results
     return brain.brain!.log.some((r) => r.what === 'dodge');
   });
   add('sidesteps when someone it sees aims at the floor under it', dodged !== null, dodged !== null ? `dodged ${dodged.toFixed(2)} s after you started aiming` : 'never dodged');
+
+  // --- A map with no acid: Hard hurts someone with a drop from a ceiling slot or high wall ---------
+  ({ s, you, bot, brain, events } = await setup(game, mapToArena(BUILT_IN_ONLINE_MAPS.find((m) => m.id === 'courtyard')!.data), 0, 3, BOT_SKILLS.hard));
+  place(s, bot, V(6, 1.02, 19), 0);
+  place(s, you, V(-6, 1.02, 3), Math.PI);
+  const courtKill = run(30, () => events.some((e) => e.type === 'death' && e.player === you.id));
+  const courtDeath = events.find((e) => e.type === 'death' && e.player === you.id) as Extract<SessionEvent, { type: 'death' }> | undefined;
+  const falls = [...brain.brain!.stats.sprung.entries()].map(([k, v]) => `${v} ${k}`).join(', ');
+  add(
+    'Hard traps someone on a map with no acid (a long drop does it)',
+    courtKill !== null && courtDeath?.by === bot.id && courtDeath.cause === 'hurt',
+    `${courtKill !== null ? `killed after ${courtKill.toFixed(1)} s (${courtDeath?.cause}, credited to ${courtDeath?.by})` : `no kill (health left ${you.controller.health.value.toFixed(0)})`}; traps sprung: ${falls || 'none'}; exit used: ${brain.brain!.exitSpot ? `${brain.brain!.exitSpot.kind}/${brain.brain!.exitSpot.cause}${brain.brain!.exitSpot.drop ? ' from a ceiling' : ''}` : '-'}`,
+  );
 
   // --- A match against someone who just stands there ----------------------------------------
   ({ s, you, bot, brain, events } = await setup(game, PVP_ARENA, 0, 21));

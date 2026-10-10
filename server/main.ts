@@ -13,7 +13,8 @@
  *                           (limits and model ids: server/gen/config.ts, GEN_* variables)
  *
  * Accounts: /api/... (server/auth/AuthApi.ts), saved maps: /api/maps (MapApi.ts), the map generator:
- * /api/generate (server/gen/GenerateApi.ts); the admin tool is server/admin.ts.
+ * /api/generate (server/gen/GenerateApi.ts), the admin page's player list: /api/admin (AdminApi.ts);
+ * the admin tool is server/admin.ts.
  */
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -25,6 +26,7 @@ import type { Conn } from '../src/room/Room';
 import { MAP_JSON_MAX, TICK_RATE, WS_PATH, type ServerMessage } from '../src/net/protocol';
 import { TickLoop } from './TickLoop';
 import { AuthApi } from './auth/AuthApi';
+import { AdminApi } from './auth/AdminApi';
 import { MapApi } from './auth/MapApi';
 import { SqliteStore } from './store/SqliteStore';
 import type { Store } from './store/Store';
@@ -120,6 +122,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     log,
   });
   const generate = new GenerateApi({ jobs, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
+  const admin = new AdminApi({ store, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
   const housekeeping = setInterval(() => {
     auth.sweep();
     maps.sweep();
@@ -140,6 +143,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       }
       if (url.pathname === '/api/generate' || url.pathname.startsWith('/api/generate/')) {
         await generate.handle(req, res, url);
+        return;
+      }
+      if (url.pathname === '/api/admin' || url.pathname.startsWith('/api/admin/')) {
+        await admin.handle(req, res, url);
         return;
       }
       if (url.pathname.startsWith('/api/')) {

@@ -27,6 +27,9 @@ const AIR_ACCEL = 18;
 const GROUND_FRICTION = 40;
 const TERMINAL_SPEED = 45;
 const SNAP_DISTANCE = 0.3;
+/** How far ahead the climb looks for the surface to rise to, and the most it may rise there. */
+const CLIMB_LOOK = 0.8;
+const CLIMB_MAX = 0.6;
 
 /**
  * Landing faster than this hurts: above a normal jump's landing speed (9 m/s), so a hop
@@ -34,7 +37,7 @@ const SNAP_DISTANCE = 0.3;
  * an 8 m drop costs ~20, 16 m ~49, 22 m ~67, and ~35 m is fatal.
  */
 export const FALL_DAMAGE_THRESHOLD = 13;
-const FALL_DAMAGE_SCALE = 4;
+export const FALL_DAMAGE_SCALE = 4;
 
 const IMMUNITY_DURATION = 1.0;
 const IMMUNITY_COOLDOWN = 5.0;
@@ -121,6 +124,8 @@ export class PlayerController implements PortalTraversable {
   private pitch = 0;
   private velocity = new THREE.Vector3();
   private wasGrounded = false;
+  /** Thrown by a jump pad and not yet landed: that landing does no damage. */
+  private thrown = false;
   private lookDelta = new THREE.Vector2();
 
   /** View correction left over from the last passage, eased out over CAMERA_SETTLE_TIME. */
@@ -190,6 +195,8 @@ export class PlayerController implements PortalTraversable {
     const preMoveVelY = this.velocity.y;
 
     const own = this.velocity.clone().multiplyScalar(dt);
+    const climb = this.climbAhead(own, grounded);
+    own.y += climb;
     const funnel = this.funnel ? this.funnel(_funnel).multiplyScalar(dt) : _funnel.set(0, 0, 0);
     const desired = own.clone().add(this.externalDelta).add(funnel);
 
@@ -244,6 +251,8 @@ export class PlayerController implements PortalTraversable {
         if (this.velocity.y > 0) this.velocity.y = 0;
         continue;
       }
+      // Stair risers touched on the way up are not walls: they must not eat the stride.
+      if (climb > 0) continue;
       const into = this.velocity.dot(n);
       if (into < 0) this.velocity.addScaledVector(n, -into);
     }
@@ -263,12 +272,44 @@ export class PlayerController implements PortalTraversable {
     if (!this.wasGrounded && groundedNow) {
       const impactSpeed = Math.max(0, -preMoveVelY);
       this.landingSpeed = impactSpeed;
-      this.applyImpactDamage(impactSpeed);
+      // A throw from a jump pad comes down softly, however far it fell.
+      if (this.thrown) this.thrown = false;
+      else this.applyImpactDamage(impactSpeed);
     }
     this.wasGrounded = groundedNow;
     this.externalDelta.set(0, 0, 0);
 
     if (this.command.immunity) this.tryFlashImmunity();
+  }
+
+  /**
+   * Walking up a stair or a ramp: the height this step's move gains so the player rises along
+   * the surface ahead, rather than hopping up each tread (the controller's autostep does that,
+   * stopping dead at every riser). Zero on the flat, going down, and for anything too tall.
+   */
+  private climbAhead(own: THREE.Vector3, grounded: boolean): number {
+    const h = Math.hypot(own.x, own.z);
+    if (!grounded || this.command.jump || h < 1e-4) return 0;
+    const p = this.body.translation();
+    const ahead = {
+      x: p.x + (own.x / h) * CLIMB_LOOK,
+      y: p.y + 0.5,
+      z: p.z + (own.z / h) * CLIMB_LOOK,
+    };
+    const hit = this.physics.world.castRay(
+      new RAPIER.Ray(ahead, { x: 0, y: -1, z: 0 }),
+      1.5,
+      true,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+      undefined,
+      this.collider,
+      undefined,
+      this.filter,
+    );
+    if (!hit) return 0;
+    const rise = ahead.y - hit.timeOfImpact - (p.y - PLAYER_FEET_OFFSET);
+    if (rise <= 0.02 || rise > CLIMB_MAX) return 0;
+    return (rise / CLIMB_LOOK) * h;
   }
 
   private move(desired: THREE.Vector3): THREE.Vector3 {
@@ -463,6 +504,7 @@ export class PlayerController implements PortalTraversable {
     this.velocity.set(0, 0, 0);
     this.wasGrounded = false;
     this.health.reset();
+    this.thrown = false;
     this.damageFlash = 0;
     this.passing = null;
     this.lastTrip = null;
@@ -531,6 +573,19 @@ export class PlayerController implements PortalTraversable {
     }
     this.velocity.y = Math.max(this.velocity.y, v.y);
     this.wasGrounded = false;
+  }
+
+  /**
+   * A throw from a jump pad: the body leaves at `v`, whatever it was doing, so the arc
+   * worked out for the pad comes down where it was meant to, and lands without a fall's
+   * damage. Recorded as a shove, so predicted steps replay it (as at least `v`).
+   */
+  launch(v: THREE.Vector3): void {
+    this.thrown = true;
+    this.velocity.x = 0;
+    this.velocity.z = 0;
+    this.velocity.y = Math.min(this.velocity.y, 0);
+    this.knockback(v);
   }
 
   /** The movement state after the latest step. */
