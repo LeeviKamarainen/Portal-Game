@@ -1,6 +1,6 @@
 import { ArenaSim } from '../../src/sim/ArenaSim';
 import { checkMap, mapProblem } from '../../src/room/mapCheck';
-import { FACE_NAMES, PIECES, ROOM_SIDES, expandPieces, footprint, isSymmetric, mapKind, mapToArena, withDefaults, type FieldSpec, type MapData, type Piece, type Vec3 } from '../../src/world/maps/MapFormat';
+import { FACE_NAMES, PIECES, ROOM_SIDES, expandPieces, faces, footprint, isSymmetric, mapKind, mapToArena, withDefaults, type FieldSpec, type MapData, type Piece, type Vec3 } from '../../src/world/maps/MapFormat';
 import { slug } from './wire';
 
 /**
@@ -206,6 +206,8 @@ interface WallLevels {
   /** The ground beside each of the two faces (null: none, or far below), in `sides` order. */
   floors: (number | null)[];
   sides: [string, string];
+  /** The world face of each side, in the same order (nx/px for walls along z, nz/pz for walls along x). */
+  keys: [string, string];
 }
 
 /**
@@ -233,12 +235,78 @@ function wallLevels(p: Piece, solids: Solid[]): WallLevels {
       }
     floors.push(best);
   }
-  return { base: min.y, top: max.y, floors, sides: alongX ? ['north', 'south'] : ['west', 'east'] };
+  return { base: min.y, top: max.y, floors, sides: alongX ? ['north', 'south'] : ['west', 'east'], keys: alongX ? ['nz', 'pz'] : ['nx', 'px'] };
+}
+
+/** `faces`, but a malformed list (reported elsewhere by lint) is an empty one instead of a throw. */
+function safeFaces(list: unknown, rot: number): string[] {
+  try {
+    return faces(list, rot);
+  } catch {
+    return [];
+  }
+}
+
+/** The wall's own name ("front", "back", ...) for the face that looks out on a world face, given its turn. */
+function relativeFace(worldKey: string, rot: number): 'front' | 'back' | 'left' | 'right' | null {
+  for (const name of ['front', 'back', 'left', 'right'] as const) if (safeFaces([name], rot)[0] === worldKey) return name;
+  return null;
 }
 
 const MAX_DROP = 30;
 /** Space a standing player needs above a spawn or goal (the capsule is 2 m tall). */
 const HEADROOM = 2.2;
+
+/** Half the side of the dry square left under a spawn or goal that stood in a pool. */
+const PAD = 3;
+
+/**
+ * Cuts a dry square out of every written acid pool that covers (x, z) at height y, replacing
+ * the pool by the rectangles around it. A mirrored copy of a pool is the half-turn image of the
+ * written one, so a point inside the copy cuts the written pool at the mirrored point. Returns
+ * a description, or null when nothing was cut.
+ */
+function carvePad(map: MapData, x: number, y: number, z: number, mirrored: boolean): string | null {
+  let cut = 0;
+  for (let i = 0; i < map.pieces.length; i++) {
+    const p = map.pieces[i];
+    if (p.type !== 'acid') continue;
+    const w = withDefaults(p);
+    if (!isVec3(w.size) || !isVec3(w.at) || (w.rot ?? 0) % 90 !== 0) continue;
+    if (!(y <= w.at[1] + 0.5 && y >= w.at[1] - 6)) continue;
+    const spots: [number, number][] = [[x, z]];
+    if (mirrored && !w.center) spots.push([-x, -z]);
+    const { min, max } = footprint(w);
+    for (const [px, pz] of spots) {
+      if (px < min.x || px > max.x || pz < min.z || pz > max.z) continue;
+      const hx0 = px - PAD;
+      const hx1 = px + PAD;
+      const hz0 = pz - PAD;
+      const hz1 = pz + PAD;
+      const rects: [number, number, number, number][] = [
+        [min.x, max.x, min.z, hz0], // beyond the pad on the low z side, full width
+        [min.x, max.x, hz1, max.z],
+        [min.x, hx0, Math.max(min.z, hz0), Math.min(max.z, hz1)],
+        [hx1, max.x, Math.max(min.z, hz0), Math.min(max.z, hz1)],
+      ];
+      const pieces: Piece[] = [];
+      for (const [x0, x1, z0, z1] of rects) {
+        if (x1 - x0 < 0.5 || z1 - z0 < 0.5) continue;
+        const copy: Piece = { ...p, at: [(x0 + x1) / 2, w.at[1], (z0 + z1) / 2], size: [r2(x1 - x0), w.size[1], r2(z1 - z0)] };
+        delete copy.rot;
+        // The id belongs to one piece only.
+        if (pieces.length > 0) delete copy.id;
+        pieces.push(copy);
+      }
+      // Replace in place, so the order of the pieces (and what points at them) stays put.
+      map.pieces.splice(i, 1, ...pieces);
+      i += pieces.length - 1;
+      cut++;
+      break;
+    }
+  }
+  return cut ? `cut a ${PAD * 2} x ${PAD * 2} m dry pad out of the acid pool under it` : null;
+}
 
 /**
  * Puts spawns and goals on the surface they plainly belong to: one buried in a block is lifted
@@ -286,6 +354,7 @@ export function fixSupport(input: MapData): AutofixResult {
   const standingOn = (x: number, z: number, y: number) => solids.some((sd) => inside(sd, x, z) && (sd.stairs ? false : Math.abs(sd.top - y) <= 0.15));
   const roomBox = placed.find((p) => p.type === 'room' && isVec3(p.size));
   const others = placed.filter((p) => p.type === 'spawn' || p.type === 'goal');
+  const carves: { i: number; type: string; x: number; y: number; z: number }[] = [];
   map.pieces.forEach((p, i) => {
     if ((p.type !== 'spawn' && p.type !== 'goal') || !isVec3(p.at)) return;
     const [x, y, z] = p.at;
@@ -303,10 +372,19 @@ export function fixSupport(input: MapData): AutofixResult {
         best = [gx, gz];
         bestD = d;
       }
-    if (!best) return;
+    if (!best) {
+      // No dry spot anywhere on this surface (the pool covers it all): a dry pad is cut out below.
+      carves.push({ i, type: p.type, x, y, z });
+      return;
+    }
     p.at = [best[0], y, best[1]];
     fixes.push(`piece #${i} (${p.type}) moved from x=${r2(x)}, z=${r2(z)} to x=${best[0]}, z=${best[1]}, out of the acid pool`);
   });
+  // Cut after the walk above: it replaces pieces, which would shift the indices it is iterating over.
+  for (const c of carves) {
+    const note = carvePad(map, c.x, c.y, c.z, isSymmetric(map));
+    if (note) fixes.push(`piece #${c.i} (${c.type}) at x=${r2(c.x)}, z=${r2(c.z)}: ${note}`);
+  }
   // A portal wall stands level with the ground beside it. One a little too low is buried (a portal
   // there opens into the ground); one a little too high leaves a step nobody can climb into the opening.
   map.pieces.forEach((p, i) => {
@@ -315,6 +393,28 @@ export function fixSupport(input: MapData): AutofixResult {
     if (!isVec3(w.size) || !isVec3(w.at) || (w.rot ?? 0) % 90 !== 0) return;
     const lv = wallLevels(w, solids);
     const found = lv.floors.filter((f): f is number => f !== null);
+    if (lv.floors[0] !== null && lv.floors[1] !== null && Math.abs(lv.floors[0] - lv.floors[1]) > 0.05 && Math.abs(lv.floors[0] - lv.floors[1]) <= MAX_WALL_SNAP) {
+      // Ground at two levels (a wall on the edge of a shore or a ledge) cannot be level with both
+      // sides. Stand it on the lower one, with portals on that face only: the other face is partly
+      // buried, and a portal there would open into the ground.
+      const lowSide = lv.floors[0] < lv.floors[1] ? 0 : 1;
+      const low = lv.floors[lowSide]!;
+      const face = relativeFace(lv.keys[lowSide], w.rot ?? 0);
+      if (face && lv.top - low >= 1) {
+        const rest = Array.isArray(w.portal) ? (w.portal as string[]).filter((f) => !['front', 'back', 'left', 'right', 'sides', 'all'].includes(f)) : [];
+        const portal = [face, ...rest];
+        const changed = Math.abs(low - lv.base) > WALL_FLUSH || JSON.stringify([...(Array.isArray(w.portal) ? (w.portal as string[]) : [])].sort()) !== JSON.stringify([...portal].sort());
+        if (changed) {
+          p.at = [w.at[0], r2(low), w.at[2]];
+          p.size = [w.size[0], r2(lv.top - low), w.size[2]];
+          p.portal = portal;
+          fixes.push(
+            `piece #${i} (portal-wall) at x=${r2(w.at[0])}, z=${r2(w.at[2])} stands between ground at y=${r2(lv.floors[lowSide]!)} (${lv.sides[lowSide]} side) and y=${r2(lv.floors[1 - lowSide]!)} (${lv.sides[1 - lowSide]} side): set to stand on the lower one (base y=${r2(low)}, top stays at y=${r2(lv.top)}) with portals on the ${face} face only`,
+          );
+        }
+      }
+      return;
+    }
     if (found.length === 0 || found.some((f) => Math.abs(f - found[0]) > 0.05)) return;
     const d = found[0] - lv.base;
     if (Math.abs(d) <= WALL_FLUSH || Math.abs(d) > MAX_WALL_SNAP || lv.top - found[0] < 1) return;
@@ -444,10 +544,11 @@ export function lint(map: MapData): string[] {
   }
   for (const p of placed.filter((x) => x.type === 'portal-wall' && isVec3(x.size) && (x.rot ?? 0) % 90 === 0)) {
     const lv = wallLevels(p, solids);
+    const takesPortals = new Set<string>(Array.isArray(p.portal) ? safeFaces(p.portal, p.rot ?? 0) : []);
     lv.floors.forEach((f, k) => {
-      if (f === null || Math.abs(f - lv.base) <= WALL_FLUSH || Math.abs(f - lv.base) > MAX_WALL_SNAP) return;
+      if (f === null || Math.abs(f - lv.base) <= WALL_FLUSH || Math.abs(f - lv.base) > MAX_WALL_SNAP || !takesPortals.has(lv.keys[k])) return;
       add(
-        `portal wall at ${fmt(p.at)} has its base at y=${r2(lv.base)}, but the ground beside its ${lv.sides[k]} face is at y=${r2(f)}: a portal there opens into the ground or above a step too high to climb. Make the ground on both sides y=${r2(lv.base)}, or set the wall's at.y to ${r2(f)} (height ${r2(lv.top - f)}).`,
+        `portal wall at ${fmt(p.at)} has its base at y=${r2(lv.base)}, but the ground beside its ${lv.sides[k]} face is at y=${r2(f)}: a portal there opens into the ground or above a step too high to climb. Make the ground on both sides y=${r2(lv.base)}, or set the wall's at.y to ${r2(f)} (height ${r2(lv.top - f)}), or turn portals off on that face (a wall between two ground levels should stand on the lower one and take portals on that face only).`,
       );
     });
   }

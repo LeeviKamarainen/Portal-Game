@@ -86,13 +86,13 @@ test('three bad drafts stop with the closest map and its problems', async () => 
   assert.match(outcome.problems.join('\n'), /the id "trap" is used twice/);
 });
 
-test('a parameter the catalogue does not know is a problem, even if the rest builds', async () => {
+test('a parameter the catalogue does not know is dropped without a repair call', async () => {
   const w = good();
   w.pieces.find((p) => p.type === 'spikes')!.params.push({ key: 'sparkle', value: '1' });
   const { llm, outcome } = await run({ brief: [brief()], draft: [w], repair: [good()] });
-  assert.deepEqual(llm.labels, ['brief', 'draft', 'repair']);
-  assert.match((llm.requests[2] as { user: string }).user, /unknown parameter "sparkle"/);
+  assert.deepEqual(llm.labels, ['brief', 'draft']);
   assert.equal(outcome.ok, true);
+  assert.ok(outcome.fixes.some((f) => /dropped unknown parameter "sparkle"/.test(f)));
 });
 
 test('running out of the 100K token budget stops with what there is', async () => {

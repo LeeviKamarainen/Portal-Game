@@ -79,6 +79,8 @@ export interface FromWire {
   map: MapData;
   /** Things in the wire map that could not be turned into map data; each is a problem to fix. */
   problems: string[];
+  /** What was dropped without a repair: parameters the piece does not have (they would do nothing). */
+  fixes: string[];
 }
 
 export interface WireOptions {
@@ -94,8 +96,9 @@ export const slug = (s: string): string =>
     .slice(0, 24) || 'map';
 
 /** One wire piece as a map-file piece; `index` is only for the wording of problems. */
-export function pieceFromWire(w: WirePiece, index: number): { piece: Piece; problems: string[] } {
+export function pieceFromWire(w: WirePiece, index: number): { piece: Piece; problems: string[]; fixes: string[] } {
   const problems: string[] = [];
+  const fixes: string[] = [];
   const p: Piece = { type: w.type, at: w.at as Vec3 };
   if (w.size.length) p.size = w.size as Vec3;
   if (w.rot) p.rot = w.rot;
@@ -104,21 +107,24 @@ export function pieceFromWire(w: WirePiece, index: number): { piece: Piece; prob
   for (const { key, value } of w.params) {
     const f = fieldOf(w.type, key);
     if (!f) {
-      problems.push(`${where}: unknown parameter "${key}" (allowed: ${(PIECES[w.type].fields ?? []).map((x) => x.key).join(', ') || 'none'})`);
+      // A parameter the piece does not have changes nothing, so it is dropped rather than sent back to the model.
+      fixes.push(`${where}: dropped unknown parameter "${key}"`);
       continue;
     }
     const r = parseValue(f, value);
     if ('error' in r) problems.push(`${where}: parameter "${key}": ${r.error}`);
     else p[key] = r.value;
   }
-  return { piece: p, problems };
+  return { piece: p, problems, fixes };
 }
 
 export function fromWire(wire: WireMap, opts: WireOptions = {}): FromWire {
   const problems: string[] = [];
+  const fixes: string[] = [];
   const pieces: Piece[] = wire.pieces.map((w, i) => {
     const r = pieceFromWire(w, i);
     problems.push(...r.problems);
+    fixes.push(...r.fixes);
     return r.piece;
   });
   const map: MapData = {
@@ -132,7 +138,7 @@ export function fromWire(wire: WireMap, opts: WireOptions = {}): FromWire {
     pieces,
   };
   if (wire.blurb) map.blurb = wire.blurb;
-  return { map, problems };
+  return { map, problems, fixes };
 }
 
 /** A map file in the model's shape (for few-shot examples, and for tests of the round trip). */

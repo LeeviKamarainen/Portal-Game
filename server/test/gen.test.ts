@@ -54,14 +54,15 @@ for (const { label, data } of maps) {
   });
 }
 
-test('wire params that are not valid values come back as problems', () => {
+test('wire params that are not valid values come back as problems; ones the piece does not have are dropped', () => {
   const wire = toWire(highwire());
   const spikes = wire.pieces.find((p) => p.type === 'spikes')!;
   spikes.params.push({ key: 'rest', value: 'soon' }, { key: 'sparkle', value: '1' });
-  const { problems } = fromWire(wire);
-  assert.equal(problems.length, 2);
-  assert.match(problems.join('\n'), /parameter "rest": "soon" is not a number/);
-  assert.match(problems.join('\n'), /unknown parameter "sparkle"/);
+  const { problems, fixes, map } = fromWire(wire);
+  assert.equal(problems.length, 1);
+  assert.match(problems.join(' | '), /parameter "rest": "soon" is not a number/);
+  assert.match(fixes.join(' | '), /dropped unknown parameter "sparkle"/);
+  assert.ok(map.pieces.every((p) => !('sparkle' in p)));
 });
 
 test('the catalogue lists every piece type, and is stable between calls', () => {
@@ -177,11 +178,6 @@ const BROKEN: { name: string; make: () => MapData; expect: RegExp; build?: true 
     expect: /spawn at \[0, 0, 20\] has no floor under it \(nothing below it\)/,
   },
   {
-    name: 'a spawn in the acid',
-    make: () => ({ ...highwire(), pieces: [...highwire().pieces, { type: 'spawn', at: [6, -0.6, 6], center: true }] }),
-    expect: /spawn at \[6, -2\.4, 6\] is in an acid pool/,
-  },
-  {
     name: 'a goal with no headroom under the ceiling',
     make: () => ({ ...blankPuzzle(), pieces: blankPuzzle().pieces.map((p) => (p.type === 'room' ? { ...p, size: [20, 2, 28] as [number, number, number] } : p)) }),
     expect: /goal at \[0, 0, -10\] has no headroom: the room ceiling is at y=2/,
@@ -281,12 +277,20 @@ test('a portal wall is made level with the ground beside it, and a mismatch it c
   assert.match(fixedSupport.fixes.join(' | '), /portal-wall.*to stand level with the ground/);
   assert.deepEqual(lint(fixedSupport.map).filter((p) => /portal wall/.test(p)), []);
 
-  // The two sides differ: no single level fits, so it is a problem for the model.
-  const split = mapWith(wall(0, 4), slab(-3));
-  assert.equal(fixSupport(split).fixes.length, 0);
-  const problems = lint(split).filter((p) => /portal wall/.test(p));
-  assert.equal(problems.length, 1);
-  assert.match(problems[0], /ground beside its north face is at y=0.5/);
+  // The two sides differ: no single level fits both. It stands on the lower one and takes portals
+  // on that face only, so there is no step into a portal and none opens into the ground.
+  const split = mapWith({ ...wall(0.5, 3.5), rot: 0 }, slab(-3));
+  const settled = fixSupport(split);
+  const sw = settled.map.pieces.find((p) => p.type === 'portal-wall')!;
+  assert.deepEqual([sw.at[1], (sw.size as number[])[1], sw.portal], [0, 4, ['back']], 'base on the lower ground (south side), top unchanged, portals on the south face');
+  assert.match(settled.fixes.join(' | '), /between ground at y=0 \(south side\) and y=0.5 \(north side\)/);
+  assert.deepEqual(lint(settled.map).filter((p) => /portal wall/.test(p)), []);
+  // The model's own wall that takes portals on the buried face is still reported when no fix applies.
+  const buried = mapWith({ ...wall(0, 4), portal: ['front', 'back'] }, slab(-3));
+  assert.equal(lint(buried).filter((p) => /portal wall/.test(p)).length, 1);
+  assert.match(lint(buried).filter((p) => /portal wall/.test(p))[0], /ground beside its north face is at y=0.5/);
+  // With portals only on the level side, the same wall is fine as it stands.
+  assert.deepEqual(lint(mapWith({ ...wall(0, 4), portal: ['back'] }, slab(-3))).filter((p) => /portal wall/.test(p)), []);
 
   // Flush on both sides: fine.
   const flush = mapWith(wall(0.5, 3.5), slab(-3), slab(3));
@@ -314,4 +318,32 @@ test('a spawn drawn inside an acid pool is moved to the nearest dry spot on the 
   assert.deepEqual(r.map.pieces[3].at, [10, 0, 10], 'a spawn already dry stays');
   assert.match(r.fixes.join(' | '), /out of the acid pool/);
   assert.deepEqual(lint(r.map).filter((p) => /acid/.test(p)), []);
+});
+
+test('a spawn with acid all around gets a dry pad cut out of the pool, mirrored copies included', () => {
+  const room: Piece = { type: 'room', at: [0, 0, 0], size: [40, 10, 40], center: true, portal: ['walls'] };
+  const base = { id: 'pad', name: 'Pad', hint: '' };
+  // The pool is the whole floor; there is no dry spot to move the spawns to.
+  const whole: MapData = {
+    ...base,
+    kind: 'combat',
+    pieces: [room, { type: 'acid', at: [0, 0, 0], size: [38, 0, 38], center: true }, { type: 'spawn', at: [-10, 0, 0] }, { type: 'spawn', at: [10, 0, 0] }],
+  };
+  const r = fixSupport(whole);
+  assert.match(r.fixes.join(' | '), /cut a 6 x 6 m dry pad/);
+  assert.deepEqual(lint(r.map).filter((p) => /acid/.test(p)), []);
+  assert.ok(r.map.pieces.filter((p) => p.type === 'acid').length >= 4, 'the pool became rectangles around the pads');
+  const area = (m: MapData) => m.pieces.filter((p) => p.type === 'acid').reduce((a, p) => a + (p.size as number[])[0] * (p.size as number[])[2], 0);
+  assert.ok(Math.abs(area(r.map) - (38 * 38 - 2 * 36)) < 1e-6, `only the two pads are gone (${area(r.map)})`);
+
+  // Symmetric map: the spawn sits inside the half-turn copy of the written pool, so the written one is cut.
+  const mirrored: MapData = {
+    ...base,
+    kind: 'combat',
+    symmetry: 'rotate180',
+    pieces: [room, { type: 'acid', at: [0, 0.4, 10], size: [38, 0, 20] }, { type: 'spawn', at: [-10, 0, -4], center: true }, { type: 'spawn', at: [10, 0, -4], center: true }],
+  };
+  const m = fixSupport(mirrored);
+  assert.deepEqual(lint(m.map).filter((p) => /acid/.test(p)), []);
+  assert.match(m.fixes.join(' | '), /dry pad/);
 });

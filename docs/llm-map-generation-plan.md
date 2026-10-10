@@ -173,9 +173,42 @@ Found by trying the generator: it forgot the floor (it set the room to "skip the
 ### 6. Puzzle quality
 - [ ] Convert 1-2 campaign puzzles (and a new plate/cube one) to JSON as few-shot; Portal substitution table; `checkPuzzle` + spawn-to-goal reachability lint (reuse `NavGraph` if it fits); "unverified" badge; critique tuning.
 
-### 7. Eval + deploy
-- [ ] `npm run gen:eval` over ~20 golden prompts against the real API (build-pass rate, attempts, tokens, cache hit rate, latency, cost); measure how far Haiku 5.5 gets within the 100K budgets, and only then decide whether a larger model for `draft` is worth its price.
-- [ ] Fly secrets, VM size, spend limit/alerts in the Console; update the deploy notes in `online-multiplayer-plan.md`.
+### 7. Eval + deploy - *eval done 2026-10-10; deploy prepared, not deployed*
+- [x] **Eval harness** (`npm run gen:eval`; `server/gen/golden.ts`, `evalRun.ts`, `evalReport.ts`, `eval.ts`): 20 golden prompts (12 combat, 8 puzzle, including the two from the original request) run through the real pipeline, N runs each, a few at a time. Per run it records result, drafts, tokens by kind, prompt-cache hit rate, latency, cost at list price, what the *first* check found wrong, what the review asked for, and what was still wrong when it gave up. The report (`report.md` + `report.json` + every map, under `generated/eval/<time>/`, gitignored) has a summary, a row per run, and the problem tables clustered by kind (numbers and ids stripped). Flags: `--only a,b`, `--runs n`, `--concurrency n`, `--no-critique`, `--thinking`, `--effort`, `--list`. A pass only means "builds and lints clean", so each prompt also carries measurable **expectations** (kind, spawns, piece counts, height spread, floating platforms, a hazard on each platform, portal surfaces, void floor); the report shows how many a built map meets. 10 offline tests cover the statistics, clustering, the golden set, the measurements and the runner with a scripted model.
+- [x] **Results with Haiku 5.5** (thinking off, effort low, review on):
+
+  | run | runs | build pass | first draft | meets expectations | tokens median / p90 / max | cost per run | latency median / p90 |
+  |---|---|---|---|---|---|---|---|
+  | 1: before the fixes below | 20 | 95% | 5% | 79% | 28.8K / 42.9K / 50.6K | $0.0025 | 13 s / 22 s |
+  | 2: same code, second sample | 20 | 80% | 30% | 75% | 29.1K / 41.3K / 43.1K | $0.0022 | 14 s / 19 s |
+  | 3: after the fixes | 40 | **100%** | 82% | 80%* | 17.8K / 29.6K / 41.2K | $0.0015 | 10 s / 13 s |
+  | 4: review on | 40 | **100%** | 78% | **97%** | 17.9K / 29.1K / 46.2K | $0.0017 | 10 s / 17 s |
+  | 4: review off | 40 | 100% | 82% | 95% | 16.8K / 26.9K / 41.2K | $0.0014 | 9 s / 11 s |
+
+  \* run 3 counted expectations the game cannot meet yet (a switch that opens a door, a crate on a target); they were removed from the golden set for run 4 and return with milestone 5.
+  Prompt cache hit rate was 84-88% of prompt tokens. No run came near the 100K job budget (max 50.6K), so the budget stays strict.
+- [x] **What the eval found and fixed** (every one was a code problem, not a model limit):
+  - *A wall between two ground levels could not be satisfied.* A portal wall on the edge of a shore or ledge has ground at one height on one side and another on the other; the lint demanded both, so the model flipped the wall between y=0 and y=1 for all three drafts. Now `fixSupport` stands the wall on the lower ground and lets only that face take portals (the other face is partly buried, which is what made portals open into the ground); the lint only complains about a face that takes portals.
+  - *A spawn with acid all around it could not be moved.* Models draw the pool over the whole floor, or over half of a symmetric map (so the mirrored copy covers the spawns). When no dry spot exists, `fixSupport` cuts a 6 x 6 m dry pad out of the pool (a pool's mirrored copy is cut through its written original).
+  - *A parameter the piece does not have* (`id` on a wall) was a problem that cost a repair call; it is dropped and listed under "fixes".
+  - *The review step reported what it could not see.* Half its "problems" were "not shown in the summary". It now treats a requirement the summary does not show either way as met, and reports only what the summary shows broken.
+  - Harness bug found on the way: the first check event carries no result, so "what the first draft got wrong" read empty in run 1.
+- [x] **Decisions the data supports**
+  - *Model:* Haiku 5.5 is enough: 100% build pass in 40 of 40 and 97% of measured expectations; nothing to buy with a larger model for `draft`. Revisit if the golden set grows harder prompts and the first-draft rate falls.
+  - *Review step:* keep it. It asked for changes in 15% of runs for +6% tokens (about $0.0003 a run) and fixed "hazards on each platform" on the original PvP prompt; the difference in expectations met (97% vs 95%) is one run in 40, a tie within the noise, decided by the price.
+  - *Cache reads in the job budget:* keep counting them in full. The largest job used 46K of 100K with cache reads counted in full, so loosening buys nothing.
+  - *Spend:* about $0.0017 a generation at list price. The default ceilings (5M tokens a day over all users, 10 a day per user) are roughly 280 generations, well under a dollar a day.
+- [x] **Deploy preparation**
+  - *Worker memory:* the check worker's heap was unbounded. In a production install (`npm ci --omit=dev`, built bundle) its resident memory climbed to 360 MB after 60 checks (garbage, not a leak), which with the server's ~140 MB would be killed on the 512 MB machine. The worker now has `resourceLimits` (128 MB old space, 16 MB young); the same 60 checks stay flat at 127 MB, and server plus worker are about 270 MB. A worker that does hit the cap dies, the check falls back to the main thread, and the next one starts a fresh worker (covered by a test).
+  - *Production dependencies:* verified by installing only `dependencies` in a clean directory and starting the built server: it boots, `/healthz` is ok, `/api/generate/quota` answers 401 (generator enabled with a key set), and the built worker checks a generated map in 20-250 ms.
+  - *Admin tool in production:* `npm run admin` uses `tsx`, a dev dependency the image omits, so on Fly there would have been no way to grant `generate-maps`. `build:server` now also bundles `dist-server/admin.js` (`npm run admin:prod -- grant <name> generate-maps`; on Fly `fly ssh console -C "node dist-server/admin.js grant <name> generate-maps"`). Verified against a scratch database.
+- [ ] **To do by the owner** (needs accounts and secrets, so not done here):
+  1. `fly secrets set ANTHROPIC_API_KEY=...` (the generator switches on when it is set; without it `/api/generate` answers 503 `generator-disabled` and the editor hides the button).
+  2. In the Anthropic Console: a monthly spend limit and an alert (the code's ceiling is per day in tokens; the Console limit is the backstop for everything else, including a leaked key).
+  3. `fly deploy`, then grant yourself the right with the command above and try it once in the editor.
+  4. Watch the first days: the machine's memory (`fly status`, `fly logs`) and the `generation_jobs` table for failures. Tuning without a code change: `GEN_DAILY_LIMIT`, `GEN_MAX_CONCURRENT`, `GEN_DAILY_TOKEN_CEILING`, `GEN_CRITIQUE=off`, `GEN_MODEL_DRAFT`.
+- **Not measured:** how the maps *play*. The eval shows that they build, lint clean and contain what was asked for; whether a layout is fun or fair needs people. Also still untried in a real browser: the Generate panel, the locked editor and the live diff view.
+- **Limit the eval made visible:** puzzles can only be as good as the mechanics. "A switch that opens a door" and "a crate that opens a door" cannot be built today (a switch only sets off hazards, a door opens only for a laser receiver, a target is a painted ring), and the generator says so in `notes`. Milestone 5a/5b removes this; add the matching expectations back to `golden.ts` when they land.
 
 ## Risks
 

@@ -5,6 +5,15 @@ import { checkGenerated, type CheckResult } from './check';
 /** A map check that takes longer than this is given up on. */
 const CHECK_TIMEOUT_MS = 30_000;
 
+/**
+ * The worker's JS heap is capped. Left alone V8 lets it grow to hundreds of megabytes of garbage
+ * from the headless builds (measured: 360 MB resident after 60 checks, flat at 127 MB with these
+ * limits), which on the 512 MB Fly machine with the server's own ~140 MB would be an out-of-memory
+ * kill. A map check peaks around 40 MB live. A worker that does hit the cap dies, `lost` re-checks
+ * on the main thread, and the next check starts a fresh one.
+ */
+export const WORKER_LIMITS = { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 } as const;
+
 interface Pending {
   resolve(r: CheckResult): void;
   reject(e: Error): void;
@@ -54,7 +63,7 @@ export class CheckWorker {
   private start(): Worker | null {
     if (this.worker) return this.worker;
     try {
-      const worker = new Worker(workerUrl());
+      const worker = new Worker(workerUrl(), { resourceLimits: { ...WORKER_LIMITS } });
       worker.on('message', (msg: { id: number; ok: boolean; result?: CheckResult; error?: string }) => {
         const p = this.pending.get(msg.id);
         if (!p) return;

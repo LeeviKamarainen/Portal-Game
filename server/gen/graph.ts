@@ -243,7 +243,7 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
       map: r.map,
       wire: toWire(r.map),
       problems,
-      fixes: [...grounded.fixes, ...r.fixes],
+      fixes: [...converted.fixes, ...grounded.fixes, ...r.fixes],
       checkOk: ok,
       okMap: ok ? r.map : s.okMap,
       closest,
