@@ -19,7 +19,8 @@ export type SoundName =
   | 'orb'
   | 'steal'
   | 'land'
-  | 'click';
+  | 'click'
+  | 'launch';
 
 /**
  * A sound the simulation made. `at` null: heard at full `volume` wherever you are (a click

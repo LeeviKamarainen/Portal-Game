@@ -9,6 +9,8 @@ import {
   RIGHTS,
   StoreError,
   userNameProblem,
+  type GenerationRecord,
+  type GenerationStatus,
   type MapRecord,
   type MapSummary,
   type Right,
@@ -58,6 +60,23 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX maps_owner ON maps(owner_id, updated_at DESC);
   CREATE INDEX maps_public ON maps(visibility, updated_at DESC);
+  `,
+  `
+  CREATE TABLE generation_jobs (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    prompt      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('running', 'ok', 'partial', 'failed', 'cancelled', 'interrupted')),
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    error       TEXT,
+    created_at  INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  CREATE INDEX generation_user ON generation_jobs(user_id, created_at DESC);
+  CREATE INDEX generation_time ON generation_jobs(created_at);
   `,
 ];
 
@@ -299,6 +318,59 @@ export class SqliteStore implements Store {
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
+  }
+
+  // --- the map generator ---
+
+  startGeneration(userId: number, id: string, prompt: string, kind: string): void {
+    this.run("INSERT INTO generation_jobs (id, user_id, prompt, kind, status, created_at) VALUES (?, ?, ?, ?, 'running', ?)", id, userId, prompt, kind, this.now());
+  }
+
+  finishGeneration(id: string, r: { status: GenerationStatus; attempts: number; tokensIn: number; tokensOut: number; error?: string | null }): void {
+    this.run(
+      'UPDATE generation_jobs SET status = ?, attempts = ?, tokens_in = ?, tokens_out = ?, error = ?, finished_at = ? WHERE id = ?',
+      r.status,
+      r.attempts,
+      r.tokensIn,
+      r.tokensOut,
+      r.error ?? null,
+      this.now(),
+      id,
+    );
+  }
+
+  countGenerationsSince(userId: number, sinceMs: number): number {
+    return Number(
+      this.one(
+        "SELECT COUNT(*) AS n FROM generation_jobs WHERE user_id = ? AND created_at >= ? AND status != 'interrupted' AND (status = 'running' OR tokens_in + tokens_out > 0)",
+        userId,
+        sinceMs,
+      )!.n,
+    );
+  }
+
+  tokensUsedSince(sinceMs: number): number {
+    return Number(this.one('SELECT COALESCE(SUM(tokens_in + tokens_out), 0) AS n FROM generation_jobs WHERE created_at >= ?', sinceMs)!.n);
+  }
+
+  interruptRunningGenerations(): number {
+    return this.run("UPDATE generation_jobs SET status = 'interrupted', finished_at = ? WHERE status = 'running'", this.now());
+  }
+
+  recentGenerations(userId: number, limit: number): GenerationRecord[] {
+    return this.all('SELECT * FROM generation_jobs WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', userId, Math.max(1, Math.floor(limit))).map((row) => ({
+      id: String(row.id),
+      userId: Number(row.user_id),
+      prompt: String(row.prompt),
+      kind: String(row.kind),
+      status: String(row.status) as GenerationStatus,
+      attempts: Number(row.attempts),
+      tokensIn: Number(row.tokens_in),
+      tokensOut: Number(row.tokens_out),
+      error: row.error === null ? null : String(row.error),
+      createdAt: Number(row.created_at),
+      finishedAt: row.finished_at === null ? null : Number(row.finished_at),
+    }));
   }
 
   close(): void {

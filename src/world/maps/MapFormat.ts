@@ -3,8 +3,7 @@ import type { ArenaBuilder, ArenaDef } from '../ArenaBuilder';
 import type { FaceKey, RoomSide } from '../Level';
 import type { MaterialName } from '../Materials';
 import { addLightStrip } from '../Markers';
-import type { LaserReceiver } from '../hazards/Laser';
-import type { Triggerable } from '../hazards/Hazard';
+import type { PowerSource, Triggerable } from '../hazards/Hazard';
 import { PLAYER_FEET_OFFSET } from '../../player/PlayerController';
 
 /**
@@ -24,7 +23,7 @@ import { PLAYER_FEET_OFFSET } from '../../player/PlayerController';
  *  - `symmetry: "rotate180"` copies every piece not marked `center` with a half turn
  *    about the map's centre, swapping team colours - fair two-team maps for half the work.
  *  - Hazards can carry an `id`; switches list the ids they set off in `targets`, doors
- *    name their `receiver`. In a symmetric map the copy of a piece gets its id with "~"
+ *    name their `receiver` (a laser receiver's or a floor button's id). In a symmetric map the copy of a piece gets its id with "~"
  *    added and its references flipped the same way, so each half's switch drives its own
  *    half (and a reference to "x~" from one half reaches the other half's "x").
  */
@@ -100,7 +99,8 @@ export interface PieceSpec {
 
 interface BuildContext {
   kind: MapKind;
-  receivers: Map<string, LaserReceiver>;
+  /** Everything a door can name: laser receivers and floor buttons, by id. */
+  receivers: Map<string, PowerSource>;
   triggerables: Map<string, Triggerable>;
   spawns: { feet: THREE.Vector3; yaw: number; team: Team | null }[];
   extent: THREE.Box3;
@@ -109,6 +109,9 @@ interface BuildContext {
 }
 
 export const TEAM_COLORS: Record<Team, number> = { orange: 0xff8a3a, blue: 0x3ab0ff };
+
+/** The steepest slope piece that can be walked: rise over run (about 40 degrees). */
+export const MAX_SLOPE = 0.8;
 
 const V = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 const rad = (deg: number) => (deg * Math.PI) / 180;
@@ -295,6 +298,21 @@ export const PIECES: Record<string, PieceSpec> = {
     fields: SOLID_FIELDS,
     build: solid,
   },
+  glass: {
+    label: 'Glass wall',
+    group: 'Structure',
+    help: 'A see-through pane: solid, but portal shots and beams stop at it, so nothing sticks to it. Keep it thin. at = bottom centre.',
+    turn: 'quarter',
+    sizeLabels: ['Width', 'Height', 'Thickness'],
+    defaults: { size: [6, 3, 0.15] },
+    fields: [{ key: 'tint', label: 'Tint', kind: 'color' }],
+    build(b, p, ctx) {
+      quarterTurns(p);
+      const { min, max } = footprint(p);
+      b.glass(min, max, color(p.tint, 0x9fd4ff));
+      ctx.extent.expandByPoint(min).expandByPoint(max);
+    },
+  },
   floor: {
     label: 'Floor slab',
     group: 'Structure',
@@ -330,6 +348,30 @@ export const PIECES: Record<string, PieceSpec> = {
       const dir = front(p.rot ?? 0);
       const base = V(p.at).addScaledVector(dir, -run / 2);
       b.stairs(base, dir, rise, run, width);
+      const { min, max } = footprint({ ...p, size: [width, rise, run] });
+      ctx.extent.expandByPoint(min).expandByPoint(max);
+    },
+  },
+  slope: {
+    label: 'Slope',
+    group: 'Structure',
+    help: 'A smooth ramp climbing toward its front; the sloping top can take portals. at = bottom centre of the whole ramp. Rise at most 0.8 x run (about 40 degrees) so it can be walked.',
+    turn: 'quarter',
+    sizeLabels: ['Width', 'Rise', 'Run'],
+    defaults: { size: [4, 3, 8], portal: ['top'] },
+    fields: [
+      { key: 'material', label: 'Material', kind: 'select', options: ['metal', 'panel', 'floor', 'trim', 'hazard'] },
+      { key: 'portal', label: 'Takes portals', kind: 'faces', hint: 'Only the slope itself can: list "top".' },
+    ],
+    build(b, p, ctx) {
+      quarterTurns(p);
+      const [width, rise, run] = p.size!;
+      if (!(width > 0 && rise > 0 && run > 0)) throw new Error('a slope needs a positive width, rise and run');
+      if (rise > run * MAX_SLOPE) throw new Error(`a slope may rise at most ${MAX_SLOPE} x its run (about 40 degrees) or it cannot be walked: rise ${rise}, run ${run}`);
+      const dir = front(p.rot ?? 0);
+      const base = V(p.at).addScaledVector(dir, -run / 2);
+      const portalable = faces(p.portal, 0).includes('py');
+      b.slope(base, dir, rise, run, width, { portalable, material: str<MaterialName>(p, 'material', 'metal') });
       const { min, max } = footprint({ ...p, size: [width, rise, run] });
       ctx.extent.expandByPoint(min).expandByPoint(max);
     },
@@ -495,11 +537,11 @@ export const PIECES: Record<string, PieceSpec> = {
   dropper: {
     label: 'Crate dropper',
     group: 'Hazards',
-    help: 'Drops a crate after a warning blink. at = drop point.',
+    help: 'Drops a crate after a warning blink. Switched off auto, it holds its crate until a switch sets it off (a cube dispenser). at = drop point.',
     turn: 'none',
-    fields: [{ key: 'ceiling', label: 'Ceiling height', kind: 'number', step: 0.1 }],
-    build(b, p) {
-      b.dropper(V(p.at), num(p, 'ceiling', p.at[1] + 1));
+    fields: [{ key: 'ceiling', label: 'Ceiling height', kind: 'number', step: 0.1 }, AUTO_FIELD, ID_FIELD],
+    build(b, p, ctx) {
+      register(ctx, p, b.dropper(V(p.at), num(p, 'ceiling', p.at[1] + 1), p.auto !== false));
     },
   },
   switch: {
@@ -547,20 +589,64 @@ export const PIECES: Record<string, PieceSpec> = {
       ctx.receivers.set(str(p, 'id'), b.receiver(V(p.at), front(p.rot ?? 0)));
     },
   },
+  button: {
+    label: 'Floor button',
+    group: 'Interactive',
+    help: 'A pressure pad set into the floor, held down by a crate (or a player). Opens the doors that name its id. at = floor surface centre.',
+    turn: 'quarter',
+    sizeLabels: ['Width', '-', 'Depth'],
+    defaults: { size: [2.4, 0, 2.4], id: 'button', needs: 'any' },
+    fields: [
+      { key: 'id', label: 'Id', kind: 'text', hint: 'a door names this as its receiver' },
+      { key: 'needs', label: 'Held down by', kind: 'select', options: ['any', 'crate'], hint: 'any: crate or player; crate: only a crate' },
+      { key: 'hold', label: 'Stays on (s)', kind: 'number', step: 0.5, hint: 'after being let go; 0 = not at all' },
+    ],
+    build(b, p, ctx) {
+      quarterTurns(p);
+      const { min, max } = footprint(p);
+      const button = b.button({
+        center: V(p.at),
+        size: new THREE.Vector2(max.x - min.x, max.z - min.z),
+        needs: oneOf(p, 'needs', ['any', 'crate'] as const, 'any'),
+        hold: num(p, 'hold', 0),
+      });
+      ctx.receivers.set(str(p, 'id'), button);
+      ctx.extent.expandByPoint(min).expandByPoint(max);
+    },
+  },
+  'jump-pad': {
+    label: 'Jump pad',
+    group: 'Interactive',
+    help: 'A plate in the floor that throws whoever steps on it, and any crate that lands on it, along an arc to the "to" point (a floor spot). at = floor surface centre.',
+    turn: 'quarter',
+    sizeLabels: ['Width', '-', 'Depth'],
+    defaults: { size: [2.4, 0, 2.4], apex: 3 },
+    fields: [
+      { key: 'to', label: 'Lands at', kind: 'vec3', hint: 'the floor point the throw comes down on' },
+      { key: 'apex', label: 'Arc height', kind: 'number', step: 0.5, hint: 'metres above the higher end of the throw' },
+    ],
+    build(b, p, ctx) {
+      quarterTurns(p);
+      const { min, max } = footprint(p);
+      const to = (p.to as Vec3 | undefined) ?? [p.at[0], p.at[1], p.at[2] - 12];
+      b.jumpPad({ center: V(p.at), size: new THREE.Vector2(max.x - min.x, max.z - min.z), target: V(to), apex: num(p, 'apex', 3) });
+      ctx.extent.expandByPoint(min).expandByPoint(max).expandByPoint(V(to));
+    },
+  },
   door: {
     label: 'Door',
     group: 'Interactive',
-    help: 'Open while its receiver is lit.',
+    help: 'Open while its receiver is lit or its floor button is held down.',
     turn: 'quarter',
     sizeLabels: ['Width', 'Height', 'Thickness'],
     defaults: { size: [4, 3.6, 0.6], receiver: 'receiver' },
-    fields: [{ key: 'receiver', label: 'Receiver id', kind: 'text' }],
+    fields: [{ key: 'receiver', label: 'Receiver / button id', kind: 'text', hint: 'the id of a laser receiver or a floor button' }],
     build(b, p, ctx) {
       const id = str(p, 'receiver');
       const { min, max } = footprint(p);
       ctx.later.push(() => {
         const r = lookup(ctx.receivers, id);
-        if (!r) throw new Error(`door at [${p.at.join(', ')}]: no receiver with id "${id}"`);
+        if (!r) throw new Error(`door at [${p.at.join(', ')}]: no receiver or button with id "${id}"`);
         b.door(min, max, r);
       });
     },

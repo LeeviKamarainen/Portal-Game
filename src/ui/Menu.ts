@@ -8,6 +8,7 @@ import { BOT_DIFFICULTIES, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_S
 import type { OnlineView } from '../net/OnlineLobby';
 import type { AccountClient } from '../net/AccountClient';
 import { ACCOUNT_CSS, AccountUi } from './AccountUi';
+import { AdminUi } from './AdminUi';
 
 /**
  * The main menu (tutorial stages, PvP, settings) and the pause menu, drawn as HTML over the
@@ -37,7 +38,7 @@ export interface MenuHandlers {
   onlineError(message: string): void;
 }
 
-type Page = 'main' | 'pause' | 'tutorial' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps';
+type Page = 'main' | 'pause' | 'tutorial' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin';
 type SettingsTab = 'character' | 'graphics' | 'lighting' | 'controls';
 
 const previewUrls = import.meta.glob('../assets/players/Previews/*.png', {
@@ -183,6 +184,7 @@ export class Menu {
   private codeField = '';
   private readonly accounts: AccountClient;
   private readonly ui: AccountUi;
+  private readonly admin: AdminUi;
 
   constructor(container: HTMLElement, settings: Settings, handlers: MenuHandlers, accounts: AccountClient) {
     this.settings = settings;
@@ -191,11 +193,16 @@ export class Menu {
     this.nameField = settings.playerName;
     this.ui = new AccountUi(accounts, {
       redraw: () => {
-        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page);
+        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page, true);
       },
       edit: (data, id) => this.handlers.editAccountMap(data, id),
       useInRoom: (data) => this.handlers.setRoomMap({ kind: 'custom', data }),
       lobbyError: (message) => this.handlers.onlineError(message),
+    });
+    this.admin = new AdminUi(accounts, {
+      redraw: () => {
+        if (this.isOpen && this.page === 'admin') this.show('admin', true);
+      },
     });
     const style = document.createElement('style');
     style.textContent = CSS + ACCOUNT_CSS;
@@ -287,7 +294,8 @@ export class Menu {
   /** The server said who is logged in (or that nobody is): the pages that show it redraw. */
   setAccount(): void {
     this.ui.userChanged();
-    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps')) this.show(this.page);
+    this.admin.userChanged();
+    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps' || this.page === 'admin')) this.show(this.page);
   }
 
   /** The name to play under: the account's, when logged in. */
@@ -313,10 +321,16 @@ export class Menu {
     return this.muted ? '\u{1F507} Sound off' : '\u{1F50A} Sound on';
   }
 
-  private show(page: Page): void {
+  /**
+   * Draws `page`. `redraw`: it is already showing and only its data changed, so nothing is
+   * fetched again (a page's load ends in a redraw: fetching here too would loop forever, and
+   * the buttons would be replaced under the mouse between press and release).
+   */
+  private show(page: Page, redraw = false): void {
     if (this.page === 'account' && page !== 'account') this.ui.leftPage();
     this.page = page;
-    if (page === 'maps') void this.ui.loadMaps(true);
+    if (!redraw && page === 'maps') void this.ui.loadMaps(true);
+    if (!redraw && page === 'admin') void this.admin.load();
     this.root.classList.toggle('dim', page !== 'main');
     this.root.classList.toggle('peek', page === 'settings' && (this.tab === 'lighting' || this.tab === 'graphics'));
     if (page !== 'settings' || this.tab !== 'character') this.preview?.stop();
@@ -341,6 +355,7 @@ export class Menu {
             ${this.item('settings', 'Settings', 'Character, graphics, lighting, controls')}
             ${this.item('editor', 'Map editor', 'Build arenas from blocks, hazards and switches')}
             ${this.accounts.user ? this.item('maps', 'My maps', 'Maps you saved online, and the ones players share') : ''}
+            ${this.accounts.isAdmin ? this.item('admin', 'Admin', 'Players and the rights they have') : ''}
             ${this.item('account', this.accounts.user ? `Account <span class="chip idle">${esc(this.accounts.user.name)}</span>` : 'Log in', this.accounts.user ? 'Your name, password and saved maps' : 'Register or log in to keep maps online')}
           </div>${foot}`;
       }
@@ -410,6 +425,8 @@ export class Menu {
         return `${back}${this.ui.renderAccount()}${foot}`;
       case 'maps':
         return `${back}${this.ui.renderMaps()}${foot}`;
+      case 'admin':
+        return `${back}${this.admin.render()}${foot}`;
       case 'settings':
         return `${back}
           <div class="eyebrow">Options</div>
@@ -596,6 +613,10 @@ export class Menu {
             ['false', 'Off'],
             ['true', 'On'],
           ]),
+          this.segRow('portalPings', 'Enemy portal pings', 'A flash and an edge arrow where an opponent opens a portal, within earshot.', [
+            ['true', 'On'],
+            ['false', 'Off'],
+          ]),
           `<div class="row"><div><div class="lbl">Sound</div><div class="sub">Also M in game.</div></div>
             <button class="btn" data-action="mute">${this.muteLabel()}</button></div>`,
         ].join('');
@@ -662,9 +683,14 @@ export class Menu {
       this.ui.click(a, el);
       return;
     }
+    if (a.startsWith('admin-')) {
+      this.admin.click(a, el);
+      return;
+    }
     switch (a) {
       case 'account':
       case 'maps':
+      case 'admin':
         this.show(a);
         break;
       case 'back':
@@ -776,7 +802,7 @@ export class Menu {
           character: ['skin'],
           graphics: ['quality', 'fov'],
           lighting: ['brightness', 'ambient', 'glow', 'shadows'],
-          controls: ['sensitivity', 'invertY'],
+          controls: ['sensitivity', 'invertY', 'portalPings'],
         };
         for (const k of keys[this.tab]) (this.settings as unknown as Record<string, unknown>)[k] = DEFAULT_SETTINGS[k];
         this.changed();

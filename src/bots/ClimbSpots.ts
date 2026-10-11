@@ -14,6 +14,14 @@ const HIGH = 5;
 /** A wall exit is only worth simulating with high floor this far out in front of it, and this far below it. */
 const WALL_FRONT = 1.2;
 const WALL_BELOW = 3;
+/**
+ * Whoever lands has to have floor all round: a body coming straight down out of a ceiling
+ * drifts (it steers in the air, and comes out up to a portal's half-length off its centre),
+ * and one that comes out of a wall carries on a little - so a landing on a narrow bridge over
+ * a pit is no climb, it is a coin toss. Floor this far out.
+ */
+const LAND_MARGIN_DROP = 2.4;
+const LAND_MARGIN_WALL = 1.0;
 
 /** An exit portal that lands whoever comes out of it on walkable floor (high floor, for a wall). */
 export interface ClimbSpot {
@@ -111,6 +119,20 @@ export class ClimbSpots {
       land ??= f.land;
       impact = Math.max(impact, f.impact);
     }
-    if (node && land) this.spots.push({ face, point, normal: face.normal.clone(), kind, land, node, impact });
+    if (node && land && this.roomAround(land, kind === 'ceiling' ? LAND_MARGIN_DROP : LAND_MARGIN_WALL, node.y)) {
+      this.spots.push({ face, point, normal: face.normal.clone(), kind, land, node, impact });
+    }
+  }
+
+  /** Walkable, safe floor at the same height in every direction `margin` out from `at`. */
+  private roomAround(at: THREE.Vector3, margin: number, floorY: number): boolean {
+    const probe = new THREE.Vector3();
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      probe.set(at.x + Math.cos(a) * margin, floorY + PLAYER_FEET_OFFSET, at.z + Math.sin(a) * margin);
+      const n = this.nav.nearest(probe, 0);
+      if (!n || n.hazards.length || Math.abs(n.y - floorY) > 0.6) return false;
+    }
+    return true;
   }
 }

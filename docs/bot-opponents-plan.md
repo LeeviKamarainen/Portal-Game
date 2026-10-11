@@ -294,6 +294,85 @@ and flicks faster; harder bots move and turn faster.
 - [x] Balance (50 matches per pairing): Normal beats Easy 84% (was 76%), **Hard beats Normal
       82%** (was 90% - Normal got faster too), Hard beats Easy 96%; Hard wins in ~49 s.
 
+### 6d. Any map, any hazard, a much quicker Hard — *done 2026-10-10*
+
+User request: the AI should work on other levels too (it only knew Highwire's acid pit), bots
+should launch enemies to the ceiling more often where there are portal ceiling tiles and port
+enemies over any nearby hazard, and Hard should be a lot quicker on its actions.
+
+What was wrong: `TrapSpots` only looked near acid pools (and below a 14 m height cap), so on
+Catwalk, Shaft and Courtyard the bots had **no trap exits at all** (0 spots - no traps, no
+climbs or drop-ins either, which wait for a trap exit in view); even on Highwire, Hard's chain
+of actions was slow (reaction delay on every own shot, 3 s trap cooldown, exit then floor).
+
+- [x] **Hazard-agnostic trap exits** (`TrapSpots.ts`). Every portal-taking wall and ceiling
+      point is flown out of at the three exit speeds and the landing is read off the arena
+      itself: acid, static spikes, the kill plane (`kind: 'lethal'`); a cycling spike bed, which
+      kills only inside its window (`Hazard.deadlyWindow()`, `kind: 'timed'` - the bot holds
+      the floor shot until the victim would land in the window); and plain **fall damage**
+      (`kind: 'fall'`: the game's own `(impact - 13) * 4`). Health never regenerates, so a drop
+      from a ceiling slot that takes 50 is half a kill and the second one finishes it. Highwire:
+      84 lethal + ~530 fall exits (was 56); Catwalk/Shaft/Courtyard: 330-580 (was 0), built in
+      100-250 ms per match.
+- [x] **Ceiling launches.** A ceiling exit drops whoever comes out straight down, so among exits
+      that only hurt they get a bonus (they land under the slot, in view, in reach of a second
+      drop - and on Catwalk's 3 m bridge over the acid often off it). A sure kill still always
+      outranks a fall. Spots are scored by value against the enemy's health (`trapValue`; Hard
+      sees it, the others count the damage their own traps did, per life).
+- [x] **Quicker Hard** (`BotSkill`): reaction 0.15 -> 0.06 s, shot cooldown 0.25 -> 0.12 s,
+      thinks every 0.04 s, turn 620 -> 900°/s, settles faster, runs 1.22 -> 1.3x; its trap and
+      steal shots are `decisive` (no reaction delay, as climb shots always were); trap cooldown
+      3 -> 0.5 s, climb cooldown 6 -> 2.5 s, drop-in roll every 1.2 s at 60%; looks at where a
+      shot landed after 0.05 s; and `anticipate`: with nobody to trap it parks its exit in the
+      best deadly spot in view, so the trap is one shot when someone steps on good floor.
+      Median time from deciding on a trap to the floor portal opening: 0.9 s -> 0.45 s; first
+      shot 0.87 -> 0.1 s after seeing an enemy standing in the open. A direct trap now comes
+      before a drop-in for show.
+- [x] **Floor shots are aimed in metres, not degrees.** A floor portal is ~2 m long along the
+      line of fire, so the slack is about 0.8 m on the ground - but from 25 m away at eye height
+      1 degree of aim error is ~6 m of floor. Half of all floor shots were missing by 2-5 m
+      (and Easy/Normal's much more). The fire tolerance is now that slack as an angle, and a bot
+      only starts a floor trap from within the reach its aim can hold (`floorReach`: further
+      from higher ground) - otherwise it closes in first.
+- [x] Fixed on the way (all found by the new headless benchmarks): a sidestep carried on in
+      the direction it was chosen in view space while the head turned (fast Hard heads turned
+      it off bridges), and checked 3 m of floor for a 4 m slide; a bot that died mid-climb
+      kept the climb plan after respawning and stood there until it timed out; a climb whose
+      entrance ended up behind something just waited (now re-picks or gives up); its own
+      climb entrance left open beside it became a death trap the moment a trap exit was placed
+      (no new exit while its own floor portal is within 3.6 m; a sprung trap's portals are
+      left alone until the victim has been through, so a drop-in's exit shot no longer
+      redirects its own victim); landing margins for drop-ins (a ceiling exit over a narrow
+      bridge is a coin toss: floor all round at 2.4 m); stuck in a hollow below the walkway
+      (a jump gets out); standing inside a portal's avoid margin blocked every route
+      (the way out stays open); unlinked portals no longer count as obstacles; the same portal
+      stolen back and forth forever (2 tries per 30 s); tiers reachable only by portal (Catwalk's
+      bridge) are no longer a dead end - drops up to 12 m are in the graph at a price per point
+      of fall damage.
+- [x] Tests: `?test=brain` 17 checks (new: exits on every built-in map; Hard traps someone on a
+      map with no acid by a long drop; the drop-in test now takes direct traps out of the
+      picture); `server/test/botTraps.test.ts` (5: exits on every map, ceiling slot over spikes
+      is a kill and over floor a long fall with its damage, the kill plane, a cycling bed's
+      window matches the bed, a bot traps on a bare map). All other suites pass (sim 10, bots 8,
+      nav 7, players 15, scoring 14, hazards 14, arenas 8, portals 15; server 155).
+- Balance (40 matches per pairing and map, 150 s limit, sides swapped, headless):
+
+  | | Highwire | Catwalk | Shaft | Courtyard |
+  |---|---|---|---|---|
+  | Normal beats Easy | 34/40, 68 s | 34/40, 51 s | 26/40 (+6 unfinished), 91 s | 32/40, 48 s |
+  | **Hard beats Normal** | 40/40, 46 s | 40/40, 22 s | 34/40, 27 s | 40/40, 26 s |
+  | **Hard beats Easy** | 39/40, 42 s | 40/40, 21 s | 32/40, 35 s | 40/40, 25 s |
+
+  Before this change, on the same seeds: Highwire Hard beat Normal 28/30 in ~51 s and Easy 30/30
+  in ~52 s; on the other three maps nobody was ever killed (0 trap kills) and matches were
+  slower (Hard v Easy 45 / 70 (+10 unfinished) / 40 s; Hard v Normal 43 / 66 (+9 unfinished) /
+  40 s on Catwalk / Shaft / Courtyard). Kills per minute in Hard-v-Hard: Highwire 3.9 -> 4.7,
+  the others 0 -> 3.5-6.5.
+- Known limits: against another Hard the victim's flash immunity (Hard flashes before hard
+  landings) cancels most single fall traps - they still burn the immunity (5 s) for the follow-up;
+  a wall exit flings the victim to somewhere the bot can't always follow up; timed hazards other
+  than spike beds (crushers, rams, trapdoors) aren't used as trap landings yet.
+
 ### 7. More tactics, more players
 
 - [x] **Free-for-all, first cut** (2026-10-08): 1-3 bots picked in the PvP menu

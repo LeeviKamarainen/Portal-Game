@@ -3,8 +3,12 @@ import RAPIER from '@dimforge/rapier3d-compat';
 export type ColliderOwnerType =
   | 'player'
   | 'solid'
+  /** A pane that blocks bodies, portal shots and beams but not sight. */
+  | 'glass'
   | 'prop'
   | 'portal-tunnel'
+  /** The invisible glide ramp under a staircase: felt by walkers and crates, not by rays. */
+  | 'ramp'
   | 'hazard'
   | 'mover'
   | 'receiver'

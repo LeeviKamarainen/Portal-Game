@@ -22,6 +22,8 @@ export interface Settings {
   fov: number;
   sensitivity: number;
   invertY: boolean;
+  /** A flash and an edge arrow where an opponent opens a portal (see ui/PortalPings). */
+  portalPings: boolean;
   /** The PvP bots' difficulty, and how many of them (everyone for themselves). */
   botDifficulty: BotDifficultySetting;
   botCount: number;
@@ -41,6 +43,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   fov: 90,
   sensitivity: 1,
   invertY: false,
+  portalPings: true,
   botDifficulty: 'normal',
   botCount: 1,
   playerName: '',
@@ -93,6 +96,7 @@ export function loadSettings(): Settings {
     fov: clamp(s.fov, 60, 100, d.fov),
     sensitivity: clamp(s.sensitivity, 0.2, 3, d.sensitivity),
     invertY: typeof s.invertY === 'boolean' ? s.invertY : d.invertY,
+    portalPings: typeof s.portalPings === 'boolean' ? s.portalPings : d.portalPings,
     botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard'] as const, d.botDifficulty),
     botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
     playerName: typeof s.playerName === 'string' ? s.playerName.slice(0, 16) : d.playerName,

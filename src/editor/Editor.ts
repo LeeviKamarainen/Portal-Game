@@ -21,6 +21,8 @@ import {
 import { pieceView } from './PieceViews';
 import { BUILT_IN_MAPS, blankMap } from './templates';
 import { carried, directlyAttached, faceMotion, shift, surfaceBox, turnAbout } from './Attach';
+import { GeneratePanel, type GenerateHost, type GeneratorService } from './GeneratePanel';
+import type { MapHead } from '../net/generate';
 
 /**
  * The map editor: build a map from the piece catalogue in 3D, tune every piece in an
@@ -40,6 +42,8 @@ export interface EditorHandlers {
   playtest(map: MapData): void;
   /** Saves the map to the player's account (`id`: the saved map it came from, if any); resolves with the saved map's id, rejects with a reason. */
   saveToAccount(map: MapData, id: string | null): Promise<string>;
+  /** The AI map generator, when this page has a game server to ask. The Generate button shows only for users with the right. */
+  generator?: GeneratorService;
   exit(): void;
 }
 
@@ -150,6 +154,35 @@ interface Marquee {
   single: boolean;
 }
 
+/** A map the generator is building, drawn in place of the editor's own while it works. */
+interface LiveBuild {
+  group: THREE.Group;
+  symmetric: boolean;
+  /** Yellow box round the newest piece. */
+  cursor: THREE.Box3Helper | null;
+  /** The camera has been pointed at it. */
+  framed: boolean;
+  /** The model has started writing, so the editor's own map is hidden. */
+  shown: boolean;
+  /** What is drawn, piece by piece (index = piece index), so a new version only redraws what differs. */
+  pieces: Piece[];
+  views: THREE.Object3D[];
+  /** Green boxes round pieces that just changed. */
+  marks: { helper: THREE.Box3Helper; until: number }[];
+}
+
+/** Same piece, ignoring the order of keys and the defaults a model may or may not write out. */
+function samePiece(a: Piece, b: Piece): boolean {
+  const canon = (p: Piece) => {
+    const { rot, center, ...rest } = p;
+    const o: Record<string, unknown> = { ...rest };
+    if (rot) o.rot = rot;
+    if (center) o.center = true;
+    return JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+  };
+  return canon(a) === canon(b);
+}
+
 export class Editor {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly handlers: EditorHandlers;
@@ -187,6 +220,9 @@ export class Editor {
   private loaded = false;
   /** The saved (online) map being edited, so Save online updates it. */
   private cloudId: string | null = null;
+  private readonly generate: GeneratePanel | null;
+  /** While the map generator is building a map: what is shown instead of the editor's map (editing is locked). */
+  private live: LiveBuild | null = null;
 
   constructor(container: HTMLElement, renderer: THREE.WebGLRenderer, envMap: THREE.Texture, handlers: EditorHandlers) {
     this.renderer = renderer;
@@ -199,9 +235,10 @@ export class Editor {
     this.root.className = 'editor';
     this.root.innerHTML = this.layout();
     container.appendChild(this.root);
-    for (const name of ['palette', 'outline', 'inspector', 'msg', 'coords', 'title', 'toast', 'open-menu', 'grid', 'height', 'undo', 'redo', 'file', 'carry', 'marquee']) {
+    for (const name of ['palette', 'outline', 'inspector', 'msg', 'coords', 'title', 'toast', 'open-menu', 'grid', 'height', 'undo', 'redo', 'file', 'carry', 'marquee', 'generate']) {
       this.el[name] = this.root.querySelector(`[data-el="${name}"]`)!;
     }
+    this.generate = handlers.generator ? new GeneratePanel(this.root, handlers.generator, this.generateHost()) : null;
 
     this.scene.background = new THREE.Color(0x0d1118);
     this.scene.environment = envMap;
@@ -226,9 +263,10 @@ export class Editor {
 
     this.bindUi();
     const canvas = renderer.domElement;
-    canvas.addEventListener('pointerdown', (e) => this.active && this.onPointerDown(e));
-    window.addEventListener('pointermove', (e) => this.active && this.onPointerMove(e));
-    window.addEventListener('pointerup', (e) => this.active && this.onPointerUp(e));
+    // While a map is being generated the editor's map is not editable (the camera still is).
+    canvas.addEventListener('pointerdown', (e) => this.active && !this.live && this.onPointerDown(e));
+    window.addEventListener('pointermove', (e) => this.active && !this.live && this.onPointerMove(e));
+    window.addEventListener('pointerup', (e) => this.active && !this.live && this.onPointerUp(e));
     window.addEventListener('keydown', (e) => this.active && this.onKey(e));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -265,10 +303,15 @@ export class Editor {
     this.active = true;
     this.controls.enabled = true;
     this.root.classList.add('open');
+    // The right can be granted between visits, so ask every time.
+    const allowed = !!this.generate && !!this.handlers.generator?.allowed();
+    (this.el.generate as HTMLButtonElement).hidden = !allowed;
+    if (!allowed) this.generate?.hide();
     this.status('');
   }
 
   close(): void {
+    this.generate?.abandon();
     this.active = false;
     this.controls.enabled = false;
     this.root.classList.remove('open');
@@ -282,6 +325,7 @@ export class Editor {
   }
 
   render(dt: number): void {
+    this.expireMarks();
     this.panCamera(dt);
     this.controls.update();
     const w = window.innerWidth;
@@ -375,13 +419,13 @@ export class Editor {
     });
   }
 
-  private viewFor(p: Piece, index: number): THREE.Object3D {
+  private viewFor(p: Piece, index: number, symmetric = isSymmetric(this.map)): THREE.Object3D {
     const group = new THREE.Group();
     const full = withDefaults(p);
     const main = pieceView(full);
     main.userData.pieceIndex = index;
     group.add(main);
-    if (isSymmetric(this.map) && !p.center) {
+    if (symmetric && !p.center) {
       const mirror = pieceView(rotated(full));
       mirror.traverse((o) => {
         const m = o as THREE.Mesh;
@@ -438,6 +482,172 @@ export class Editor {
     this.camera.position.copy(center).add(new THREE.Vector3(size * 0.35, size * 0.55, size * 0.6));
     this.camera.far = Math.max(600, size * 6);
     this.camera.updateProjectionMatrix();
+  }
+
+  // ---------------------------------------------------------------- generated maps, live
+
+  /** What the generator panel may do to the editor (see GeneratePanel.ts). */
+  private generateHost(): GenerateHost {
+    return {
+      currentMap: () => this.map,
+      begin: () => this.beginLive(),
+      liveStart: (head) => this.liveStart(head),
+      livePiece: (piece, index) => this.livePiece(piece, index),
+      liveMap: (map) => this.liveMap(map),
+      end: (map, options) => this.endLive(map, options.keepSavedLink),
+      status: (text, error) => this.status(text, error),
+    };
+  }
+
+  /** Locks editing; the editor's own map stays on screen until the model starts writing a new one. */
+  private beginLive(): void {
+    this.cancelPlacing();
+    this.drag = null;
+    this.marquee = null;
+    this.el.marquee.style.display = 'none';
+    if (this.live) this.discardLive(this.live);
+    this.live = { group: new THREE.Group(), symmetric: false, cursor: null, framed: false, shown: false, pieces: [], views: [], marks: [] };
+    this.scene.add(this.live.group);
+    this.root.classList.add('live');
+  }
+
+  private dropHelper(h: THREE.Box3Helper): void {
+    h.removeFromParent();
+    h.geometry.dispose();
+  }
+
+  /** Removes every view and marker of a live build. */
+  private clearLive(live: LiveBuild): void {
+    for (const v of live.views) this.disposeView(v);
+    live.views = [];
+    live.pieces = [];
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
+    for (const m of live.marks) this.dropHelper(m.helper);
+    live.marks = [];
+  }
+
+  private discardLive(live: LiveBuild): void {
+    this.clearLive(live);
+    live.group.removeFromParent();
+  }
+
+  /** Hides the editor's own map behind the generated one (the first time it is needed). */
+  private showLive(live: LiveBuild, symmetric: boolean): void {
+    // Only a change of mirroring redraws everything: the views of a mirrored map carry ghost copies.
+    if (live.symmetric !== symmetric) this.clearLive(live);
+    live.symmetric = symmetric;
+    live.shown = true;
+    this.world.visible = false;
+    this.highlights.visible = false;
+  }
+
+  private frameLive(live: LiveBuild): void {
+    const box = new THREE.Box3();
+    for (const v of live.views) box.expandByObject(v.children[0] ?? v);
+    if (box.isEmpty()) return;
+    live.framed = true;
+    this.frameBox(box);
+  }
+
+  /**
+   * Makes piece `index` of the live view `piece`, redrawing it only if it differs from what is
+   * shown. A repair sends the whole map again; nearly all of it is what is already on screen,
+   * and only the changes should appear. Returns the new view, or null when nothing changed.
+   */
+  private liveSet(live: LiveBuild, index: number, piece: Piece): THREE.Object3D | null {
+    const old = live.pieces[index];
+    if (old && samePiece(old, piece)) return null;
+    if (live.views[index]) this.disposeView(live.views[index]);
+    const view = this.viewFor(piece, index, live.symmetric);
+    live.group.add(view);
+    live.views[index] = view;
+    live.pieces[index] = piece;
+    return view;
+  }
+
+  private boxOf(view: THREE.Object3D): THREE.Box3 {
+    return new THREE.Box3().setFromObject(view.children[0] ?? view);
+  }
+
+  /** The model began writing a map (a first draft, or a repair): what is shown stays, and changes patch it. */
+  private liveStart(head: MapHead): void {
+    const live = this.live;
+    if (!live) return;
+    this.showLive(live, isSymmetric({ kind: head.kind, symmetry: head.symmetry } as MapData));
+  }
+
+  /** One piece, as the model finishes writing it; a yellow box marks the newest one that changed. */
+  private livePiece(piece: Piece, index: number): void {
+    const live = this.live;
+    if (!live?.shown) return;
+    const view = this.liveSet(live, index, piece);
+    if (!view) return;
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
+    if (piece.type !== 'room') {
+      const box = this.boxOf(view);
+      if (!box.isEmpty()) {
+        live.cursor = new THREE.Box3Helper(box.expandByScalar(0.06), 0xffd040);
+        this.scene.add(live.cursor);
+      }
+    }
+    if (!live.framed && piece.type === 'room') this.frameLive(live);
+  }
+
+  /**
+   * The map after code changed it (the structure built from the plan, or a checked draft):
+   * what differs from what is shown is redrawn, and flashed green for a moment.
+   */
+  private liveMap(map: MapData): void {
+    const live = this.live;
+    if (!live) return;
+    this.showLive(live, isSymmetric(map));
+    const first = live.pieces.length === 0;
+    const now = performance.now();
+    map.pieces.forEach((p, i) => {
+      const view = this.liveSet(live, i, p);
+      if (!view || first) return;
+      const box = this.boxOf(view);
+      if (box.isEmpty() || live.marks.length >= 40) return;
+      const helper = new THREE.Box3Helper(box.expandByScalar(0.08), 0x40ff90);
+      this.scene.add(helper);
+      live.marks.push({ helper, until: now + 1600 });
+    });
+    while (live.pieces.length > map.pieces.length) {
+      this.disposeView(live.views.pop()!);
+      live.pieces.pop();
+    }
+    if (live.cursor) this.dropHelper(live.cursor);
+    live.cursor = null;
+    if (!live.framed) this.frameLive(live);
+  }
+
+  /** Called every frame: lets the green change markers go. */
+  private expireMarks(): void {
+    const live = this.live;
+    if (!live || live.marks.length === 0) return;
+    const now = performance.now();
+    live.marks = live.marks.filter((m) => {
+      if (m.until > now) return true;
+      this.dropHelper(m.helper);
+      return false;
+    });
+  }
+
+  /** Unlocks editing. A map becomes the editor's (undoable, so Undo brings back the previous one). */
+  private endLive(map: MapData | null, keepSavedLink: boolean): void {
+    if (this.live) {
+      this.discardLive(this.live);
+      this.live = null;
+    }
+    this.root.classList.remove('live');
+    this.world.visible = true;
+    this.highlights.visible = true;
+    if (!map) return;
+    this.setMap(structuredClone(map));
+    if (!keepSavedLink) this.setCloudId(null);
+    this.frameAll();
   }
 
   // ---------------------------------------------------------------- selection
@@ -883,6 +1093,14 @@ export class Editor {
   private onKey(e: KeyboardEvent): void {
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+    if (this.live) {
+      // Only the camera keys work while a map is being generated.
+      if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE'].includes(e.code) && !e.ctrlKey && !e.metaKey) {
+        this.keys.add(e.code);
+        e.preventDefault();
+      }
+      return;
+    }
     const ctrl = e.ctrlKey || e.metaKey;
     const step = GRID_STEPS[this.gridIndex];
     const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -987,6 +1205,7 @@ export class Editor {
         <label title="Height of the build plane ([ and ])">Height <input type="number" step="0.5" value="0" data-el="height"></label>
         <label title="Pieces standing on, hanging under or mounted on what you move, turn or resize go with it (C)"><input type="checkbox" data-el="carry" checked> Carry attached</label>
         <div class="grow"></div>
+        <button class="b" data-act="generate" data-el="generate" hidden title="Describe a map and have the AI build it, or change this one">Generate</button>
         <button class="b primary" data-act="play">▶ Playtest</button>
         <button class="b" data-act="exit">Exit</button>
         <input type="file" accept=".json,application/json" data-el="file" hidden>
@@ -1047,6 +1266,9 @@ export class Editor {
           break;
         case 'play':
           this.playtest();
+          break;
+        case 'generate':
+          this.generate?.toggle();
           break;
         case 'exit':
           this.handlers.exit();

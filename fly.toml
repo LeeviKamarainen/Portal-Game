@@ -3,6 +3,14 @@
 #   fly volumes create portal_data --size 1
 #   fly deploy
 # Then set ALLOWED_ORIGINS below to your app's address and deploy again.
+#
+# AI map generator (docs/llm-map-generation-plan.md): off until a key is set. The key is a
+# secret, so it does not belong in this file:
+#   fly secrets set ANTHROPIC_API_KEY=...
+# Give someone the right (the image has no tsx; the admin tool is bundled):
+#   fly ssh console -C "node dist-server/admin.js grant <name> generate-maps"
+# Optional tuning, as [env] entries: GEN_DAILY_LIMIT (10 per user), GEN_MAX_CONCURRENT (2),
+# GEN_DAILY_TOKEN_CEILING (5000000 over all users), GEN_CRITIQUE=off.
 
 app = "portal-arena"
 primary_region = "arn"

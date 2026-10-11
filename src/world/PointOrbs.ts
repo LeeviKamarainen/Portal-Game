@@ -321,7 +321,7 @@ export class PointOrbs {
       undefined,
       (c) => {
         const t = physics.getOwner(c.handle)?.type;
-        return t !== 'portal-tunnel' && t !== 'player' && t !== 'prop';
+        return t !== 'portal-tunnel' && t !== 'player' && t !== 'prop' && t !== 'ramp';
       },
     );
     // Starting inside something reports a hit at 0.
@@ -357,7 +357,7 @@ export class PointOrbs {
       undefined,
       (c) => {
         const t = physics.getOwner(c.handle)?.type;
-        return t !== 'portal-tunnel' && t !== 'player' && t !== 'prop';
+        return t !== 'portal-tunnel' && t !== 'player' && t !== 'prop' && t !== 'ramp';
       },
     );
     return hit === null;
