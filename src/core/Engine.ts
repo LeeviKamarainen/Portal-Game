@@ -6,6 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { LAYER_AVATAR } from './RenderLayers';
+import { FLAGS } from './Flags';
 import type { QualitySetting, Settings, ShadowSetting } from './Settings';
 
 /** Far enough that fog always swallows geometry before the far plane can clip it. */
@@ -56,8 +57,21 @@ interface QualityTier {
 const BLOOM_STRENGTH = 0.6;
 const EXPOSURE = 0.95;
 
+/** Touch devices: the vertical field of view never narrows below this, however wide the screen. */
+const TOUCH_MIN_VFOV = 40;
+
 function tiersFor(quality: QualitySetting): QualityTier[] {
   const dpr = window.devicePixelRatio || 1;
+  // Phones: a 3x screen would have the GPU draw nine times the pixels for a small panel, and a
+  // phone has no headroom for bloom on top of portal views - start light and only climb if the frames allow.
+  if (FLAGS.touch && quality === 'auto') {
+    return [
+      { pixelRatio: Math.min(dpr, 1.25), bloom: false, shadows: true, portalDepth: 2 },
+      { pixelRatio: Math.min(dpr, 1), bloom: false, shadows: true, portalDepth: 2 },
+      { pixelRatio: Math.min(dpr, 1) * 0.8, bloom: false, shadows: false, portalDepth: 1 },
+      { pixelRatio: Math.min(dpr, 1) * 0.65, bloom: false, shadows: false, portalDepth: 1 },
+    ];
+  }
   switch (quality) {
     case 'low':
       return [{ pixelRatio: Math.min(dpr, 1) * 0.75, bloom: false, shadows: false, portalDepth: 1 }];
@@ -89,6 +103,8 @@ export class Engine {
   private tier = 0;
   private shadowSetting: ShadowSetting = 'high';
   private glow = 1;
+  /** The settings' vertical field of view; see `updateFov` for what the camera gets. */
+  private settingFov = 90;
   /** Ambient light multiplier; arenas read it when they set up their lights. */
   ambient = 1;
   private frameEma = 1 / 60;
@@ -120,7 +136,7 @@ export class Engine {
     pmrem.dispose();
 
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
-    const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+    const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: FLAGS.touch ? 0 : 4 });
     this.composer = new EffectComposer(this.renderer, target);
     this.composer.setPixelRatio(this.tiers[0].pixelRatio);
     this.composer.setSize(window.innerWidth, window.innerHeight);
@@ -151,9 +167,26 @@ export class Engine {
 
   private onResize(): void {
     this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.updateProjectionMatrix();
+    this.updateFov();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.composer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  /**
+   * The field of view is a vertical angle tuned on a 16:9 screen. A phone is about 2:1, where
+   * the same vertical angle opens out to ~130 degrees across - a fisheye. On touch devices the
+   * horizontal angle a 16:9 screen would have is kept instead, so the vertical one narrows to fit.
+   */
+  private updateFov(): void {
+    let fov = this.settingFov;
+    if (FLAGS.touch) {
+      const rad = THREE.MathUtils.degToRad;
+      const horizontal = 2 * Math.atan(Math.tan(rad(this.settingFov) / 2) * (16 / 9));
+      const vertical = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(horizontal / 2) / this.camera.aspect));
+      fov = Math.min(Math.max(vertical, TOUCH_MIN_VFOV), 110);
+    }
+    this.camera.fov = fov;
+    this.camera.updateProjectionMatrix();
   }
 
   /** Call before the first render of a frame: the shadow map is refreshed exactly once. */
@@ -170,8 +203,8 @@ export class Engine {
    * flag can override the stored choice.
    */
   applySettings(s: Settings, quality: QualitySetting = s.quality): void {
-    this.camera.fov = s.fov;
-    this.camera.updateProjectionMatrix();
+    this.settingFov = s.fov;
+    this.updateFov();
     this.ambient = s.ambient;
     this.renderer.toneMappingExposure = EXPOSURE * s.brightness;
     this.glow = s.glow;

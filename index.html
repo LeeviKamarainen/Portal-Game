@@ -3,11 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#000000" />
     <title>Portal Arena</title>
     <style>
-      html, body { margin: 0; padding: 0; overflow: hidden; background: #000; }
-      #app { width: 100vw; height: 100vh; position: relative; }
+      html, body { margin: 0; padding: 0; overflow: hidden; background: #000; overscroll-behavior: none; }
+      /* dvh: a phone's address bar comes and goes, and 100vh is the taller of the two */
+      #app { width: 100vw; height: 100vh; height: 100dvh; position: relative; }
       canvas { display: block; }
     </style>
   </head>

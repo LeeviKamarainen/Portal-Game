@@ -5,6 +5,8 @@ import type { PortalColor } from '../portals/Portal';
 export const MOUSE_SENSITIVITY = 0.0025;
 const IMMUNITY_KEY = 'ShiftLeft';
 
+const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
+
 /**
  * What a player wants to do this step. Keyboard and mouse fill one in for the local
  * player and a bot fills one in for itself; either way the body obeys the same rules
@@ -45,7 +47,7 @@ export function clearCommand(cmd: PlayerCommand): PlayerCommand {
   return cmd;
 }
 
-/** The local player: WASD, Space, Shift and the mouse. */
+/** The local player: WASD, Space, Shift and the mouse - or the on-screen controls. */
 export class KeyboardCommands implements CommandSource {
   private readonly input: InputManager;
 
@@ -58,11 +60,12 @@ export class KeyboardCommands implements CommandSource {
     clearCommand(cmd);
     const d = input.consumeMouseDelta();
     cmd.yaw = -d.x * MOUSE_SENSITIVITY;
-    cmd.pitch = -d.y * MOUSE_SENSITIVITY;
-    cmd.forward = (input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0);
-    cmd.right = (input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0);
-    cmd.jump = input.isDown('Space');
-    cmd.immunity = input.isDown(IMMUNITY_KEY);
+    cmd.pitch = -d.y * MOUSE_SENSITIVITY + input.consumePitchNudge();
+    // The on-screen stick adds to the keys (a tablet with a keyboard uses both).
+    cmd.forward = clamp1((input.isDown('KeyW') ? 1 : 0) - (input.isDown('KeyS') ? 1 : 0) + input.touchForward);
+    cmd.right = clamp1((input.isDown('KeyD') ? 1 : 0) - (input.isDown('KeyA') ? 1 : 0) + input.touchRight);
+    cmd.jump = input.isDown('Space') || input.touchJump;
+    cmd.immunity = input.isDown(IMMUNITY_KEY) || input.touchImmunity;
   }
 }
 

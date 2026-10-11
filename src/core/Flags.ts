@@ -32,6 +32,8 @@
  *   ?net=1              online: a connection stats panel (bandwidth, delays, corrections, a graph).
  *   ?debug=bots         draw what each bot knows and plans: view cone, route, remembered
  *                       enemies (red seen, yellow heard), known orbs, aim point, goal label.
+ *   ?touch=1 / ?touch=0 force the on-screen touch controls (and the phone-friendly field of
+ *                       view and render tiers) on / off; by default a coarse-pointer device has them.
  */
 const params = new URLSearchParams(location.search);
 
@@ -39,6 +41,13 @@ function readMuted(): boolean {
   const v = params.get('mute');
   if (v !== null) return v !== '0' && v !== 'false';
   return import.meta.env.DEV;
+}
+
+/** A touch-first device (phone, tablet), or `?touch=1` to try the touch controls on a desktop (`?touch=0`: off). */
+function readTouch(): boolean {
+  const v = params.get('touch');
+  if (v !== null) return v !== '0' && v !== 'false';
+  return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches && navigator.maxTouchPoints > 0;
 }
 
 export type Quality = 'auto' | 'low' | 'medium' | 'high';
@@ -64,4 +73,5 @@ export const FLAGS = {
   loss: Number(params.get('loss')) || 0,
   predict: params.get('predict') !== '0',
   net: params.has('net'),
+  touch: readTouch(),
 };

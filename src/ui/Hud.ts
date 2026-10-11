@@ -1,3 +1,5 @@
+import { FLAGS } from '../core/Flags';
+
 const CSS = `
 .hud { position:absolute; inset:0; pointer-events:none; font-family: "Segoe UI", system-ui, sans-serif; color:#e8edf5; user-select:none; }
 .hud .shadow { text-shadow: 0 1px 3px rgba(0,0,0,0.9); }
@@ -43,6 +45,13 @@ const CSS = `
 @keyframes hud-toast { 0% { opacity:0; transform:translateY(10px) scale(0.9); } 12% { opacity:1; transform:none; } 70% { opacity:1; } 100% { opacity:0; transform:translateY(-14px); } }
 .hud .click { position:absolute; left:50%; top:62%; transform:translateX(-50%); font-size:15px; padding:8px 16px;
   background:rgba(10,12,18,0.7); border:1px solid rgba(255,255,255,0.2); border-radius:6px; }
+/* Touch: the thumbs own the bottom corners, so the bars sit between them; the pause button takes the top-right corner. */
+.hud.touch .bars { left:50%; transform:translateX(-50%); bottom:14px; width:170px; }
+/* Only what a thumb-sized screen needs mid-play: the bars, the crosshair, the score and what's happening. */
+.hud.touch .keys, .hud.touch .title, .hud.touch .fps, .hud.touch .mute, .hud.touch .bars .label { display:none; }
+.hud.touch .bars .bar { margin-bottom:6px; }
+.hud.touch .corner { right:max(66px, calc(env(safe-area-inset-right) + 56px)); top:14px; }
+.hud.touch .score { top:8px; min-width:200px; padding:5px 10px 7px; }
 `;
 
 export interface HudState {
@@ -66,6 +75,8 @@ export class Hud {
   private hintTimer = 0;
   private scoreKey = '';
   onMuteClick: (() => void) | null = null;
+  /** The HUD is shown or hidden: the on-screen touch controls come and go with it. */
+  onVisibleChange: ((visible: boolean) => void) | null = null;
 
   constructor(container: HTMLElement) {
     const style = document.createElement('style');
@@ -73,7 +84,7 @@ export class Hud {
     document.head.appendChild(style);
 
     this.root = document.createElement('div');
-    this.root.className = 'hud';
+    this.root.className = FLAGS.touch ? 'hud touch' : 'hud';
     this.root.innerHTML = `
       <div class="xhair"><div class="br l"></div><div class="dot"></div><div class="br r"></div></div>
       <div class="title shadow"><div class="step"></div><div class="name"></div><div class="hint"></div></div>
@@ -81,7 +92,7 @@ export class Hud {
       <div class="bars shadow">
         <div class="label">HEALTH</div>
         <div class="bar"><div class="health" style="width:100%; background:linear-gradient(90deg,#c8322a,#ff6a4a)"></div></div>
-        <div class="label" style="margin-top:10px">FLASH IMMUNITY &middot; SHIFT</div>
+        <div class="label" style="margin-top:10px">FLASH IMMUNITY${FLAGS.touch ? '' : ' &middot; SHIFT'}</div>
         <div class="bar" style="height:8px"><div class="immunity" style="width:100%; background:#4ca8ff"></div></div>
       </div>
       <div class="keys shadow">WASD move &middot; Space jump &middot; LMB / RMB portals<br>R restart arena &middot; M sound &middot; Esc menu</div>
@@ -89,7 +100,7 @@ export class Hud {
       <div class="effect shadow"></div>
       <div class="score shadow"><div class="to"></div><div class="rows"></div></div>
       <div class="toasts shadow"></div>
-      <div class="click shadow">Click to play</div>
+      <div class="click shadow">${FLAGS.touch ? 'Tap to play' : 'Click to play'}</div>
     `;
     container.appendChild(this.root);
     for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts']) {
@@ -118,6 +129,7 @@ export class Hud {
   /** Hidden while a menu covers the screen. */
   setVisible(visible: boolean): void {
     this.root.style.display = visible ? '' : 'none';
+    this.onVisibleChange?.(visible);
   }
 
   showHint(hint: string): void {
@@ -127,7 +139,8 @@ export class Hud {
   }
 
   setMuted(muted: boolean): void {
-    this.el.mute.textContent = muted ? '\u{1F507} Sound off (M)' : '\u{1F50A} Sound on (M)';
+    const key = FLAGS.touch ? '' : ' (M)';
+    this.el.mute.textContent = muted ? `\u{1F507} Sound off${key}` : `\u{1F50A} Sound on${key}`;
   }
 
   setBanner(title: string, sub = ''): void {

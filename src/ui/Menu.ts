@@ -1,10 +1,11 @@
+import { FLAGS } from '../core/Flags';
 import { ARENAS, PVP_ARENA } from '../world/arenas';
 import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type Settings } from '../core/Settings';
 import { SkinPreview } from './SkinPreview';
 import { DEFAULT_RULES } from '../game/Match';
 import { mapKind, type MapData } from '../world/maps/MapFormat';
 import { readEditorDraft } from '../editor/draft';
-import { BOT_DIFFICULTIES, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_SECONDS, type BotDifficulty, type MapChoice } from '../net/protocol';
+import { BOT_DIFFICULTIES, BOT_DIFFICULTY_LABEL, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_SECONDS, type BotDifficulty, type MapChoice } from '../net/protocol';
 import type { OnlineView } from '../net/OnlineLobby';
 import type { AccountClient } from '../net/AccountClient';
 import { ACCOUNT_CSS, AccountUi } from './AccountUi';
@@ -156,6 +157,20 @@ const CSS = `
   .menu .tabs { flex-direction:row; flex-wrap:wrap; min-width:0; }
   .menu .row { flex-direction:column; align-items:flex-start; }
   .menu .slider input { width:150px; }
+}
+/* A phone held sideways: little height, so less air around the lists, and a thumb-sized row. */
+@media (max-height: 520px) {
+  .menu .page { padding:18px max(24px, env(safe-area-inset-left)) 16px; }
+  .menu h1 { font-size:34px; }
+  .menu h2 { font-size:26px; }
+  .menu .tagline { margin-top:6px; }
+  .menu .stack { margin-top:14px; gap:2px; }
+  .menu .item { padding:9px 16px 9px 20px; }
+  .menu .item .t { font-size:19px; }
+  .menu .stages { margin-top:16px; }
+  .menu .card { margin-top:14px; }
+  .menu .settings { margin-top:12px; }
+  .menu .foot { padding-top:14px; }
 }
 `;
 
@@ -341,7 +356,7 @@ export class Menu {
   private render(page: Page): string {
     const back = `<button class="back" data-action="back">‹ Back</button>`;
     const foot = `<div class="foot"><button class="btn" data-action="mute">${this.muteLabel()}</button>
-      <span>M toggles sound in game &middot; Esc opens this menu</span></div>`;
+      <span>${FLAGS.touch ? 'The &#9776; button pauses the game' : 'M toggles sound in game &middot; Esc opens this menu'}</span></div>`;
     switch (page) {
       case 'main': {
         const done = ARENAS.filter((a) => this.progress.has(a.id)).length;
@@ -397,7 +412,7 @@ export class Menu {
             <div class="d">${esc(PVP_ARENA.blurb ?? '')}</div>
             <ul>
               <li class="ok">Scoring: point orbs, portal kill credit, first to ${DEFAULT_RULES.scoreToWin} wins</li>
-              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is</li>
+              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is; Ultra hard is Hard that also gets about by portal</li>
               <li class="ok">Shoot an opponent's portal to steal it</li>
               <li>Online opponents</li>
             </ul>
@@ -409,10 +424,10 @@ export class Menu {
             </div>
             <div class="d" style="margin-top:10px">Bot difficulty</div>
             <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap">
-              ${(['easy', 'normal', 'hard'] as const)
+              ${BOT_DIFFICULTIES
                 .map(
                   (d) =>
-                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${d[0].toUpperCase()}${d.slice(1)} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
+                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${BOT_DIFFICULTY_LABEL[d]} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
                 )
                 .join('')}
             </div>
@@ -529,7 +544,7 @@ export class Menu {
         </div>
         <div class="d" style="margin-top:14px">Bot difficulty</div>
         <div class="seg" style="margin-top:6px; display:inline-flex">
-          ${BOT_DIFFICULTIES.map((d) => `<button class="${lobby.difficulty === d ? 'on' : ''}" data-action="room-difficulty" data-difficulty="${d}">${d[0].toUpperCase()}${d.slice(1)}</button>`).join('')}
+          ${BOT_DIFFICULTIES.map((d) => `<button class="${lobby.difficulty === d ? 'on' : ''}" data-action="room-difficulty" data-difficulty="${d}">${BOT_DIFFICULTY_LABEL[d]}</button>`).join('')}
         </div>
         <div class="line" style="margin-top:20px">
           <button class="btn primary" data-action="room-start" ${lobby.members.length + lobby.bots < 2 ? 'disabled title="Add a bot or wait for a friend"' : ''}>Start match</button>
@@ -608,8 +623,8 @@ export class Menu {
         ].join('');
       case 'controls':
         return [
-          this.sliderRow('sensitivity', 'Mouse sensitivity', '', 0.2, 3, 0.05, (v) => `${v.toFixed(2)}×`),
-          this.segRow('invertY', 'Invert mouse Y', '', [
+          this.sliderRow('sensitivity', FLAGS.touch ? 'Look sensitivity' : 'Mouse sensitivity', '', 0.2, 3, 0.05, (v) => `${v.toFixed(2)}×`),
+          this.segRow('invertY', FLAGS.touch ? 'Invert look Y' : 'Invert mouse Y', '', [
             ['false', 'Off'],
             ['true', 'On'],
           ]),
@@ -744,8 +759,9 @@ export class Menu {
         break;
       case 'pvp-play': {
         const d = el.dataset.difficulty;
-        if (d === 'easy' || d === 'normal' || d === 'hard') {
-          this.settings.botDifficulty = d;
+        const picked = BOT_DIFFICULTIES.find((k) => k === d);
+        if (picked) {
+          this.settings.botDifficulty = picked;
           saveSettings(this.settings);
         }
         this.handlers.playPvp();

@@ -15,6 +15,7 @@ import { BotDebugView } from '../bots/BotDebug';
 import type { ArenaPlayer } from './ArenaPlayer';
 import { ViewModel } from '../player/ViewModel';
 import { Hud } from '../ui/Hud';
+import { TouchControls } from '../ui/TouchControls';
 import { PING_RANGE, PortalPings } from '../ui/PortalPings';
 import { NetOverlay } from '../ui/NetOverlay';
 import { Menu } from '../ui/Menu';
@@ -65,6 +66,8 @@ export class Game {
   readonly input: InputManager;
   readonly audio: Audio;
   readonly hud: Hud;
+  /** On-screen controls on phones and tablets (`?touch=1` to try them on a desktop). */
+  private readonly touch: TouchControls | null;
   /** Flashes and edge arrows where opponents open portals (a setting). */
   private readonly pings: PortalPings;
   /** `?net=1`: the connection stats panel online. */
@@ -108,6 +111,8 @@ export class Game {
   private readonly heldGun = new PortalGunModel();
   private state: State = 'loading';
   private pausedFrom: State = 'playing';
+  /** Where the view was looking before the floor button snapped it down. */
+  private lookBackPitch = 0;
   private stateTime = 0;
   private fade = 1;
   private menuYaw = 0;
@@ -123,6 +128,8 @@ export class Game {
     this.keyboard = new KeyboardCommands(this.input);
     this.audio = new Audio(FLAGS.muted);
     this.hud = new Hud(container);
+    this.touch = FLAGS.touch && !FLAGS.test ? new TouchControls(container, this.input, { pause: () => this.pause(), lookDown: () => this.lookDown() }) : null;
+    if (this.touch) this.hud.onVisibleChange = (visible) => this.touch?.setVisible(visible);
     this.pings = new PortalPings(this.hud.layer);
     this.netOverlay = FLAGS.net ? new NetOverlay(this.hud.layer) : null;
     this.menu = new Menu(container, this.settings, {
@@ -404,8 +411,23 @@ export class Game {
     this.menu.close();
     this.hud.setVisible(true);
     this.input.requestLock();
+    this.touch?.enterFullscreen();
     this.fade = 1;
     void load();
+  }
+
+  /** The touch floor button: straight down, or back to the pitch the view had before. */
+  private lookDown(): void {
+    const player = this.session?.player;
+    if (!player) return;
+    const down = -Math.PI / 2;
+    const pitch = player.lookPitch;
+    if (pitch > down + 0.25) {
+      this.lookBackPitch = pitch;
+      this.input.nudgePitch(down - pitch);
+    } else {
+      this.input.nudgePitch(this.lookBackPitch - pitch);
+    }
   }
 
   private pause(): void {

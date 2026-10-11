@@ -31,7 +31,7 @@ export interface Settings {
   playerName: string;
 }
 
-export type BotDifficultySetting = 'easy' | 'normal' | 'hard';
+export type BotDifficultySetting = 'easy' | 'normal' | 'hard' | 'ultra';
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
   skin: 'a',
@@ -97,7 +97,7 @@ export function loadSettings(): Settings {
     sensitivity: clamp(s.sensitivity, 0.2, 3, d.sensitivity),
     invertY: typeof s.invertY === 'boolean' ? s.invertY : d.invertY,
     portalPings: typeof s.portalPings === 'boolean' ? s.portalPings : d.portalPings,
-    botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard'] as const, d.botDifficulty),
+    botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard', 'ultra'] as const, d.botDifficulty),
     botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
     playerName: typeof s.playerName === 'string' ? s.playerName.slice(0, 16) : d.playerName,
   };

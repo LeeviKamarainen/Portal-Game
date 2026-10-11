@@ -373,6 +373,61 @@ of actions was slow (reaction delay on every own shot, 3 s trap cooldown, exit t
   a wall exit flings the victim to somewhere the bot can't always follow up; timed hazards other
   than spike beds (crushers, rams, trapdoors) aren't used as trap landings yet.
 
+### 6e. Ultra hard: getting about by portal — *done 2026-10-11*
+
+User request: a version of the bot even harder than Hard that keeps everything Hard does and
+also gets around the map by portal ("teleports immediately to the points" - read as: puts a
+portal where it is going and steps through), called **"Ultra hard"** (`'ultra'` in the code).
+
+- [x] **`ultra` skill** (`BotSkill`): Hard's abilities plus `portalTravel`, and numbers a notch
+      past Hard: reaction 0.03 s, turn 1200°/s, thinks every 0.03 s, shot cooldown 0.1 s, aim
+      error 0.5° with a 0.1° wobble, runs 1.5x (Hard 1.3x), view range 90 m, drop-ins rolled
+      every 0.9 s at 75%, trap cooldown 0.35 s. Selectable in the PvP menu ("Play vs Ultra hard
+      bot"), the room lobby and settings (`BOT_DIFFICULTIES` / `BOT_DIFFICULTY_LABEL`).
+- [x] **Travel spots** (`ClimbSpots` with tier `'any'`): every portal-taking wall and ceiling
+      point where whoever comes out lands on walkable, safe floor - any tier (a climb only
+      wanted high ground) - sampled every 2 m. Built per arena on first use (Highwire 168 spots
+      in ~10 ms) and only for skills with `portalTravel`.
+- [x] **The hop** (`BotBrain.tryTravel`): on its way to an orb, an enemy (hunting) or an explore
+      target it looks every 0.3 s for an exit in clear view that lands it much nearer *by real
+      route* (nav A*, not distance: a 20 m jump up a tier can be a 150-unit walk, or no
+      route at all), shoots the exit, then a floor portal beside itself, and walks in - the
+      climb's own stage machine (`why: 'travel'`), so it shares the climb's shot, check and
+      abandon code. Chains hops when still far; after one toward an enemy it traps them at once.
+- [x] **Not in front of anyone who would steal them**: an enemy within steal range with a clear
+      line to the spot it stands on or to the exit rules a hop out (stealing turns the way in
+      into their trap); if a portal of its own is taken mid-hop it abandons rather than walking
+      into it (`hopPortalsIntact`, also for ordinary climbs).
+- [x] **A chance at a trap interrupts a hop** that is still being set up (not the walk-in).
+- Bugs found by the benchmarks, fixed for every bot: (1) **a floor portal that opened up to a
+  metre off where it was aimed (a narrow walkway) was never walked into** - the bot walked
+  to the aimed point and jittered beside the open portal until it timed out (a climb's way
+  in now steers to where the portal really is); (2) **no path from the air blocked the orb for
+  10 s**: right after any ceiling exit the bot is mid-fall, `goTo` finds no floor to route
+  from and `goForOrb` flagged the orb unreachable - the bot wandered for 10 s (this cost
+  every ceiling climb/drop-in that was followed by orbs, and made Ultra's hops look
+  worthless until fixed); (3) sidestepping was switched off for the whole of a climb (a
+  walk to a vantage point included) - now only for the last step, the walk into the portal.
+- Tuning story (head-to-head, Highwire, seats swapped, 150 s cap): travel cost fights more
+  than expected - ~22% of the time in hops with no kill chance, plus a trap exit lost every
+  hop (`exit ready` 83% -> 42% of the time). Hopping at every chance lost 3:1 to the same bot
+  without travel. The current values (`TRAVEL_MIN_WALK 30`, `TRAVEL_MIN_SAVING 15`,
+  `+TRAVEL_READY_COST 10` with an exit set, `TRAVEL_REST 0.8`, exit re-prep every 0.4 s after
+  a hop, interrupt for traps) with the airborne fix: **Ultra vs Hard 22-26 on Highwire (48
+  matches; 14-10, 11-13, 20-4 on Catwalk/Shaft/Courtyard at 24 each), ~4.6 hops a match,
+  38% more orbs**; Ultra vs Normal 47-1. The same Ultra *without* travel beats Hard 27-21 -
+  travel is worth orbs and surprise, not duel strength; against a human the extra orb speed
+  is what shows.
+- [x] Tests: `server/test/botTravel.test.ts` (6: difficulty plumbing; hops and no own deaths on
+  Highwire; plays all four built-in maps, travel spots built in time); `?test=sim` has an
+  Ultra-vs-Hard match and an Ultra FFA match, a "gets about by portal" check, and counts
+  Ultra with Hard for "shoots on the move"; `?test=balance` has a Hard-vs-Ultra pairing.
+  All other suites pass (brain 17, sim 11, bots 8, nav 7; server 202 + 1 skipped).
+- Known limits: hops need a clear view of an exit from where it stands (no walking to a
+  vantage point first, unlike climbs); the entrance is always a floor portal beside it; with an
+  equally lethal opponent in a wide open map every hop still costs a good second of kill
+  chances (see tuning) - the place to look next is a trap exit that doubles as a landing.
+
 ### 7. More tactics, more players
 
 - [x] **Free-for-all, first cut** (2026-10-08): 1-3 bots picked in the PvP menu

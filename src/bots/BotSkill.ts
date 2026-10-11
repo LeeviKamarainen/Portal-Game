@@ -2,7 +2,8 @@
  * How good a bot is. Difficulty changes these numbers and a few abilities - it always drives
  * the same PlayerCommand a keyboard does. Easy and Normal know only what they see and hear
  * (see Perception); Hard is `omniscient` by design. Harder bots also run a little faster
- * than a person (`moveSpeed`).
+ * than a person (`moveSpeed`). Ultra hard is Hard with everything turned up a notch that
+ * also gets about by portal (`portalTravel`).
  */
 export interface BotSkill {
   readonly name: string;
@@ -86,6 +87,12 @@ export interface BotSkill {
    * to use it on, so the trap itself is one shot when they turn up.
    */
   readonly anticipate: boolean;
+  /**
+   * Gets about by portal: on its way to an orb, an enemy or somewhere to explore, it puts an
+   * exit it can see nearer to where it is going and a portal beside itself, and steps through
+   * instead of walking the long way round. Needs `portalClimb` (it lands the same way).
+   */
+  readonly portalTravel: boolean;
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
@@ -125,6 +132,7 @@ export const BOT_SKILLS = {
     checkDelay: 0.15,
     decisive: false,
     anticipate: false,
+    portalTravel: false,
   },
   normal: {
     name: 'Normal',
@@ -160,6 +168,7 @@ export const BOT_SKILLS = {
     checkDelay: 0.15,
     decisive: false,
     anticipate: false,
+    portalTravel: false,
   },
   hard: {
     name: 'Hard',
@@ -195,6 +204,43 @@ export const BOT_SKILLS = {
     checkDelay: 0.05,
     decisive: true,
     anticipate: true,
+    portalTravel: false,
+  },
+  ultra: {
+    name: 'Ultra hard',
+    fovH: deg(62),
+    fovV: deg(48),
+    viewRange: 90,
+    acquireTime: 0.05,
+    hearing: 1.4,
+    memory: 8,
+    reaction: 0.03,
+    turnRate: deg(1200),
+    turnAccel: deg(14000),
+    aimError: deg(0.5),
+    aimSettle: 0.1,
+    aimWobble: deg(0.1),
+    overshoot: 1.02,
+    thinkInterval: 0.03,
+    shotCooldown: 0.1,
+    aimTolerance: deg(0.9),
+    trapChance: 1,
+    trapRange: 50,
+    stealChance: 1,
+    dodges: true,
+    moveWhileAiming: true,
+    omniscient: true,
+    hops: true,
+    portalClimb: true,
+    comboChance: 0.75,
+    moveSpeed: 1.5,
+    trapCooldown: 0.35,
+    climbCooldown: 1.8,
+    comboEvery: 0.9,
+    checkDelay: 0.04,
+    decisive: true,
+    anticipate: true,
+    portalTravel: true,
   },
 } satisfies Record<string, BotSkill>;
 
