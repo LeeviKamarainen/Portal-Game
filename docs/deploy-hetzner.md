@@ -21,7 +21,7 @@ Not checked: the certificate issuance itself (needs a public server).
 ## 1. Hetzner Cloud console
 
 1. New project -> **Add server**: location nearest your players, image **Ubuntu 24.04**,
-   type **CX22** (2 vCPU, 4 GB; shared x86), your SSH key, IPv4 on. Optional: tick *Backups*.
+   type **cx23** (2 vCPU, 4 GB; shared x86, called CX22 before), your SSH key, IPv4 on. Optional: tick *Backups*.
 2. **Firewalls** -> create one with inbound rules: TCP 22, TCP 80, TCP 443 (and ICMP if you
    like); apply it to the server. Nothing else needs to be reachable (no UDP, not 8080).
 3. Note the server's IPv4 address, e.g. `203.0.113.7`. Your hostname is that with dashes:
