@@ -110,6 +110,9 @@ interface BuildContext {
 
 export const TEAM_COLORS: Record<Team, number> = { orange: 0xff8a3a, blue: 0x3ab0ff };
 
+/** The steepest slope piece that can be walked: rise over run (about 40 degrees). */
+export const MAX_SLOPE = 0.8;
+
 const V = (v: Vec3) => new THREE.Vector3(v[0], v[1], v[2]);
 const rad = (deg: number) => (deg * Math.PI) / 180;
 
@@ -345,6 +348,30 @@ export const PIECES: Record<string, PieceSpec> = {
       const dir = front(p.rot ?? 0);
       const base = V(p.at).addScaledVector(dir, -run / 2);
       b.stairs(base, dir, rise, run, width);
+      const { min, max } = footprint({ ...p, size: [width, rise, run] });
+      ctx.extent.expandByPoint(min).expandByPoint(max);
+    },
+  },
+  slope: {
+    label: 'Slope',
+    group: 'Structure',
+    help: 'A smooth ramp climbing toward its front; the sloping top can take portals. at = bottom centre of the whole ramp. Rise at most 0.8 x run (about 40 degrees) so it can be walked.',
+    turn: 'quarter',
+    sizeLabels: ['Width', 'Rise', 'Run'],
+    defaults: { size: [4, 3, 8], portal: ['top'] },
+    fields: [
+      { key: 'material', label: 'Material', kind: 'select', options: ['metal', 'panel', 'floor', 'trim', 'hazard'] },
+      { key: 'portal', label: 'Takes portals', kind: 'faces', hint: 'Only the slope itself can: list "top".' },
+    ],
+    build(b, p, ctx) {
+      quarterTurns(p);
+      const [width, rise, run] = p.size!;
+      if (!(width > 0 && rise > 0 && run > 0)) throw new Error('a slope needs a positive width, rise and run');
+      if (rise > run * MAX_SLOPE) throw new Error(`a slope may rise at most ${MAX_SLOPE} x its run (about 40 degrees) or it cannot be walked: rise ${rise}, run ${run}`);
+      const dir = front(p.rot ?? 0);
+      const base = V(p.at).addScaledVector(dir, -run / 2);
+      const portalable = faces(p.portal, 0).includes('py');
+      b.slope(base, dir, rise, run, width, { portalable, material: str<MaterialName>(p, 'material', 'metal') });
       const { min, max } = footprint({ ...p, size: [width, rise, run] });
       ctx.extent.expandByPoint(min).expandByPoint(max);
     },

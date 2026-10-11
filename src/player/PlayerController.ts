@@ -306,7 +306,8 @@ export class PlayerController implements PortalTraversable {
       undefined,
       this.filter,
     );
-    if (!hit) return 0;
+    // A flight of stairs has its own ramp: the surface there is already smooth.
+    if (!hit || this.physics.getOwner(hit.collider.handle)?.type === 'ramp') return 0;
     const rise = ahead.y - hit.timeOfImpact - (p.y - PLAYER_FEET_OFFSET);
     if (rise <= 0.02 || rise > CLIMB_MAX) return 0;
     return (rise / CLIMB_LOOK) * h;

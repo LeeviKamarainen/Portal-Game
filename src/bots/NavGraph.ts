@@ -150,7 +150,7 @@ export class NavGraph {
 
   private ignore = (c: RAPIER.Collider): boolean => {
     const t = this.physics.getOwner(c.handle)?.type;
-    return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
+    return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel' && t !== 'ramp';
   };
 
   /** Every floor in a column, top to bottom, that a player can stand on. */

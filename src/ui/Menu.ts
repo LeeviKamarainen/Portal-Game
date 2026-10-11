@@ -193,7 +193,7 @@ export class Menu {
     this.nameField = settings.playerName;
     this.ui = new AccountUi(accounts, {
       redraw: () => {
-        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page);
+        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page, true);
       },
       edit: (data, id) => this.handlers.editAccountMap(data, id),
       useInRoom: (data) => this.handlers.setRoomMap({ kind: 'custom', data }),
@@ -201,7 +201,7 @@ export class Menu {
     });
     this.admin = new AdminUi(accounts, {
       redraw: () => {
-        if (this.isOpen && this.page === 'admin') this.show('admin');
+        if (this.isOpen && this.page === 'admin') this.show('admin', true);
       },
     });
     const style = document.createElement('style');
@@ -321,11 +321,16 @@ export class Menu {
     return this.muted ? '\u{1F507} Sound off' : '\u{1F50A} Sound on';
   }
 
-  private show(page: Page): void {
+  /**
+   * Draws `page`. `redraw`: it is already showing and only its data changed, so nothing is
+   * fetched again (a page's load ends in a redraw: fetching here too would loop forever, and
+   * the buttons would be replaced under the mouse between press and release).
+   */
+  private show(page: Page, redraw = false): void {
     if (this.page === 'account' && page !== 'account') this.ui.leftPage();
     this.page = page;
-    if (page === 'maps') void this.ui.loadMaps(true);
-    if (page === 'admin') void this.admin.load();
+    if (!redraw && page === 'maps') void this.ui.loadMaps(true);
+    if (!redraw && page === 'admin') void this.admin.load();
     this.root.classList.toggle('dim', page !== 'main');
     this.root.classList.toggle('peek', page === 'settings' && (this.tab === 'lighting' || this.tab === 'graphics'));
     if (page !== 'settings' || this.tab !== 'character') this.preview?.stop();
@@ -608,6 +613,10 @@ export class Menu {
             ['false', 'Off'],
             ['true', 'On'],
           ]),
+          this.segRow('portalPings', 'Enemy portal pings', 'A flash and an edge arrow where an opponent opens a portal, within earshot.', [
+            ['true', 'On'],
+            ['false', 'Off'],
+          ]),
           `<div class="row"><div><div class="lbl">Sound</div><div class="sub">Also M in game.</div></div>
             <button class="btn" data-action="mute">${this.muteLabel()}</button></div>`,
         ].join('');
@@ -793,7 +802,7 @@ export class Menu {
           character: ['skin'],
           graphics: ['quality', 'fov'],
           lighting: ['brightness', 'ambient', 'glow', 'shadows'],
-          controls: ['sensitivity', 'invertY'],
+          controls: ['sensitivity', 'invertY', 'portalPings'],
         };
         for (const k of keys[this.tab]) (this.settings as unknown as Record<string, unknown>)[k] = DEFAULT_SETTINGS[k];
         this.changed();

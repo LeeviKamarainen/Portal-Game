@@ -188,9 +188,9 @@ export function solidsOf(map: MapData, placed: Piece[]): Solid[] {
       solids.push({ type: 'room floor', minX: r.at[0] - r.size[0] / 2, maxX: r.at[0] + r.size[0] / 2, minZ: r.at[2] - r.size[2] / 2, maxZ: r.at[2] + r.size[2] / 2, bottom: r.at[1] - 1, top: r.at[1], stairs: false });
   }
   for (const p of placed) {
-    if (!['block', 'portal-wall', 'wall', 'floor', 'stairs'].includes(p.type) || !isVec3(p.size) || (p.rot ?? 0) % 90 !== 0) continue;
+    if (!['block', 'portal-wall', 'wall', 'floor', 'stairs', 'slope'].includes(p.type) || !isVec3(p.size) || (p.rot ?? 0) % 90 !== 0) continue;
     const { min, max } = footprint(p);
-    solids.push({ type: p.type, minX: min.x, maxX: max.x, minZ: min.z, maxZ: max.z, bottom: min.y, top: max.y, stairs: p.type === 'stairs' });
+    solids.push({ type: p.type, minX: min.x, maxX: max.x, minZ: min.z, maxZ: max.z, bottom: min.y, top: max.y, stairs: p.type === 'stairs' || p.type === 'slope' });
   }
   return solids;
 }

@@ -168,7 +168,7 @@ export function summarizeMap(map: MapData): string {
   const room = pieces.find((p) => p.type === 'room');
   const tops = new Map<number, string[]>();
   for (const p of pieces) {
-    if (!['floor', 'block', 'portal-wall', 'wall', 'stairs'].includes(p.type) || !Array.isArray(p.size)) continue;
+    if (!['floor', 'block', 'portal-wall', 'wall', 'stairs', 'slope'].includes(p.type) || !Array.isArray(p.size)) continue;
     const y = Math.round((p.at[1] + p.size[1]) * 2) / 2;
     tops.set(y, [...(tops.get(y) ?? []), p.type]);
   }

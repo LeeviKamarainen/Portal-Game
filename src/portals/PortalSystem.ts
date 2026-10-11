@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
+import type { Solid } from '../world/Level';
 import { PORTAL_HALF_H, PORTAL_HALF_W, RECESS_DEPTH, TUNNEL_DEPTH, type Portal } from './Portal';
 import type { PortalTraversable } from './PortalTraversable';
 import { computePortalRelativeMatrix, relativeRotation } from './PortalMath';
@@ -49,6 +50,7 @@ const _m = new THREE.Matrix4();
 const _r = new THREE.Quaternion();
 const _rInv = new THREE.Quaternion();
 const _dir = new THREE.Vector3();
+const _solidBox = new THREE.Box3();
 
 interface Tracked {
   entity: PortalTraversable;
@@ -137,6 +139,12 @@ export class PortalSystem {
     const owner = this.physics.getOwner(handle);
     if (owner?.type === 'portal-tunnel') return entity.passing === owner.ref;
     if (entity.passing && handle === entity.passing.hostCollider) return false;
+    // Falling into a floor portal: whatever stands in the way down the hole - the ground a
+    // slope's portal sits a metre above, a slab under a block - is not in the way of
+    // something being carried through. (Walls and ceilings are walked into, not fallen
+    // into, and keep what is behind them.)
+    const through = entity.passing;
+    if (through && through.normal.y > 0.5 && owner?.type === 'solid' && through.column.intersectsBox(_solidBox.set((owner.ref as Solid).min, (owner.ref as Solid).max))) return false;
     return true;
   }
 

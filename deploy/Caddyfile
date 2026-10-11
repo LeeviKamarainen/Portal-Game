@@ -1,0 +1,6 @@
+# One site: your hostname (SITE_HOST from .env). Caddy gets and renews its certificate by itself,
+# proxies the page, the API and the /ws WebSocket to the game container, and compresses the bundles.
+{$SITE_HOST} {
+	encode zstd gzip
+	reverse_proxy game:8080
+}

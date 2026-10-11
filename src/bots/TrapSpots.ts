@@ -81,7 +81,7 @@ function firstHit(physics: PhysicsWorld, from: THREE.Vector3, to: THREE.Vector3)
     undefined,
     (c) => {
       const t = physics.getOwner(c.handle)?.type;
-      return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
+      return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel' && t !== 'ramp';
     },
   );
   if (!hit) return null;

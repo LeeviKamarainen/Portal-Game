@@ -25,6 +25,7 @@ export function surfaceBox(raw: Piece): THREE.Box3 | null {
       case 'wall':
       case 'floor':
       case 'door':
+      case 'slope':
       case 'stairs': {
         const { min, max } = footprint(p);
         return new THREE.Box3(min, max);

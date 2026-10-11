@@ -311,6 +311,11 @@ export class Portal {
   readonly up = new THREE.Vector3(0, 1, 0);
   /** Centre of the opening where it meets the host surface. */
   readonly surfaceCenter = new THREE.Vector3();
+  /**
+   * The space straight down the opening, from its surface to the end of the tunnel, as a
+   * world box (only meaningful while placed): what a body falling in has to pass through.
+   */
+  readonly column = new THREE.Box3();
   readonly matrixInverse = new THREE.Matrix4();
   /** World-space plane of the window, normal pointing out. */
   readonly plane = new THREE.Plane();
@@ -453,6 +458,12 @@ export class Portal {
     this.root.quaternion.setFromRotationMatrix(_m.makeBasis(this.right, this.up, this.normal));
     this.root.updateMatrixWorld(true);
     this.matrixInverse.copy(this.root.matrixWorld).invert();
+    this.column.makeEmpty();
+    for (const x of [-PORTAL_HALF_W - 0.3, PORTAL_HALF_W + 0.3]) {
+      for (const y of [-PORTAL_HALF_H - 0.3, PORTAL_HALF_H + 0.3]) {
+        for (const z of [-TUNNEL_DEPTH, RECESS_DEPTH]) this.column.expandByPoint(new THREE.Vector3(x, y, z).applyMatrix4(this.root.matrixWorld));
+      }
+    }
     this.plane.setFromNormalAndCoplanarPoint(this.normal, this.root.position);
 
     // Cut the opening into the host surface.

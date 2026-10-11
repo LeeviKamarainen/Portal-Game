@@ -80,6 +80,59 @@ function solidBox(p: Piece): THREE.Object3D {
   return mesh;
 }
 
+/**
+ * A ramp for the editor: the same wedge the game builds (see Level.slope) as one mesh, its
+ * sloping top in group 0 and the plain faces in group 1, with world-aligned UVs.
+ */
+function wedge(at: THREE.Vector3, fwd: THREE.Vector3, side: THREE.Vector3, width: number, rise: number, run: number): THREE.BufferGeometry {
+  const foot = at.clone().addScaledVector(fwd, -run / 2);
+  const lift = new THREE.Vector3(0, rise, 0);
+  const corner = (t: number, s: number, up: number) => foot.clone().addScaledVector(fwd, t).addScaledVector(side, s).setY(at.y + up);
+  const a = corner(0, -width / 2, 0);
+  const b = corner(0, width / 2, 0);
+  const c = corner(run, -width / 2, 0);
+  const d = corner(run, width / 2, 0);
+  const e = c.clone().add(lift);
+  const f = d.clone().add(lift);
+  const centre = at.clone().setY(at.y + rise / 3);
+  const top: THREE.Vector3[] = [];
+  const rest: THREE.Vector3[] = [];
+  // Triangles wound so the face looks away from the middle of the solid.
+  const tri = (out: THREE.Vector3[], p: THREE.Vector3, q: THREE.Vector3, r: THREE.Vector3) => {
+    const n = q.clone().sub(p).cross(r.clone().sub(p));
+    const outward = n.dot(p.clone().sub(centre)) >= 0;
+    out.push(p, outward ? q : r, outward ? r : q);
+  };
+  tri(top, a, b, f);
+  tri(top, a, f, e);
+  tri(rest, c, d, f);
+  tri(rest, c, f, e);
+  tri(rest, a, c, e);
+  tri(rest, b, d, f);
+  tri(rest, a, b, d);
+  tri(rest, a, d, c);
+  const pos: number[] = [];
+  const uv: number[] = [];
+  for (const p of [...top, ...rest]) pos.push(p.x, p.y, p.z);
+  const all = [...top, ...rest];
+  for (let i = 0; i < all.length; i += 3) {
+    const n = all[i + 1].clone().sub(all[i]).cross(all[i + 2].clone().sub(all[i])).normalize();
+    for (let k = 0; k < 3; k++) {
+      const p = all[i + k];
+      if (Math.abs(n.x) > 0.7) uv.push(p.z, p.y);
+      else if (Math.abs(n.z) > 0.7) uv.push(p.x, p.y);
+      else uv.push(p.x, p.z);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.addGroup(0, top.length, 0);
+  g.addGroup(top.length, rest.length, 1);
+  g.computeVertexNormals();
+  return g;
+}
+
 /** An arrow lying flat, pointing along `dir` from `from`. */
 function arrow(from: THREE.Vector3, dir: THREE.Vector3, length: number, hex: number): THREE.Object3D {
   const a = new THREE.ArrowHelper(dir.clone().normalize(), from, length, hex, Math.min(0.6, length * 0.35), Math.min(0.45, length * 0.25));
@@ -175,6 +228,17 @@ function build(p: Piece): THREE.Object3D {
         const max = new THREE.Vector3(Math.max(c1.x, c2.x), h, Math.max(c1.z, c2.z));
         group.add(new THREE.Mesh(worldBox(min, max), solidMaterial('metal')));
       }
+      break;
+    }
+    case 'slope': {
+      const [width, rise, run] = size;
+      const side = turn(new THREE.Vector3(1, 0, 0), rot);
+      const portal = faces(p.portal, 0).includes('py');
+      const mat = (p.material as MaterialName | undefined) ?? 'metal';
+      const mesh = new THREE.Mesh(wedge(at, fwd, side, width, rise, run), [solidMaterial(portal ? 'floor' : mat), solidMaterial(mat)]);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      group.add(mesh);
       break;
     }
     case 'acid': {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Level, type BoxOptions } from './Level';
+import { Level, type BoxOptions, type SlopeOptions } from './Level';
 import { Goal, addLightStrip, addSpawnPad } from './Markers';
 import type { Hazard, PowerSource } from './hazards/Hazard';
 import { PropBox } from './hazards/PropBox';
@@ -77,12 +77,26 @@ export class ArenaBuilder {
   /**
    * A solid staircase of stacked boxes climbing `rise` over `run` from `base` along an
    * axis-aligned `dir`. Steps stay under the character controller's autostep height.
+   * Walkers and crates do not feel the treads one by one: an invisible ramp along the
+   * steps' front edges lies over them, so a climb is a steady glide, not a hop per tread.
    */
   stairs(base: THREE.Vector3, dir: THREE.Vector3, rise: number, run: number, width: number): void {
     const steps = Math.max(1, Math.ceil(rise / 0.25));
     const stepRise = rise / steps;
     const stepRun = run / steps;
     const alongX = Math.abs(dir.x) > 0.5;
+    if (steps > 1) {
+      // From the floor one tread before the first riser, up the line of the steps' front
+      // edges to the last one, where the top tread takes over. A hair below the edges.
+      const side = alongX ? V(0, 0, width / 2) : V(width / 2, 0, 0);
+      const at = (t: number, y: number, s: number) => base.clone().addScaledVector(dir, t).addScaledVector(side, s).setY(y);
+      const tail = -stepRun;
+      const head = run - stepRun;
+      const hair = 0.004;
+      const pts: THREE.Vector3[] = [];
+      for (const s of [-1, 1]) pts.push(at(tail, base.y, s), at(head, base.y, s), at(head, base.y + rise - hair, s), at(tail, base.y + 0.01, s));
+      this.level.ramp(pts);
+    }
     for (let i = 0; i < steps; i++) {
       const a = base.clone().addScaledVector(dir, i * stepRun);
       const b = base.clone().addScaledVector(dir, (i + 1) * stepRun + 0.02);
@@ -98,6 +112,14 @@ export class ArenaBuilder {
       }
       this.level.box(min, max, { material: 'metal', faces: ['py', 'px', 'nx', 'pz', 'nz'] });
     }
+  }
+
+  /**
+   * A smooth ramp rising `rise` over `run` from `base` along an axis-aligned `dir`: a
+   * wedge with a flat sloping top, which can take portals (see Level.slope).
+   */
+  slope(base: THREE.Vector3, dir: THREE.Vector3, rise: number, run: number, width: number, opts: SlopeOptions = {}): void {
+    this.level.slope(base, dir, rise, run, width, opts);
   }
 
   acid(min: THREE.Vector2, max: THREE.Vector2, surfaceY: number): AcidPool {

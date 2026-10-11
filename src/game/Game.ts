@@ -1,3 +1,4 @@
+import type * as THREE from 'three';
 import { Engine } from '../core/Engine';
 import { InputManager } from '../core/InputManager';
 import { Loop } from '../core/Loop';
@@ -14,6 +15,7 @@ import { BotDebugView } from '../bots/BotDebug';
 import type { ArenaPlayer } from './ArenaPlayer';
 import { ViewModel } from '../player/ViewModel';
 import { Hud } from '../ui/Hud';
+import { PING_RANGE, PortalPings } from '../ui/PortalPings';
 import { NetOverlay } from '../ui/NetOverlay';
 import { Menu } from '../ui/Menu';
 import { Editor } from '../editor/Editor';
@@ -63,6 +65,8 @@ export class Game {
   readonly input: InputManager;
   readonly audio: Audio;
   readonly hud: Hud;
+  /** Flashes and edge arrows where opponents open portals (a setting). */
+  private readonly pings: PortalPings;
   /** `?net=1`: the connection stats panel online. */
   private readonly netOverlay: NetOverlay | null;
   readonly menu: Menu;
@@ -119,6 +123,7 @@ export class Game {
     this.keyboard = new KeyboardCommands(this.input);
     this.audio = new Audio(FLAGS.muted);
     this.hud = new Hud(container);
+    this.pings = new PortalPings(this.hud.layer);
     this.netOverlay = FLAGS.net ? new NetOverlay(this.hud.layer) : null;
     this.menu = new Menu(container, this.settings, {
       playStage: (i) => this.startFromMenu(() => this.loadArena(i)),
@@ -220,6 +225,7 @@ export class Game {
     this.netGo = false;
     this.loop.timeScale = 1;
     this.hud.setNet(null);
+    this.pings.clear();
     this.arenaIndex = index;
     this.mode = mode;
     this.combat = mode === 'pvp' || mode === 'online' || (mode === 'playtest' && def.kind === 'combat');
@@ -314,6 +320,7 @@ export class Game {
       if (shot.outcome === 'placed' || shot.outcome === 'fizzle') {
         session.playSound(shot.outcome === 'placed' ? 'portalOpen' : 'fizzle', 0.5, shooter.local ? null : shot.from, 35);
       }
+      if (shot.outcome === 'placed' && !shooter.local) this.pingPortal(shooter, shot.color, shot.to);
     };
     this.net = net;
     for (const msg of this.early.splice(0)) net.receive(msg);
@@ -487,6 +494,7 @@ export class Game {
     this.engine.applySettings(s, FLAGS.quality ?? s.quality);
     this.input.sensitivity = s.sensitivity;
     this.input.invertY = s.invertY;
+    if (!s.portalPings) this.pings.clear();
     this.session?.applyLighting();
     if (this.avatar && s.skin !== this.avatarSkin) void this.changeSkin(s.skin);
   }
@@ -556,6 +564,11 @@ export class Game {
     if (this.net) this.stepOnline(session, this.net, dt, true);
     else {
       session.step(dt);
+      // (The step's own shots: everything it holds besides yours was fired inside it.)
+      for (const shot of session.shots) {
+        const shooter = session.playerById(shot.player);
+        if (shot.outcome === 'placed' && shooter && !shooter.local) this.pingPortal(shooter, shot.color, shot.to);
+      }
       for (const v of this.botViews) v.update();
       for (const e of session.events.splice(0)) this.handleEvent(session, e);
     }
@@ -711,6 +724,13 @@ export class Game {
     this.setState('respawning');
   }
 
+  /** An opponent opened a portal at `at`: flash it, if it is near enough to have been heard and the setting is on. */
+  private pingPortal(shooter: ArenaPlayer, color: PortalColor, at: THREE.Vector3): void {
+    if (!this.settings.portalPings || this.state === 'menu') return;
+    if (this.engine.camera.position.distanceTo(at) > PING_RANGE) return;
+    this.pings.add(shooter.id, color, at, shooter.palette[color]);
+  }
+
   fire(color: PortalColor): void {
     const session = this.session;
     if (!session) return;
@@ -746,6 +766,7 @@ export class Game {
     uniforms.fade.value = this.fade;
     uniforms.heal.value = !inMenu && player.isImmune() ? 0.6 : 0;
     this.engine.render();
+    this.pings.update(frameDt, this.engine.camera);
 
     this.hud.setEffect(inMenu ? '' : session.effectText);
     const match = inMenu ? null : session.match;

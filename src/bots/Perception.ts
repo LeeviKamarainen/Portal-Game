@@ -239,7 +239,7 @@ export class Perception {
       undefined,
       (c) => {
         const t = physics.getOwner(c.handle)?.type;
-        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel';
+        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel' && t !== 'ramp';
       },
     );
     return !hit || hit.timeOfImpact >= dist - 0.05;
@@ -263,7 +263,7 @@ export class Perception {
       (c) => {
         // Glass stops bodies and shots, not sight.
         const t = physics.getOwner(c.handle)?.type;
-        return c.handle !== own && t !== 'portal-tunnel' && t !== 'glass';
+        return c.handle !== own && t !== 'portal-tunnel' && t !== 'glass' && t !== 'ramp';
       },
     );
     return !hit || hit.collider.handle === target || hit.timeOfImpact >= dist - 0.05;

@@ -7,6 +7,8 @@ export type ColliderOwnerType =
   | 'glass'
   | 'prop'
   | 'portal-tunnel'
+  /** The invisible glide ramp under a staircase: felt by walkers and crates, not by rays. */
+  | 'ramp'
   | 'hazard'
   | 'mover'
   | 'receiver'
