@@ -468,6 +468,23 @@ export class PlayerController implements PortalTraversable {
     return this.wasGrounded;
   }
 
+  /**
+   * Where the body touches down on a floor at height `floorY` if it carries on as it is
+   * (same velocity: no steering, no portals) - or null when it is on the ground, already
+   * below that floor, or would take longer than `maxTime` seconds to get there.
+   */
+  predictLanding(floorY: number, maxTime: number): THREE.Vector3 | null {
+    if (this.wasGrounded) return null;
+    const pos = this.getPosition();
+    const drop = pos.y - (floorY + PLAYER_FEET_OFFSET);
+    if (drop < -0.2) return null;
+    const g = GRAVITY * this.gravityScale;
+    const vy = this.velocity.y;
+    const t = (vy + Math.sqrt(vy * vy + 2 * g * Math.max(drop, 0))) / g;
+    if (!(t <= maxTime)) return null;
+    return new THREE.Vector3(pos.x + this.velocity.x * t, floorY, pos.z + this.velocity.z * t);
+  }
+
   get lastLookDelta(): THREE.Vector2 {
     return this.lookDelta;
   }

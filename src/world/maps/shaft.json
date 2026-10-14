@@ -12,7 +12,7 @@
     {"type": "lights", "at": [0, 28, 0], "size": [36, 0, 36], "spacing": 8, "center": true},
     {"type": "block", "at": [0, -3, 0], "size": [36, 3, 36], "portal": ["top"], "hide": ["bottom"], "center": true},
     {"type": "block", "at": [0, 0, 0], "size": [8, 14, 8], "portal": ["sides", "top"], "hide": ["bottom"], "center": true},
-    {"type": "ceiling-slot", "at": [0, 28, 0], "size": [6, 0.3, 6], "center": true},
+    {"type": "ceiling-slot", "at": [0, 28, 0], "size": [8, 0.3, 8], "center": true},
     {"type": "block", "at": [-12, 0, -12], "size": [6, 6, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
     {"type": "block", "at": [12, 0, -12], "size": [6, 6, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
     {"type": "ram", "at": [-17.6, 3, 0], "rot": 270, "reach": 3, "rest": 3.4, "offset": 0},

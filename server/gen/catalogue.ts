@@ -1,5 +1,6 @@
 import { PIECES, MAP_KINDS, FACE_NAMES, ROOM_SIDES, type FieldSpec, type MapData, type PieceSpec } from '../../src/world/maps/MapFormat';
 import { PLAYER_HEIGHT, PLAYER_RADIUS } from '../../src/player/PlayerController';
+import { PORTAL_HEIGHT, PORTAL_WIDTH } from '../../src/portals/Portal';
 import { MAP_PIECES_MAX } from '../../src/net/protocol';
 import { toWire } from './wire';
 
@@ -55,7 +56,7 @@ You design levels for a first-person portal-gun game. A level is a list of piece
 ## The player
 - Height ${PLAYER_HEIGHT} m, radius ${PLAYER_RADIUS} m, standing jump about 2 m high and 6 m long, walking speed 7 m/s. Steps of 0.3 m or less are climbed automatically; anything taller needs stairs, a ramp of stairs, a portal, or a jump of at most 2 m.
 - Falling more than about 4 m is harmless, long falls hurt, and falling below killY is fatal. Corridors need to be at least 1.5 m wide and 2.5 m high to walk through.
-- A portal opening is 1.9 m wide and 2.9 m tall. Portals can only be placed on faces listed in a piece's "portal" parameter (and room walls listed in the room's "portal"). A level without enough portal surfaces is a level without portals; give every tier and every important wall some.
+- A portal opening is ${PORTAL_WIDTH} m wide and ${PORTAL_HEIGHT} m tall. Portals can only be placed on faces listed in a piece's "portal" parameter (and room walls listed in the room's "portal"). A level without enough portal surfaces is a level without portals; give every tier and every important wall some.
 
 ## Map kinds
 ${kinds}

@@ -3,7 +3,7 @@ import { PhysicsWorld } from '../physics/PhysicsWorld';
 import { Level } from '../world/Level';
 import { ArenaBuilder, type ArenaDef, type SpawnPoint } from '../world/ArenaBuilder';
 import { PLAYER_PALETTES, PORTAL_HALF_H, PORTAL_HALF_W, Portal, linkPortals, type PortalColor } from '../portals/Portal';
-import { PortalGun } from '../portals/PortalGun';
+import { PortalGun, type LandingPredictor } from '../portals/PortalGun';
 import { PortalSystem } from '../portals/PortalSystem';
 import { PlayerController } from '../player/PlayerController';
 import type { CommandSource } from '../player/PlayerCommand';
@@ -377,6 +377,12 @@ export class ArenaSim {
     return undefined;
   }
 
+  /** What the landing assist asks of `player`'s body (nothing for bots, or on the ground). */
+  private landingOf(player: ArenaPlayer): LandingPredictor | undefined {
+    if (!player.landingAssist || player.controller.isGrounded) return undefined;
+    return (floorY, maxTime) => player.controller.predictLanding(floorY, maxTime);
+  }
+
   /** `player` shoots a portal from `eye` along where `look` faces (the tracer starts at `muzzle`). */
   protected fireFrom(
     player: ArenaPlayer,
@@ -389,7 +395,7 @@ export class ArenaSim {
   ): boolean {
     // (aimX, aimY): off the centre line, in the view's own frame - a tap on a touch screen.
     _fwd.set(aimX, aimY, -1).normalize().applyQuaternion(look);
-    const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle);
+    const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle, this.landingOf(player));
     const shot: SimShot = {
       player: player.id,
       color,
@@ -440,7 +446,7 @@ export class ArenaSim {
     aimY = 0,
   ): void {
     _fwd.set(aimX, aimY, -1).normalize().applyQuaternion(look);
-    const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle);
+    const r = player.gun.fire(color, eye.clone(), _fwd.clone(), muzzle, this.landingOf(player));
     this.shots.push({
       player: player.id,
       color,

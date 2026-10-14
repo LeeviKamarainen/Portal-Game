@@ -12,7 +12,7 @@
     {"type": "lights", "at": [0, 18, 0], "size": [44, 0, 44], "spacing": 8, "center": true},
     {"type": "block", "at": [0, -3, 0], "size": [44, 3, 44], "portal": ["top"], "hide": ["bottom"], "center": true},
     {"type": "spikes", "at": [0, 0, 0], "size": [4, 0, 4], "mode": "cycle", "rest": 3, "center": true},
-    {"type": "ceiling-slot", "at": [-14, 18, -14], "size": [4, 0.3, 4]},
+    {"type": "ceiling-slot", "at": [-14, 18, -14], "size": [6, 0.3, 6]},
     {"type": "block", "at": [-14, 0, 14], "size": [6, 4, 6], "portal": ["top", "sides"], "hide": ["bottom"]},
     {"type": "wall", "at": [-8, 0, -7], "size": [6, 1.6, 0.6]},
     {"type": "wall", "at": [7, 0, -1], "size": [0.6, 1.6, 8]},

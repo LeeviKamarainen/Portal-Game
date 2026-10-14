@@ -112,7 +112,7 @@ function yawFor(dir: THREE.Vector3): number {
 }
 
 const PLAYER_Y = 1.15;
-const LOW_WALL_Y = 1.47; // lowest opening a 2.9 m portal can have on a wall standing on the floor
+const LOW_WALL_Y = 1.67; // lowest opening a 3.3 m portal can have on a wall standing on the floor
 
 export const SCENARIOS: Scenario[] = [
   {

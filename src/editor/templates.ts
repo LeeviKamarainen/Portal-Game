@@ -21,9 +21,9 @@ export function blankMap(): MapData {
     pieces: [
       { type: 'room', at: [0, 0, 0], size: [48, 20, 48], portal: ['walls', 'floor'], center: true },
       { type: 'lights', at: [0, 20, 0], size: [48, 0, 48], spacing: 8, center: true },
-      { type: 'ceiling-slot', at: [0, 20, 0], size: [5, 0.3, 5], center: true },
-      { type: 'ceiling-slot', at: [12, 20, 12], size: [4, 0.3, 4] },
-      { type: 'ceiling-slot', at: [-12, 20, 12], size: [4, 0.3, 4] },
+      { type: 'ceiling-slot', at: [0, 20, 0], size: [7, 0.3, 7], center: true },
+      { type: 'ceiling-slot', at: [12, 20, 12], size: [6, 0.3, 6] },
+      { type: 'ceiling-slot', at: [-12, 20, 12], size: [6, 0.3, 6] },
       { type: 'spawn', at: [0, 0, 20], rot: 0, team: 'orange' },
     ],
   };

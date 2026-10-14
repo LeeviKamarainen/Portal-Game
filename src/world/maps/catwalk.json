@@ -16,7 +16,7 @@
     {"type": "block", "at": [0, -3, 19], "size": [40, 3, 18], "portal": ["top"], "hide": ["bottom"]},
     {"type": "block", "at": [12, 0, 0], "size": [4, 6, 4], "portal": ["top"], "hide": ["bottom"]},
     {"type": "block", "at": [0, 6, 0], "size": [24, 0.4, 3], "portal": ["top"], "hide": ["bottom"], "center": true},
-    {"type": "ceiling-slot", "at": [0, 22, 0], "size": [6, 0.3, 6], "center": true},
+    {"type": "ceiling-slot", "at": [0, 22, 0], "size": [8, 0.3, 8], "center": true},
     {"type": "spawn", "at": [-6, 0, 24], "rot": 0, "team": "orange"},
     {"type": "spawn", "at": [6, 0, 24], "rot": 0}
   ]

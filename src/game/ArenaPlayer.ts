@@ -38,6 +38,8 @@ export class ArenaPlayer {
    * command and respawns on its own, like an opponent.
    */
   autopilot = false;
+  /** Shots at the floor from the air are centred on where the body lands (bots aim for themselves: off). */
+  landingAssist = true;
   /**
    * Online, on a player's screen: someone else, placed where the game server's snapshots
    * say they were (see net/NetSession) instead of being simulated here.

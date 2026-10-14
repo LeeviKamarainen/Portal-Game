@@ -71,6 +71,7 @@ export class BotController implements CommandSource {
   attach(session: ArenaSim, self: ArenaPlayer): void {
     this.session = session;
     this.self = self;
+    self.landingAssist = false;
     self.controller.speedScale = this.skill.moveSpeed;
     this.perception = new Perception(session, self, this.skill, this.random);
     this.nav = NavGraph.for(session, session.arena, session.physics);

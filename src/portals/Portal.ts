@@ -21,10 +21,10 @@ export const PLAYER_PALETTES: readonly Record<PortalColor, number>[] = [
 
 /**
  * Size of the opening: generous, so a player (0.8 m capsule) dropping onto a floor portal
- * has over half a metre of slack each side (and see PortalSystem's entry assist).
+ * has well over half a metre of slack each side (and see PortalSystem's entry assist).
  */
-export const PORTAL_WIDTH = 1.9;
-export const PORTAL_HEIGHT = 2.9;
+export const PORTAL_WIDTH = 2.2;
+export const PORTAL_HEIGHT = 3.3;
 export const PORTAL_HALF_W = PORTAL_WIDTH / 2;
 export const PORTAL_HALF_H = PORTAL_HEIGHT / 2;
 const CORNER_RADIUS = 0.45;

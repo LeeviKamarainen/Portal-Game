@@ -11,6 +11,17 @@ const CLEARANCE_DEPTH = 0.5;
 /** How far a blocked shot may be nudged to find room. */
 const NUDGE_RINGS = [0.15, 0.3, 0.45, 0.6, 0.8, 1.0, 1.25, 1.5];
 const NUDGE_DIRECTIONS = 16;
+/**
+ * Landing assist: a shot at a floor from the air that comes down within this far of where
+ * the body will touch down is moved to be centred there, so a portal shot at the floor
+ * under you is one you land in (a lead the player would otherwise have to judge by eye).
+ */
+const LANDING_ASSIST_RADIUS = 1.6;
+/** ...for a landing at most this many seconds away. */
+const LANDING_ASSIST_TIME = 1.6;
+
+/** Where the shooter touches down on a floor at the given height, if they are in the air. */
+export type LandingPredictor = (floorY: number, maxTime: number) => THREE.Vector3 | null;
 
 export interface ShotResult {
   placed: boolean;
@@ -70,7 +81,7 @@ export class PortalGun {
     this.effects = new ShotEffects(level.scene, (c) => this.portals[c].tint);
   }
 
-  fire(color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3, muzzle?: THREE.Vector3): ShotResult {
+  fire(color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3, muzzle?: THREE.Vector3, landing?: LandingPredictor): ShotResult {
     // Moving blockers (crushers, platforms, doors) have moved since the last frame drew.
     this.level.scene.updateMatrixWorld();
     this.raycaster.set(eye, dir.clone().normalize());
@@ -101,7 +112,7 @@ export class PortalGun {
     }
 
     this.zoneRejected = false;
-    const placement = this.findPlacement(color, face, hit.point, dir);
+    const placement = this.findPlacement(color, face, this.assistedPoint(face, hit.point, landing), dir);
     if (!placement) {
       this.effects.tracer(color, from, hit.point, false, normal);
       return { placed: false, point: hit.point.clone(), normal, noPortalZone: this.zoneRejected };
@@ -109,6 +120,20 @@ export class PortalGun {
     this.portals[color].place(this.physics, placement.face, placement.center, placement.right, placement.up);
     this.effects.tracer(color, from, placement.center, true, face.normal);
     return { placed: true, point: placement.center.clone(), normal: face.normal.clone() };
+  }
+
+  /** `point`, moved to the shooter's landing spot when they shot a floor from the air and it is close. */
+  private assistedPoint(face: Face, point: THREE.Vector3, landing?: LandingPredictor): THREE.Vector3 {
+    if (!landing || face.normal.y < 0.9) return point;
+    const land = landing(point.y, LANDING_ASSIST_TIME);
+    if (!land) return point;
+    const dx = land.x - point.x;
+    const dz = land.z - point.z;
+    if (Math.hypot(dx, dz) > LANDING_ASSIST_RADIUS) return point;
+    const local = face.toLocal(new THREE.Vector3(land.x, point.y, land.z));
+    // Only onto this same floor: landing off its edge, the shot stays where it was aimed.
+    if (Math.abs(local.x) > face.width / 2 || Math.abs(local.y) > face.height / 2) return point;
+    return new THREE.Vector3(land.x, point.y, land.z);
   }
 
   /** The placed portal (anyone's) whose opening `point` on `face` lies in, if any. */
