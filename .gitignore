@@ -26,3 +26,6 @@ dist-server
 
 # Server database (accounts, saved maps)
 data/
+.env*
+
+generated/
