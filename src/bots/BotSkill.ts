@@ -93,9 +93,93 @@ export interface BotSkill {
    * instead of walking the long way round. Needs `portalClimb` (it lands the same way).
    */
   readonly portalTravel: boolean;
+  /**
+   * Chains portals in the air: out of one portal with time to fall, it shoots a new exit
+   * nearer where it is going and a way in on what it is about to hit, and goes through that
+   * too - link after link, off a ceiling or a wall, instead of landing and walking on. Needs
+   * `portalTravel`.
+   */
+  readonly airChain: boolean;
+  /**
+   * Gets about by portal only while no enemy it knows of is this near, metres (0: always) -
+   * a hop or a chain is a second or so in which it can set no trap, and near an enemy that
+   * is a kill chance (25 points, an orb is 10) it hands over. A chain is held to
+   * `chainEnemyClear` instead, if that is further.
+   */
+  readonly travelEnemyClear: number;
+  readonly chainEnemyClear: number;
+  /**
+   * Alternates between two modes, each for this long, seconds (0: no alternating - it does
+   * what suits it). Orb rush: it goes for points as fast as it can (no traps, steals or
+   * drop-ins, and no handing over to a fight - it hops and chains whenever that saves time).
+   * Hunt: it goes after the players (traps, climbs, steals, drop-ins) and takes orbs only
+   * when it has no one to go after. Starts with the rush.
+   */
+  readonly orbPhase: number;
+  readonly huntPhase: number;
+  /** Rush: still takes a trap on someone who walks into one (a kill is 25 points). */
+  readonly rushTraps: boolean;
+  /**
+   * An orb this near (metres of walk-ish: distance plus twice the height) that no enemy is much
+   * closer to comes before anything optional - exit prep, traps that only hurt, climbs, drop-ins
+   * for show, steals. A sure kill still does (0: off).
+   */
+  readonly orbFirst: number;
+  /** What an orb close by puts off (see `orbFirst`). */
+  readonly orbFirstSkips: readonly ('prep' | 'fall' | 'combo' | 'climb' | 'steal')[];
+  /** Hunt: stays on the players even when it can't set a trap yet (else it takes orbs meanwhile). */
+  readonly huntStays: boolean;
 }
 
 const deg = (d: number) => (d * Math.PI) / 180;
+
+const ULTRA: BotSkill = {
+  name: 'Ultra hard',
+  fovH: deg(62),
+  fovV: deg(48),
+  viewRange: 90,
+  acquireTime: 0.05,
+  hearing: 1.4,
+  memory: 8,
+  reaction: 0.03,
+  turnRate: deg(1200),
+  turnAccel: deg(14000),
+  aimError: deg(0.5),
+  aimSettle: 0.1,
+  aimWobble: deg(0.1),
+  overshoot: 1.02,
+  thinkInterval: 0.03,
+  shotCooldown: 0.1,
+  aimTolerance: deg(0.9),
+  trapChance: 1,
+  trapRange: 50,
+  stealChance: 1,
+  dodges: true,
+  moveWhileAiming: true,
+  omniscient: true,
+  hops: true,
+  portalClimb: true,
+  comboChance: 0.75,
+  moveSpeed: 1.5,
+  trapCooldown: 0.35,
+  climbCooldown: 1.8,
+  comboEvery: 0.9,
+  checkDelay: 0.04,
+  decisive: true,
+  anticipate: true,
+  portalTravel: true,
+  airChain: true,
+  travelEnemyClear: 30,
+  chainEnemyClear: 30,
+  orbPhase: 0,
+  huntPhase: 0,
+  rushTraps: false,
+  huntStays: false,
+  // (Measured against Hard: drop-ins for show and high-ground climbs with an orb in reach cost
+  // orbs and nothing else; exit prep, steals and traps that hurt are where its kills come from.)
+  orbFirst: 50,
+  orbFirstSkips: ['combo', 'climb'],
+};
 
 export const BOT_SKILLS = {
   easy: {
@@ -133,6 +217,15 @@ export const BOT_SKILLS = {
     decisive: false,
     anticipate: false,
     portalTravel: false,
+    airChain: false,
+    travelEnemyClear: 0,
+    chainEnemyClear: 0,
+    orbPhase: 0,
+    huntPhase: 0,
+    rushTraps: false,
+    huntStays: false,
+    orbFirst: 0,
+    orbFirstSkips: [],
   },
   normal: {
     name: 'Normal',
@@ -169,6 +262,15 @@ export const BOT_SKILLS = {
     decisive: false,
     anticipate: false,
     portalTravel: false,
+    airChain: false,
+    travelEnemyClear: 0,
+    chainEnemyClear: 0,
+    orbPhase: 0,
+    huntPhase: 0,
+    rushTraps: false,
+    huntStays: false,
+    orbFirst: 0,
+    orbFirstSkips: [],
   },
   hard: {
     name: 'Hard',
@@ -205,43 +307,23 @@ export const BOT_SKILLS = {
     decisive: true,
     anticipate: true,
     portalTravel: false,
+    airChain: false,
+    travelEnemyClear: 0,
+    chainEnemyClear: 0,
+    orbPhase: 0,
+    huntPhase: 0,
+    rushTraps: false,
+    huntStays: false,
+    orbFirst: 0,
+    orbFirstSkips: [],
   },
-  ultra: {
-    name: 'Ultra hard',
-    fovH: deg(62),
-    fovV: deg(48),
-    viewRange: 90,
-    acquireTime: 0.05,
-    hearing: 1.4,
-    memory: 8,
-    reaction: 0.03,
-    turnRate: deg(1200),
-    turnAccel: deg(14000),
-    aimError: deg(0.5),
-    aimSettle: 0.1,
-    aimWobble: deg(0.1),
-    overshoot: 1.02,
-    thinkInterval: 0.03,
-    shotCooldown: 0.1,
-    aimTolerance: deg(0.9),
-    trapChance: 1,
-    trapRange: 50,
-    stealChance: 1,
-    dodges: true,
-    moveWhileAiming: true,
-    omniscient: true,
-    hops: true,
-    portalClimb: true,
-    comboChance: 0.75,
-    moveSpeed: 1.5,
-    trapCooldown: 0.35,
-    climbCooldown: 1.8,
-    comboEvery: 0.9,
-    checkDelay: 0.04,
-    decisive: true,
-    anticipate: true,
-    portalTravel: true,
-  },
+  ultra: ULTRA,
+  /**
+   * Ultra hard's skills, alternating a points rush with a hunt for the players (12 s each).
+   * Not stronger than Ultra hard in head-to-heads (about 50% against Hard, Ultra hard 59%); it
+   * is for variety: a bot that visibly commits to one thing at a time.
+   */
+  ultra2: { ...ULTRA, name: 'Ultra 2', orbPhase: 12, huntPhase: 12, rushTraps: true, huntStays: false, orbFirst: 0 },
 } satisfies Record<string, BotSkill>;
 
 export type BotDifficulty = keyof typeof BOT_SKILLS;

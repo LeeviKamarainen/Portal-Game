@@ -412,7 +412,7 @@ export class Menu {
             <div class="d">${esc(PVP_ARENA.blurb ?? '')}</div>
             <ul>
               <li class="ok">Scoring: point orbs, portal kill credit, first to ${DEFAULT_RULES.scoreToWin} wins</li>
-              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is; Ultra hard is Hard that also gets about by portal</li>
+              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is; Ultra hard is Hard that also gets about by portal; Ultra 2 alternates between rushing the orbs and hunting you</li>
               <li class="ok">Shoot an opponent's portal to steal it</li>
               <li>Online opponents</li>
             </ul>
@@ -624,6 +624,19 @@ export class Menu {
       case 'controls':
         return [
           this.sliderRow('sensitivity', FLAGS.touch ? 'Look sensitivity' : 'Mouse sensitivity', '', 0.2, 3, 0.05, (v) => `${v.toFixed(2)}×`),
+          ...(FLAGS.touch
+            ? [
+                this.segRow('touchFire', 'Shooting', 'Tap: tap where you want a portal - once for orange, twice for blue - and the view stays put.', [
+                  ['tap', 'Tap screen'],
+                  ['buttons', 'Buttons'],
+                ]),
+                this.segRow('touchBlue', 'Blue portal', 'Tap shooting only. Hold: tap is orange, press and hold is blue. Double tap: tap is orange, double tap is blue. Alternate: every tap is the next colour; the swatch by the bars flips it.', [
+                  ['hold', 'Hold'],
+                  ['double', 'Double tap'],
+                  ['alternate', 'Alternate'],
+                ]),
+              ]
+            : []),
           this.segRow('invertY', FLAGS.touch ? 'Invert look Y' : 'Invert mouse Y', '', [
             ['false', 'Off'],
             ['true', 'On'],
@@ -818,7 +831,7 @@ export class Menu {
           character: ['skin'],
           graphics: ['quality', 'fov'],
           lighting: ['brightness', 'ambient', 'glow', 'shadows'],
-          controls: ['sensitivity', 'invertY', 'portalPings'],
+          controls: ['sensitivity', 'invertY', 'touchFire', 'touchBlue', 'portalPings'],
         };
         for (const k of keys[this.tab]) (this.settings as unknown as Record<string, unknown>)[k] = DEFAULT_SETTINGS[k];
         this.changed();

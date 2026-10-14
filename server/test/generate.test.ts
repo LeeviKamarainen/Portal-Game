@@ -123,6 +123,37 @@ test('needs a login and the generate-maps right; bad requests are refused', asyn
   });
 });
 
+test('each player generates with the model the admin picked for them, and the cost follows that model', async () => {
+  const runs: FakeLlm[] = [];
+  const model = () => {
+    const llm = new FakeLlm({ brief: [brief], draft: [toWire(highwire())] }, { input: 8_000, output: 2_000 });
+    runs.push(llm);
+    return llm as Llm;
+  };
+  await withGenerator(model, config(), async (s) => {
+    const ada = await signUp(s, 'Ada');
+    const finish = async () => {
+      const started = await start(s, ada);
+      assert.equal(started.status, 202);
+      const { list } = await events(s, started.body.jobId, ada);
+      return list[list.length - 1].data;
+    };
+
+    const cheap = await finish();
+    assert.equal(cheap.status, 'ok');
+    assert.deepEqual([...new Set(runs[0].requests.map((r) => r.model))], ['claude-haiku-5-5']);
+    assert.ok(runs[0].requests.every((r) => r.thinking === 'off'));
+
+    s.store.setGenModel(s.store.findUserForLogin('Ada')!.id, 'sonnet');
+    const dear = await finish();
+    assert.equal(dear.status, 'ok');
+    assert.deepEqual([...new Set(runs[1].requests.map((r) => r.model))], ['claude-sonnet-5-5'], 'planning and drafting both use Sonnet');
+    assert.deepEqual(dear.outcome.tokens, cheap.outcome.tokens, 'same tokens...');
+    assert.ok(Math.abs(cheap.outcome.costUsd - 0.0036) < 1e-9, `haiku list price: ${cheap.outcome.costUsd}`);
+    assert.ok(Math.abs(dear.outcome.costUsd - 0.072) < 1e-9, `...at Sonnet's list price: ${dear.outcome.costUsd}`);
+  });
+});
+
 test('a generation streams its steps and pieces, ends with done, and is recorded', async () => {
   // No `check` given: this one goes through the real worker thread.
   await withGenerator(goodModel(undefined, { input: 8_000, output: 2_000 }), config(), async (s) => {

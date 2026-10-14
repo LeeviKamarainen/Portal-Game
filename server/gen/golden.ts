@@ -1,11 +1,16 @@
 import { expandPieces, mapKind, withDefaults, type MapData, type Piece, type Vec3 } from '../../src/world/maps/MapFormat';
 import { solidsOf } from './check';
+import type { Feature } from './blueprint';
+import { feature as f } from './blueprintExamples';
+import { featureProblems } from './features';
 
 /**
  * The golden prompts for `npm run gen:eval`: what real users are likely to type, spread over
  * combat and puzzle maps, sizes and hazard types. "ok" from the generator only says the map
  * builds and passes the lints; `expect` adds what the request itself asked for, in terms code
  * can measure, so the report can tell "builds" from "builds and looks like what was asked".
+ * `features` are measured with the generator's own feature checks (features.ts): where things
+ * are (a hole at the centre, a moat all the way round), not only how many there are.
  */
 
 export interface Expect {
@@ -23,6 +28,8 @@ export interface Expect {
   portalPieces?: number;
   /** The room has no floor: falling off is possible. */
   voidFloor?: boolean;
+  /** Shapes and places the request names, each judged like the generator judges its own maps. */
+  features?: Feature[];
 }
 
 export interface GoldenPrompt {
@@ -39,16 +46,21 @@ export const GOLDEN: GoldenPrompt[] = [
   // Combat
   g('pvp-heights', 'Pvp map with big height differences, floating platforms with hazards on each platform', { kind: 'combat', minSpawns: 2, heightSpread: 8, floating: 3, hazardOnEachPlatform: true }),
   g('flat-cover', 'Wide open flat arena with a few cover blocks and portal walls on two sides', { kind: 'combat', minSpawns: 2, portalPieces: 2 }, 'combat'),
-  g('central-pillar', 'Small symmetric arena with a tall central pillar and portal walls on every side, no hazards', { kind: 'combat', minSpawns: 2, portalPieces: 2 }, 'combat', 'small'),
-  g('acid-moat', 'A fortress in the middle surrounded by an acid moat, with ramps up to a high platform', { kind: 'combat', minSpawns: 2, has: { acid: 1 }, heightSpread: 4 }, 'combat'),
-  g('twin-towers', 'Two tall towers on opposite sides connected by a thin bridge, portal walls on the tower sides', { kind: 'combat', minSpawns: 2, heightSpread: 6, portalPieces: 2 }, 'combat'),
+  g('central-pillar', 'Small symmetric arena with a tall central pillar and portal walls on every side, no hazards', { kind: 'combat', minSpawns: 2, portalPieces: 2, features: [f({ what: 'tower', where: 'center', words: 'a tall central pillar' })] }, 'combat', 'small'),
+  g('acid-moat', 'A fortress in the middle surrounded by an acid moat, with ramps up to a high platform', { kind: 'combat', minSpawns: 2, has: { acid: 1 }, heightSpread: 4, features: [f({ what: 'moat', where: 'center', hazard: 'acid', words: 'surrounded by an acid moat' }), f({ what: 'stairs', words: 'ramps' })] }, 'combat'),
+  g('twin-towers', 'Two tall towers on opposite sides connected by a thin bridge, portal walls on the tower sides', { kind: 'combat', minSpawns: 2, heightSpread: 6, portalPieces: 2, features: [f({ what: 'tower', count: 2, words: 'two tall towers' }), f({ what: 'bridge', words: 'a thin bridge' })] }, 'combat'),
   g('trap-corridor', 'A corridor map with crushers and spike traps guarding the way between the two spawn areas', { kind: 'combat', minSpawns: 2 }, 'combat'),
   g('void-islands', 'Islands floating over a bottomless void where you can fall off, with portals as the only way across the biggest gaps', { kind: 'combat', minSpawns: 2, voidFloor: true, has: { block: 3 }, portalPieces: 2 }, 'combat'),
   g('moving-acid', 'Moving platforms carrying players across an acid lake', { kind: 'combat', minSpawns: 2, has: { platform: 1, acid: 1 } }, 'combat'),
   g('shaft', 'Vertical shaft map with spawns at the top and the bottom, ledges and stairs zig-zagging between them', { kind: 'combat', minSpawns: 2, heightSpread: 8 }, 'combat'),
   g('trapdoors', 'Arena whose floor is trapdoors over a spike pit', { kind: 'combat', minSpawns: 2, has: { trapdoor: 1, spikes: 1 } }, 'combat'),
   g('king-hill', 'King of the hill: a high central platform with rams on the sides that knock players off', { kind: 'combat', minSpawns: 2, has: { ram: 1 }, heightSpread: 3 }, 'combat'),
-  g('three-storey', 'A three-storey building with stairs between the floors and portal walls on every floor', { kind: 'combat', minSpawns: 2, heightSpread: 8, portalPieces: 3 }, 'combat', 'large'),
+  g('three-storey', 'A three-storey building with stairs between the floors and portal walls on every floor', { kind: 'combat', minSpawns: 2, heightSpread: 8, portalPieces: 3, features: [f({ what: 'levels', count: 3, words: 'three-storey' }), f({ what: 'stairs', count: 2, words: 'stairs between the floors' })] }, 'combat', 'large'),
+  // Layouts named by shape and place: what the first golden set only counted.
+  g('hole-platforms', '3 platform stage with a giant hole in the middle', { kind: 'combat', minSpawns: 2, features: [f({ what: 'hole', where: 'center', size: 'large', words: 'a giant hole in the middle' }), f({ what: 'platforms', count: 3, words: '3 platform' })] }),
+  g('chasm-bridge', 'Two bases on either side of a bottomless chasm across the middle, joined by a single narrow bridge', { kind: 'combat', minSpawns: 2, features: [f({ what: 'hole', where: 'center', size: 'medium', words: 'a bottomless chasm across the middle' }), f({ what: 'bridge', words: 'a single narrow bridge' })] }, 'combat'),
+  g('tiered-terraces', 'Three tiers of terraces rising from a low arena, each tier joined to the next by stairs', { kind: 'combat', minSpawns: 2, heightSpread: 4, features: [f({ what: 'levels', count: 3, words: 'three tiers' }), f({ what: 'stairs', count: 2, words: 'joined to the next by stairs' })] }, 'combat'),
+  g('corner-towers', 'An acid pool in the centre with a tower in each corner', { kind: 'combat', minSpawns: 2, has: { acid: 1 }, features: [f({ what: 'pool', where: 'center', size: 'medium', words: 'an acid pool in the centre' }), f({ what: 'tower', count: 4, words: 'a tower in each corner' })] }, 'combat'),
 
   // Puzzle
   g('portal1-stage1', 'Copy puzzle map from Portal 1 stage 1', { kind: 'puzzle', has: { goal: 1 } }),
@@ -58,6 +70,7 @@ export const GOLDEN: GoldenPrompt[] = [
   g('switch-door', 'Puzzle with a switch you have to shoot to open the door to the exit', { kind: 'puzzle', has: { goal: 1, door: 1 } }, 'puzzle'),
   g('laser-relay', 'Puzzle where a laser has to be sent through a portal into a receiver to open the exit door', { kind: 'puzzle', has: { goal: 1, laser: 1, receiver: 1, door: 1 } }, 'puzzle'),
   g('high-ledge', 'Puzzle: the exit is on a high ledge you cannot jump to, so you fling yourself up with portals', { kind: 'puzzle', has: { goal: 1 }, heightSpread: 5, portalPieces: 2 }, 'puzzle'),
+  g('pit-crossing', 'Puzzle: a deep pit in the middle of the room splits it in two; use portals to reach the exit on the far side', { kind: 'puzzle', has: { goal: 1 }, portalPieces: 2, features: [f({ what: 'hole', where: 'center', size: 'medium', words: 'a deep pit in the middle of the room' })] }, 'puzzle'),
   g('timed-hazards', 'Puzzle corridor with spikes and a crusher to time, then portal over a wall to the exit', { kind: 'puzzle', has: { goal: 1 }, portalPieces: 1 }, 'puzzle'),
   // Targets are painted rings and nothing reacts to a crate landing on one until 5a/5b (plate, cube).
   g('dropper-target', 'Puzzle where a dropper drops crates and one has to land on a target to open the exit door', { kind: 'puzzle', has: { goal: 1, dropper: 1 } }, 'puzzle'),
@@ -132,5 +145,9 @@ export function fit(map: MapData, expect: Expect): FitResult {
   if (expect.hazardOnEachPlatform) need(s.floatingBare === 0 && s.floating > 0, `${s.floatingBare} of ${s.floating} floating platforms have no hazard`);
   if (expect.voidFloor !== undefined) need(s.voidFloor === expect.voidFloor, expect.voidFloor ? 'the room has a floor, wanted a void' : 'the room has no floor');
   if (expect.portalPieces !== undefined) need(s.portalPieces >= expect.portalPieces, `${s.portalPieces} portal surfaces, wanted ${expect.portalPieces}`);
+  for (const feature of expect.features ?? []) {
+    const miss = featureProblems([feature], map)[0];
+    need(!miss, miss ?? '');
+  }
   return { checked, passed: checked - misses.length, misses };
 }

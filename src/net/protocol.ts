@@ -41,10 +41,10 @@ export const BUILT_IN_ONLINE_MAPS: readonly { id: string; data: MapData }[] = [
   { id: 'courtyard', data: courtyard as MapData },
 ];
 
-export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'ultra';
-export const BOT_DIFFICULTIES: readonly BotDifficulty[] = ['easy', 'normal', 'hard', 'ultra'];
+export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'ultra' | 'ultra2';
+export const BOT_DIFFICULTIES: readonly BotDifficulty[] = ['easy', 'normal', 'hard', 'ultra', 'ultra2'];
 /** What a difficulty is called on a button. */
-export const BOT_DIFFICULTY_LABEL: Readonly<Record<BotDifficulty, string>> = { easy: 'Easy', normal: 'Normal', hard: 'Hard', ultra: 'Ultra hard' };
+export const BOT_DIFFICULTY_LABEL: Readonly<Record<BotDifficulty, string>> = { easy: 'Easy', normal: 'Normal', hard: 'Hard', ultra: 'Ultra hard', ultra2: 'Ultra 2' };
 
 /** The map a room plays: one that ships with the game, or one the host made in the editor. */
 export type MapChoice = { kind: 'builtin'; id: string } | { kind: 'custom'; data: MapData };

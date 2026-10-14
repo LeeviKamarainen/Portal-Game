@@ -1,9 +1,11 @@
 /**
  * Generator settings. Everything has a default that follows docs/llm-map-generation-plan.md
- * (Haiku 5.5 only, every call and every job under 100K tokens); the environment can override
+ * (Haiku 5.5 unless an admin picks Sonnet 5.5 for a player, every call and every job under 100K tokens); the environment can override
  * the model ids and the thinking mode without a code change. No secret lives here: the API
  * key is read from ANTHROPIC_API_KEY by the Anthropic client itself.
  */
+
+import type { GenModel } from '../../src/net/accounts';
 
 export type Effort = 'low' | 'medium' | 'high';
 
@@ -44,9 +46,33 @@ export interface GenConfig {
 }
 
 export const HAIKU = 'claude-haiku-5-5';
+export const SONNET = 'claude-sonnet-5-5';
+
+export interface Prices {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
 
 /** Haiku 5.5 list prices in USD per million tokens, for prompts up to 100K tokens. For estimates only. */
-export const PRICES = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
+export const PRICES: Prices = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
+/** Sonnet 5.5 list prices in USD per million tokens (cache write is 1.25x input). For estimates only. */
+export const SONNET_PRICES: Prices = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+
+/** The model's list prices by the family its id names (anything that is not Sonnet is priced as Haiku). */
+export const pricesFor = (model: string): Prices => (model.includes('sonnet') ? SONNET_PRICES : PRICES);
+
+/**
+ * The config for one user's generation: planning, drafting and review all run on the model the
+ * admin chose for them. `GEN_MODEL_FAST` / `GEN_MODEL_DRAFT` still decide the Haiku case; Sonnet
+ * is `GEN_MODEL_SONNET` (default `SONNET`) for both nodes.
+ */
+export function configFor(config: GenConfig, genModel: GenModel, env: Record<string, string | undefined> = process.env): GenConfig {
+  if (genModel !== 'sonnet') return config;
+  const model = env.GEN_MODEL_SONNET || SONNET;
+  return { ...config, fast: { ...config.fast, model }, draft: { ...config.draft, model } };
+}
 
 const pick = <T extends string>(v: string | undefined, allowed: readonly T[], fallback: T): T => (allowed.includes(v as T) ? (v as T) : fallback);
 const int = (v: string | undefined, fallback: number): number => {

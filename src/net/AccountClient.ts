@@ -1,4 +1,4 @@
-import { hasRight, type AdminUser, type MapListing, type MapSummary, type PublicUser, type Right, type Visibility } from './accounts';
+import { hasRight, type AdminUser, type GenModel, type MapListing, type MapSummary, type PublicUser, type Right, type Visibility } from './accounts';
 import { isTerminalEvent, type GenQuota, type GenStartRequest, type JobEvent } from './generate';
 
 /** Something the server (or the network) refused, in words for the player. */
@@ -90,6 +90,11 @@ export class AccountClient {
   /** Replaces the rights a player has on top of their role. */
   async setRights(id: number, rights: Right[]): Promise<AdminUser> {
     return (await this.request('PUT', `/api/admin/users/${id}/rights`, { rights })).user as AdminUser;
+  }
+
+  /** Picks the model that builds this player's generated maps. */
+  async setGenModel(id: number, model: GenModel): Promise<AdminUser> {
+    return (await this.request('PUT', `/api/admin/users/${id}/gen-model`, { model })).user as AdminUser;
   }
 
   // ---- the map generator (server/gen/, src/net/generate.ts)

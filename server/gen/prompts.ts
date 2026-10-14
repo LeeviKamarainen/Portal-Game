@@ -3,7 +3,7 @@ import { BUILT_IN_MAPS, blankPuzzle } from '../../src/editor/templates';
 import { PIECES, mapKind, withDefaults, type MapData, type MapKind, type Vec3 } from '../../src/world/maps/MapFormat';
 import { buildCatalogue, renderExample } from './catalogue';
 import { HAZARD_TYPES, blueprintText, roomSizeFor, type Blueprint, type RoomSize } from './blueprint';
-import { combatExample, puzzleExample } from './blueprintExamples';
+import { combatExample, crevasseExample, puzzleExample } from './blueprintExamples';
 
 /**
  * Every prompt the graph sends, and the small structured answer of the review step. The big
@@ -49,13 +49,35 @@ export function draftSystem(): string {
 const MISSING_MECHANICS =
   "The game does not have turrets, pressure plates, weighted cubes, fizzlers, light bridges, funnels or gel yet. When the request asks for these (or for a copy of a level that uses them), approximate with what exists - shootable switches, laser + receiver + door, crates, hazards, portal surfaces - and say what was substituted in notes. You cannot reproduce another game's level exactly; recreate its idea and rough layout from memory as new geometry and say it is approximate in notes.";
 
+/** What each feature kind means, for the planner. Kept in step with `judge` in features.ts. */
+const FEATURES_HELP = [
+  '- hole: a bottomless opening in the floor (pit, chasm, gap, "a hole in the middle"); size says how big.',
+  '- pool: an acid pool or lake; size says how big.',
+  '- moat: a ring of hole or acid all the way around something; where is where that something is; hazard "acid" for an acid moat.',
+  '- bridge: a walkway over a gap or drop that joins two parts; count for several.',
+  '- platforms: separate raised or floating surfaces to stand on; count is how many.',
+  '- levels: distinct heights (tiers, storeys, floors of a building); count is how many.',
+  '- tower: a tall, narrow structure (tower, pillar, spire); count, where, metres for its height.',
+  '- height-spread: big height differences; metres between the lowest and highest ground (6 when unsure).',
+  '- stairs: stairs or ramps; count is how many flights.',
+  '- hazard: a hazard of the kind in hazard; count is how many.',
+  '- hazard-on-each-platform: every floating platform carries a hazard.',
+  '- portal-walls: surfaces that take portals; count is how many.',
+  '- void: a level over a void where players can fall off.',
+].join('\n');
+
 let cachedPlan: string | undefined;
 /** The static prompt of the planner (and of its corrections). */
 export function planSystem(): string {
   if (cachedPlan) return cachedPlan;
   const hazards = HAZARD_TYPES.map((t) => `- ${t}: ${PIECES[t]?.help ?? ''}`).join('\n');
   const example = (bp: Blueprint) => JSON.stringify(bp);
-  cachedPlan = `You are the level architect for a first-person portal-gun game. Before anything is built you write a blueprint: every part of the level as a rectangle seen from above with its heights, what it is for, how players get from each part to the next, and where they start. Code checks the blueprint and builds the structure directly from it, so the numbers must be exact and every part must connect. Reply only in the requested structure.
+  cachedPlan = `You are the level architect for a first-person portal-gun game. Before anything is built you write a blueprint: first what the request asks for (features), then every part of the level as a rectangle seen from above with its heights, what it is for, how players get from each part to the next, and where they start. Code checks the blueprint against the features, places the stairs and bridges, and builds the structure directly from it, so the numbers must be exact and every part must connect. Reply only in the requested structure.
+
+## Features: read the request first
+Before laying anything out, list in features each thing the request asks for that has a shape or a number. Code measures every one on the finished level, so they are a promise:
+${FEATURES_HELP}
+Fields: where (anywhere, center, north, south, east, west), size (any, small, medium, large; "giant", "huge" or "big" is large), count (0 when the request gives no number), metres (0 when none), hazard ("none" unless the feature is a hazard, or an acid moat), words (the request's own words). A hole is a bottomless gap with nothing under it: never write a hole as acid, and never write acid as a hole. List only what the request says; a request that only names a mood or another game's level may have no features.
 
 ## Space
 - Metres, y up. x runs east-west and z north-south: north is -z, south is +z, east is +x, west is -x. The room is centred on x=0, z=0, its floor is at y=0 and its ceiling at roomHeight. You choose roomWidth (x), roomHeight and roomDepth (z): combat 24-90 m wide and deep and 10-40 m tall; puzzle 10-40 m wide, 5-14 m tall and 10-50 m deep. Taller rooms for bigger height differences.
@@ -63,27 +85,32 @@ export function planSystem(): string {
 - A player is 2 m tall, jumps about 1.8 m up and about 3.5 m across (5 m across on the level), and needs 2.5 m of free height above any surface they stand on. Keep heights on a 0.5 m grid.
 
 ## Ground
-- ground "floor": the room has its own floor at y=0 under everything. Use this unless the level is about a void. A level on a floor needs no ground areas; every area you list stands on the floor or floats above it.
+- ground "floor": the room has its own floor at y=0 under everything except pits. Use this unless the level is about a void. A level on a floor needs no ground areas; every area you list stands on the floor or floats above it. A hole, chasm or gap in the floor is a pit area: code leaves the floor out there.
 - ground "void": there is no floor and players fall to their death below the islands. Then you must list the islands as role "ground" areas with topY 0 (together they cover at least 12% of the room's footprint), and every spawn stands on an area.
 
 ## Area roles
 - ground: a flat island of floor at y=0 (void levels).
 - raised: a solid mass from baseY (normally 0) up to topY: a ledge, tower or terrace. Players stand on its top.
 - floating: a thin slab hanging in the air with its top surface at topY and its underside at baseY (about 0.5 m lower).
-- stairs: a staircase. baseY is its low end, topY its high end, climbs says which way it goes up. Its run (depth for north/south, width for east/west) must be at least as long as its rise.
+- stairs: a staircase between two areas. Give from (the lower area, or FLOOR) and to (the higher area): code works out where the flight goes, against a side of the higher area with its foot on the lower one, so it always connects and climbs the right way. width is how wide the flight is (3 is usual), depth its run (0: as needed); x and z only hint where along the edge you would like it. Leave baseY, topY and climbs at 0 / "none".
+- bridge: a level walkway between two areas at the same height with a gap or drop between them. Give from and to; code places it straight across (they must face each other). width is how wide it is (2 is usual).
 - wall: a standing wall or portal wall; topY is its top edge. The smaller of width and depth is its thickness.
-- hazard-zone: a patch where a hazard is the point (an acid pool, a spike field); list the hazard in hazards. Not walkable.
+- pit: a bottomless hole in the floor (floor levels): the floor is left out over its rectangle and players who fall in die. Floating platforms and bridges may cross it. Not walkable.
+- pool: an acid pool on the floor; topY is the acid surface (0.3 to 0.5 above the ground it lies on). Not walkable.
+- moat: a ring around another area: around names that area, width is how wide the ring is; with hazards ["acid"] it is acid, otherwise a bottomless pit. Code builds the four sides.
+- hazard-zone: a patch of spikes (or another hazard) on the ground; list it in hazards. Not walkable.
 Set portals=true on areas whose top (for raised areas also their sides, for walls both faces) should take portals; give every tier and important wall some.
 Use hazards to say which hazard types belong on or in an area, so "hazards on each platform" means every floating area lists at least one:
 ${hazards}
+from, to and around are "" for every role that does not use them.
 
 ## Links: how players move between walkable areas
-Every ground, raised, floating and stairs area must be reachable from a spawn through links (FLOOR names the room floor in floor levels; areas whose top is at most 1.5 m above the floor join it automatically).
-- walk: the areas touch (gap at most 0.5 m) and their surfaces differ by at most 0.3 m (stairs touch at their low and high ends).
+Every ground, raised, floating, stairs and bridge area must be reachable from a spawn. Areas that touch at the same height join on their own, and so do stairs and bridges with the areas at their ends, and anything up to 1.5 m above the floor with the floor. Other moves need links (FLOOR names the room floor in floor levels):
+- walk: the areas touch (gap at most 0.5 m) and their surfaces differ by at most 0.3 m.
 - jump: up at most 1.8 m with a gap of at most 3.5 m, or level with a gap of at most 5 m; down at most 10 m.
 - portal: both areas have portals=true; the player shoots portals to cross.
 - drop: one way, from a higher area onto a lower one (0.5-12 m down, gap at most 6 m).
-Say the reason in note ("the stairs start on the landing").
+Say the reason in note ("portals on the walls of both ledges"). Height differences are climbed with stairs areas, not with walk links.
 
 ## Spawns and goal
 - spawns: x, z and the area they stand on (inside its rectangle, on flat ground, not on stairs). Combat needs at least 2 in total (a spawn on a mirrored area counts twice), at least 3 m apart.
@@ -98,13 +125,17 @@ For fair combat levels set symmetric=true: write only one half of the level; eve
 - Put hazards and portal surfaces where the request wants them, not everywhere.
 - name is at most 40 characters; hint is one or two sentences telling the player how to play.
 - notes: things the player should be told (approximations, missing mechanics); empty when the level is exactly what was asked.
-- requirements: at most 4 explicit things the request asks for that can be checked from numbers (a count, a height difference, hazards on every platform). Empty when the request only names a style, a mood or another game's level.
+- Every feature is there: a requested hole is a pit area where the request puts it, a requested moat is a moat area, requested platforms are separate raised or floating areas.
+- requirements: at most 3 explicit, countable things the request asks for that the features cannot say. Usually empty.
 
 ${MISSING_MECHANICS}
 
 ## Example blueprints (they pass every check)
 Combat, symmetric, over a void:
 ${example(combatExample())}
+
+Combat, symmetric, a floor cut by crevasses:
+${example(crevasseExample())}
 
 Puzzle, on a floor:
 ${example(puzzleExample())}`;
@@ -139,7 +170,7 @@ Finish the map and return the complete map. It must contain every piece above, u
 - the hazards each area lists, placed on or in that area (a hazard on a platform stands on its top surface; spikes and acid pools take the footprint they cover),
 - the portal walls, cover, switches and other detail that the request and the concept call for; lights are added for you,
 - a better name or hint if the concept calls for it.
-Do not move, resize or remove the built pieces, do not add another room, and do not put hazards on spawns or the goal.`;
+Do not move, resize, turn or remove the built pieces, do not add another room, do not cover the pits (they are holes on purpose), and do not put hazards on spawns or the goal.`;
 }
 
 /** A refinement: the existing map, as the model writes maps, and what to change in it. */

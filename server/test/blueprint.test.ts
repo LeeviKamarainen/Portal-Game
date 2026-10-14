@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { BUILT_IN_MAPS } from '../../src/editor/templates';
 import { expandPieces } from '../../src/world/maps/MapFormat';
 import { BlueprintSchema, applyGround, blueprintLines, blueprintProblems, blueprintText, conformance, expandAreas, repairBlueprint, scaffold, type Blueprint } from '../gen/blueprint';
-import { combatExample, puzzleExample } from '../gen/blueprintExamples';
+import { area, combatExample, crevasseExample, puzzleExample, sinkholeExample } from '../gen/blueprintExamples';
+import { featureProblems } from '../gen/features';
 import { autofix, checkGenerated } from '../gen/check';
 import { draftSystem, planSystem } from '../gen/prompts';
 import { WireMapSchema } from '../gen/wire';
@@ -12,7 +13,7 @@ const highwire = () => BUILT_IN_MAPS[0].data();
 const without = (bp: Blueprint, id: string): Blueprint => ({ ...bp, areas: bp.areas.filter((a) => a.id !== id), links: bp.links.filter((l) => l.from !== id && l.to !== id) });
 
 test('the example blueprints are valid and pass every plan check', () => {
-  for (const bp of [combatExample(), puzzleExample()]) {
+  for (const bp of [combatExample(), puzzleExample(), sinkholeExample(), crevasseExample()]) {
     BlueprintSchema.parse(bp);
     assert.deepEqual(blueprintProblems(bp), [], bp.name);
     assert.ok(blueprintLines(bp).length >= bp.areas.length + bp.links.length);
@@ -21,12 +22,14 @@ test('the example blueprints are valid and pass every plan check', () => {
 });
 
 test('the structure built from a plan is a map that passes every check', async () => {
-  for (const bp of [combatExample(), puzzleExample()]) {
+  for (const bp of [combatExample(), puzzleExample(), sinkholeExample(), crevasseExample()]) {
     const map = scaffold(bp);
     const r = await checkGenerated(map);
     assert.deepEqual(r.problems, [], bp.name);
     assert.equal(r.ok, true, bp.name);
     assert.deepEqual(conformance(bp, r.map), [], `${bp.name}: the scaffold has every planned part, hazards included`);
+    assert.deepEqual(featureProblems(bp.features, map, { plan: bp }), [], `${bp.name}: the plan has its features`);
+    assert.deepEqual(featureProblems(bp.features, r.map), [], `${bp.name}: and so does the map`);
   }
 });
 
@@ -80,12 +83,13 @@ test('a void level with no islands, or a room without a floor under the spawns, 
 });
 
 test('unreachable parts, impossible links and areas outside the room are found', () => {
+  // Stairs standing on their own, touching nothing at the height of either end.
   const unreachable = combatExample();
-  unreachable.links = unreachable.links.filter((l) => l.to !== 'S2' && l.from !== 'S2');
+  Object.assign(unreachable.areas[4], { x: -10, z: 0 });
   assert.ok(blueprintProblems(unreachable).some((p) => /area "S2".*cannot be reached from any spawn/.test(p)));
 
   const farJump = combatExample();
-  farJump.areas.push({ id: 'X', role: 'floating', what: 'a far platform', x: -20, z: -20, width: 4, depth: 4, baseY: 9.5, topY: 10, climbs: 'none', portals: false, center: false, hazards: [] });
+  farJump.areas.push(area({ id: 'X', role: 'floating', what: 'a far platform', x: -20, z: -20, width: 4, depth: 4, baseY: 9.5, topY: 10, climbs: 'none', portals: false, center: false, hazards: [] }));
   farJump.links.push({ from: 'G1', to: 'X', how: 'jump', note: '' });
   const far = blueprintProblems(farJump);
   assert.ok(far.some((p) => /Link G1 -> X \(jump\) does not work/.test(p)), far.join('\n'));
@@ -100,8 +104,8 @@ test('unreachable parts, impossible links and areas outside the room are found',
   assert.ok(blueprintProblems(outside).some((p) => /area "T1".*sticks out of the room/.test(p)));
 
   const steep = combatExample();
-  steep.areas[2].depth = 4;
-  assert.ok(blueprintProblems(steep).some((p) => /area "S1".*rises 8 m over only 4 m/.test(p)));
+  steep.areas[4].depth = 4;
+  assert.ok(blueprintProblems(steep).some((p) => /area "S2".*rises 8 m over only 4 m/.test(p)));
 
   const floor = puzzleExample();
   floor.links = [];
@@ -150,14 +154,16 @@ test('platform undersides are always drawn: hidden faces are dropped, and the pr
   WireMapSchema.parse({ name: 'x', hint: '', blurb: '', kind: 'combat', symmetry: 'none', fogColor: '#000000', fogNear: 1, fogFar: 2, killY: -6, pieces: [] });
 });
 
-test('the planning prompt is static (cacheable) and carries both worked examples', () => {
+test('the planning prompt is static (cacheable) and carries the worked examples, but not the one that answers a golden prompt', () => {
   assert.equal(planSystem(), planSystem());
   assert.match(planSystem(), /Highwire/);
+  assert.match(planSystem(), /Crevasse/);
   assert.match(planSystem(), /Ledge and acid/);
+  assert.doesNotMatch(planSystem(), /Sinkhole/);
 });
 
 test('repairBlueprint leaves a sound plan alone', () => {
-  for (const bp of [combatExample(), puzzleExample()]) {
+  for (const bp of [combatExample(), puzzleExample(), sinkholeExample(), crevasseExample()]) {
     const r = repairBlueprint(bp);
     assert.deepEqual(r.fixes, [], bp.name);
     assert.deepEqual(r.plan, bp);
@@ -168,16 +174,16 @@ test('repairBlueprint settles the arithmetic slips a model makes, without a mode
   const bp = combatExample();
   bp.areas[0].topY = 0.5; // an island that is not at floor level
   bp.areas[0].baseY = -2.6; // off the grid
-  bp.areas[2].depth = 4; // stairs rising 8 m over 4 m
+  bp.areas[4].depth = 4; // stairs rising 8 m over 4 m
   bp.areas[1].z = 40; // sticks out of the room
   bp.spawns[0] = { area: 'T1', x: 0, z: 90 }; // outside its area
   assert.ok(blueprintProblems(bp).length > 0);
   const r = repairBlueprint(bp);
   assert.deepEqual(blueprintProblems(r.plan), [], r.fixes.join(' | '));
   assert.equal(r.plan.areas[0].topY, 0);
-  assert.equal(r.plan.areas[2].depth, 8, 'a climb of 8 m gets 8 m of run');
+  assert.equal(r.plan.areas[4].depth, 8, 'a climb of 8 m gets 8 m of run');
   assert.ok(r.plan.areas[1].z + r.plan.areas[1].depth / 2 <= 38);
-  assert.ok(r.fixes.some((f) => /stairs "S1" lengthened/.test(f)));
+  assert.ok(r.fixes.some((f) => /stairs "S2" lengthened/.test(f)));
 });
 
 test('repairBlueprint retypes a link that works another way and joins what nothing reaches', () => {
@@ -185,7 +191,7 @@ test('repairBlueprint retypes a link that works another way and joins what nothi
   // A "walk" between a landing and a platform 8 m up cannot work; the stairs already join them, so the link is dropped.
   bp.links.push({ from: 'G1', to: 'F2', how: 'walk', note: '' });
   // A tower with no way up, standing apart.
-  bp.areas.push({ id: 'X', role: 'raised', what: 'a lone tower', x: -10, z: 5, width: 6, depth: 6, baseY: 0, topY: 12, climbs: 'none', portals: true, center: false, hazards: [] });
+  bp.areas.push(area({ id: 'X', role: 'raised', what: 'a lone tower', x: -10, z: 5, width: 6, depth: 6, baseY: 0, topY: 12, climbs: 'none', portals: true, center: false, hazards: [] }));
   assert.ok(blueprintProblems(bp).some((p) => /area "X".*cannot be reached/.test(p)));
   const r = repairBlueprint(bp);
   assert.deepEqual(blueprintProblems(r.plan), [], r.fixes.join(' | '));
@@ -206,7 +212,7 @@ test('repairBlueprint makes a floor-level plan reachable through portals when no
 
 test('repairBlueprint stands a wall on the ground it is built on', () => {
   const bp = combatExample();
-  bp.areas.push({ id: 'W', role: 'wall', what: 'portal wall on the terrace', x: 0, z: 33, width: 6, depth: 0.6, baseY: 7.5, topY: 12, climbs: 'none', portals: true, center: false, hazards: [] });
+  bp.areas.push(area({ id: 'W', role: 'wall', what: 'portal wall on the terrace', x: 0, z: 33, width: 6, depth: 0.6, baseY: 7.5, topY: 12, climbs: 'none', portals: true, center: false, hazards: [] }));
   const r = repairBlueprint(bp);
   assert.equal(r.plan.areas.find((a) => a.id === 'W')!.baseY, 8, 'on the terrace top, not half a metre into it');
   assert.ok(r.fixes.some((f) => /wall "W" stands level/.test(f)));
@@ -229,7 +235,7 @@ test('repairBlueprint joins an unreachable part once, to something that is reach
   const bp = puzzleExample();
   bp.spawns = [{ area: 'L1', x: -3, z: -11 }];
   bp.links = [];
-  bp.areas.push({ id: 'X', role: 'raised', what: 'a tall pillar', x: 5, z: 10, width: 4, depth: 4, baseY: 0, topY: 4, climbs: 'none', portals: false, center: false, hazards: [] });
+  bp.areas.push(area({ id: 'X', role: 'raised', what: 'a tall pillar', x: 5, z: 10, width: 4, depth: 4, baseY: 0, topY: 4, climbs: 'none', portals: false, center: false, hazards: [] }));
   const r = repairBlueprint(bp);
   assert.deepEqual(blueprintProblems(r.plan), [], r.fixes.join(' | '));
   assert.equal(r.plan.links.filter((l) => l.to === 'X').length, 1);
@@ -242,9 +248,9 @@ test('a ledge standing above an acid pool is a fine place to spawn; a plan that 
   bp.ground = 'floor';
   bp.symmetric = false;
   bp.areas = [
-    { id: 'P1', role: 'hazard-zone', what: 'acid over the whole floor', x: 0, z: 0, width: 40, depth: 40, baseY: 0, topY: 0.4, climbs: 'none', portals: false, center: true, hazards: ['acid'] },
-    { id: 'R1', role: 'raised', what: 'ledge', x: -11, z: 11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] },
-    { id: 'R2', role: 'raised', what: 'ledge', x: 11, z: -11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] },
+    area({ id: 'P1', role: 'hazard-zone', what: 'acid over the whole floor', x: 0, z: 0, width: 40, depth: 40, baseY: 0, topY: 0.4, climbs: 'none', portals: false, center: true, hazards: ['acid'] }),
+    area({ id: 'R1', role: 'raised', what: 'ledge', x: -11, z: 11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] }),
+    area({ id: 'R2', role: 'raised', what: 'ledge', x: 11, z: -11, width: 6, depth: 6, baseY: 0, topY: 1.5, climbs: 'none', portals: true, center: false, hazards: [] }),
   ];
   bp.links = [];
   bp.spawns = [{ area: 'R1', x: -11, z: 11 }, { area: 'R2', x: 11, z: -11 }];

@@ -4,11 +4,13 @@ import { dirname } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { MAP_JSON_MAX } from '../../src/net/protocol';
 import {
+  GEN_MODELS,
   MAPS_PER_USER,
   MAP_NAME_MAX,
   RIGHTS,
   StoreError,
   userNameProblem,
+  type GenModel,
   type GenerationRecord,
   type GenerationStatus,
   type MapRecord,
@@ -77,6 +79,9 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX generation_user ON generation_jobs(user_id, created_at DESC);
   CREATE INDEX generation_time ON generation_jobs(created_at);
+  `,
+  `
+  ALTER TABLE users ADD COLUMN gen_model TEXT NOT NULL DEFAULT 'haiku' CHECK (gen_model IN ('haiku', 'sonnet'));
   `,
 ];
 
@@ -186,6 +191,11 @@ export class SqliteStore implements Store {
     });
   }
 
+  setGenModel(id: number, model: GenModel): void {
+    if (!GEN_MODELS.includes(model)) throw new Error(`Unknown model "${String(model)}".`);
+    this.expectUser(this.run('UPDATE users SET gen_model = ? WHERE id = ?', model, id));
+  }
+
   setDisabled(id: number, disabled: boolean): void {
     this.transaction(() => {
       this.expectUser(this.run('UPDATE users SET disabled = ? WHERE id = ?', disabled ? 1 : 0, id));
@@ -212,6 +222,7 @@ export class SqliteStore implements Store {
       name: String(row.name),
       role: String(row.role) as Role,
       rights,
+      genModel: String(row.gen_model) as GenModel,
       disabled: Number(row.disabled) === 1,
       createdAt: Number(row.created_at),
       lastLoginAt: row.last_login_at === null ? null : Number(row.last_login_at),

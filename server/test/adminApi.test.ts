@@ -118,6 +118,33 @@ test('the rights list is checked: known names only, each once; a player must exi
   });
 });
 
+test('admins choose the model a player generates maps with; everyone else is refused', async () => {
+  const lines: string[] = [];
+  await withServer({ log: (line) => lines.push(line) }, async (s) => {
+    const root = await admin(s, 'Root');
+    const bob = await player(s, 'Bob');
+    const put = (body: unknown, id = bob.id, cookie: string | null = root) => call(s, 'PUT', `/api/admin/users/${id}/gen-model`, cookie, body);
+    const listed = async () => ((await call(s, 'GET', '/api/admin/users', root)).body.users as AdminUser[]).find((u) => u.id === bob.id)!.genModel;
+    assert.equal(await listed(), 'haiku', 'haiku until an admin says otherwise');
+
+    assert.equal((await put({ model: 'sonnet' }, bob.id, bob.cookie)).status, 403);
+    assert.equal((await put({ model: 'sonnet' }, bob.id, null)).status, 401);
+    assert.equal(await listed(), 'haiku', 'refused requests change nothing');
+
+    const set = await put({ model: 'sonnet' });
+    assert.equal(set.status, 200);
+    assert.equal(set.body.user.genModel, 'sonnet');
+    assert.equal(await listed(), 'sonnet');
+    assert.ok(lines.some((l) => l.includes('Root set the map generator model of Bob to: sonnet')), lines.join('\n'));
+
+    assert.equal((await put({ model: 'opus' })).status, 400);
+    assert.equal((await put({})).status, 400);
+    assert.equal((await put({ model: 'haiku' }, 999)).status, 404);
+    assert.equal((await call(s, 'GET', `/api/admin/users/${bob.id}/gen-model`, root)).status, 405);
+    assert.equal((await put({ model: 'haiku' })).body.user.genModel, 'haiku');
+  });
+});
+
 test('cross-site changes are refused, and the change is logged for the admin', async () => {
   const lines: string[] = [];
   await withServer({ log: (line) => lines.push(line) }, async (s) => {

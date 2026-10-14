@@ -1,7 +1,8 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import type { MapData, Piece } from '../../src/world/maps/MapFormat';
-import { BlueprintSchema, applyGround, blueprintLines, blueprintProblems, conformance, repairBlueprint, scaffold, type Blueprint } from './blueprint';
+import { BlueprintSchema, applyGround, type PlanAnswer, blueprintLines, blueprintProblems, conformance, repairBlueprint, scaffold, type Blueprint } from './blueprint';
 import { checkGenerated, type CheckResult } from './check';
+import { featureProblems, tidyFeatures } from './features';
 import type { GenConfig } from './config';
 import { GenError, type Llm } from './llm';
 import { PartialMapReader, type MapHead } from './partial';
@@ -99,6 +100,8 @@ const State = Annotation.Root({
   blueprint: last<Blueprint | null>(() => null),
   /** The plan passed its checks, so the finished map is held to it. */
   planSound: last<boolean>(() => false),
+  /** The plan has every requested feature, so the finished map must keep them. */
+  featuresMet: last<boolean>(() => false),
   wire: last<WireMap | null>(() => null),
   map: last<MapData | null>(() => null),
   problems: last<string[]>(() => []),
@@ -160,6 +163,8 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     });
   /** An explicit request overrides what the planner picked. */
   const settle = (bp: Blueprint): Blueprint => ({ ...bp, kind: request.kind === 'auto' ? bp.kind : request.kind, symmetric: (request.kind === 'auto' ? bp.kind : request.kind) === 'combat' ? bp.symmetric : false });
+  /** Everything wrong with a plan: its own soundness, then whether the structure built from it has the requested features. */
+  const planProblems = (bp: Blueprint): { sound: string[]; features: string[] } => ({ sound: blueprintProblems(bp), features: featureProblems(bp.features, scaffold(bp), { plan: bp }) });
 
   const plan = async (s: S): Promise<Partial<S>> => {
     step('brief');
@@ -171,14 +176,18 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     }
     emit({ node: 'brief', message: 'Planning the level' });
     const adjustments: string[] = [];
+    /** The features as first read from the request: a correction may not drop one to make a problem go away. */
+    let features: Blueprint['features'] | null = null;
     /** What the model wrote, with its arithmetic settled by code. */
-    const tidy = (written: Blueprint): Blueprint => {
-      const r = repairBlueprint(settle(written));
+    const tidy = (written: PlanAnswer): Blueprint => {
+      features ??= tidyFeatures(written.features);
+      const r = repairBlueprint(settle({ ...written, features }));
       adjustments.push(...r.fixes);
       return r.plan;
     };
     let bp = tidy((await askPlan('brief', briefUser(s.request))).value);
-    let problems = blueprintProblems(bp);
+    let checked = planProblems(bp);
+    let problems = [...checked.sound, ...checked.features];
     for (let i = 0; i < MAX_REPLANS && problems.length > 0; i++) {
       step('brief');
       emit({ node: 'brief', message: `The plan has ${problems.length} problem${problems.length === 1 ? '' : 's'} code cannot settle; asking for a correction`, problems: limited(problems) });
@@ -186,16 +195,17 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
       if (again === 'budget') break;
       adjustments.length = 0;
       bp = tidy(again.value);
-      problems = blueprintProblems(bp);
+      checked = planProblems(bp);
+      problems = [...checked.sound, ...checked.features];
     }
-    const sound = problems.length === 0;
+    const sound = checked.sound.length === 0;
     emit({
       node: 'brief',
       message: `Plan: ${bp.kind}, ${bp.roomWidth} x ${bp.roomHeight} x ${bp.roomDepth} m room, ${bp.areas.length} parts - ${bp.concept}`,
       detail: [...blueprintLines(bp), ...(adjustments.length ? ['Adjusted automatically:', ...adjustments.map((a) => `  ${a}`)] : [])],
-      ...(sound ? {} : { problems: limited(problems) }),
+      ...(problems.length ? { problems: limited(problems) } : {}),
     });
-    return { blueprint: bp, planSound: sound };
+    return { blueprint: bp, planSound: sound, featuresMet: sound && checked.features.length === 0 };
   };
 
   /** Code, not the model: the structure of the map exactly as planned, shown at once. */
@@ -233,7 +243,8 @@ export async function generateMap(request: GenRequest, deps: GenDeps): Promise<G
     // The plan decides whether there is a floor; the model often leaves it out or builds a partial one.
     const grounded = s.blueprint ? applyGround(s.blueprint, converted.map) : { map: converted.map, fixes: [] as string[] };
     const r = await check(grounded.map);
-    const missing = s.blueprint && s.planSound ? conformance(s.blueprint, r.map) : [];
+    // The map is held to the plan and to the request's features only when the plan itself had them: otherwise a repair could not help.
+    const missing = s.blueprint && s.planSound ? [...conformance(s.blueprint, r.map), ...(s.featuresMet ? featureProblems(s.blueprint.features, r.map) : [])] : [];
     const problems = limited([...converted.problems, ...r.problems, ...missing]);
     const ok = r.ok && converted.problems.length === 0 && missing.length === 0;
     const closest = !ok && (!s.closest || problems.length < s.closest.problems.length) ? { map: r.map, problems } : s.closest;

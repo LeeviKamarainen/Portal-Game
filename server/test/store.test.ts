@@ -66,6 +66,19 @@ test('rights and roles: admins have every right, users only what is granted', ()
   throwsCode(() => store.setRights(999, []), 'no-such-user');
 });
 
+test('the map generator model defaults to haiku and is chosen per user', () => {
+  const { store } = fresh();
+  const user = store.createUser('Bob', 'h');
+  assert.equal(user.genModel, 'haiku');
+  store.setGenModel(user.id, 'sonnet');
+  assert.equal(store.getUser(user.id)!.genModel, 'sonnet');
+  assert.equal(store.listUsers()[0].genModel, 'sonnet');
+  store.setGenModel(user.id, 'haiku');
+  assert.equal(store.getUser(user.id)!.genModel, 'haiku');
+  assert.throws(() => store.setGenModel(user.id, 'opus' as never), /Unknown model/);
+  throwsCode(() => store.setGenModel(999, 'sonnet'), 'no-such-user');
+});
+
 test('sessions: live until they expire; a password reset or disabling ends them', () => {
   const { store, clock } = fresh();
   const ada = store.createUser('Ada', 'h');

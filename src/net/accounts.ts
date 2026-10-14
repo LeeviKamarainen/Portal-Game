@@ -15,6 +15,11 @@ export type Role = (typeof ROLES)[number];
 export const RIGHTS = ['generate-maps'] as const;
 export type Right = (typeof RIGHTS)[number];
 
+/** Which Claude model builds a player's generated maps; an admin picks it per player. Haiku is the cheap default. */
+export const GEN_MODELS = ['haiku', 'sonnet'] as const;
+export type GenModel = (typeof GEN_MODELS)[number];
+export const DEFAULT_GEN_MODEL: GenModel = 'haiku';
+
 export const VISIBILITIES = ['private', 'unlisted', 'public'] as const;
 /** Private: the owner only. Unlisted: anyone with the id. Public: also in the shared list. */
 export type Visibility = (typeof VISIBILITIES)[number];
@@ -60,6 +65,8 @@ export interface PublicUser {
 
 /** One player as the admin page lists them (GET /api/admin/users). */
 export interface AdminUser extends PublicUser {
+  /** The model this player's map generations run on. */
+  genModel: GenModel;
   disabled: boolean;
   createdAt: number;
   lastLoginAt: number | null;

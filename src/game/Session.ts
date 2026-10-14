@@ -193,10 +193,10 @@ export class Session extends ArenaSim {
     void this.precompile(avatar.object);
   }
 
-  /** The local player fires, from the camera. */
-  fire(color: PortalColor): boolean {
+  /** The local player fires, from the camera - along its centre line, or at (aimX, aimY) off it (see PlayerCommand.aimX). */
+  fire(color: PortalColor, aimX = 0, aimY = 0): boolean {
     const cam = this.engine.camera;
-    return this.fireFrom(this.local, color, cam.position, cam.quaternion, this.muzzleOf(this.local));
+    return this.fireFrom(this.local, color, cam.position, cam.quaternion, this.muzzleOf(this.local), aimX, aimY);
   }
 
   /**

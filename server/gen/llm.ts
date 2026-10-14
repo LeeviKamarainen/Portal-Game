@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import type { z } from 'zod';
-import { PRICES, type Effort } from './config';
+import { PRICES, type Effort, type Prices } from './config';
 
 /**
  * The only place that talks to a model. The graph depends on `Llm`, so tests use a fake and a
@@ -20,8 +20,17 @@ export const noUsage = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheW
 export const totalTokens = (u: Usage): number => u.input + u.output + u.cacheRead + u.cacheWrite;
 export const addUsage = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite });
 
-/** USD estimate at list price; real billing is in the Anthropic Console. */
-export const estimateCostUsd = (u: Usage): number => (u.input * PRICES.input + u.output * PRICES.output + u.cacheRead * PRICES.cacheRead + u.cacheWrite * PRICES.cacheWrite) / 1_000_000;
+/** USD estimate at list price (Haiku's unless `prices` says otherwise); real billing is in the Anthropic Console. */
+export const estimateCostUsd = (u: Usage, prices: Prices = PRICES): number =>
+  (u.input * prices.input + u.output * prices.output + u.cacheRead * prices.cacheRead + u.cacheWrite * prices.cacheWrite) / 1_000_000;
+
+/**
+ * The `thinking` parameter for "no thinking". Sonnet 5.5 answers 400 to `disabled`; its way to
+ * think only between tool calls (there are none here) is `between_tools`, allowed at effort high or below.
+ */
+function thinkingOff(model: string): { type: 'disabled' } | { type: 'between_tools' } {
+  return model.includes('sonnet') ? { type: 'between_tools' } : { type: 'disabled' };
+}
 
 export interface LlmRequest<T> {
   /** The graph node asking, for logs and events. */
@@ -80,7 +89,7 @@ export class AnthropicLlm implements Llm {
         {
           model: req.model,
           max_tokens: req.maxTokens,
-          ...(req.thinking === 'off' ? { thinking: { type: 'disabled' as const } } : {}),
+          ...(req.thinking === 'off' ? { thinking: thinkingOff(req.model) } : {}),
           output_config: { effort: req.effort, format: zodOutputFormat(req.schema) },
           system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
           messages: [{ role: 'user', content: req.user }],

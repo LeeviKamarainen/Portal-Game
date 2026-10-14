@@ -45,6 +45,8 @@ export interface Flight {
   time: number;
   /** Where the flight ended (the landing, the point it fell out of the world at, or where time ran out). */
   end: THREE.Vector3;
+  /** Its velocity at that moment. */
+  velocity: THREE.Vector3;
 }
 
 /**
@@ -52,18 +54,28 @@ export interface Flight {
  * centre under gravity until it hits something, falls out of the world, or time runs out.
  */
 export function flyOut(physics: PhysicsWorld, killY: number, point: THREE.Vector3, normal: THREE.Vector3, speed: number): Flight {
-  const pos = _a.copy(point).addScaledVector(normal, OUT);
-  const vel = _v.copy(normal).multiplyScalar(speed);
-  for (let t = 0; t < SIM_TIME; t += SIM_STEP) {
+  const pos = new THREE.Vector3().copy(point).addScaledVector(normal, OUT);
+  const vel = new THREE.Vector3().copy(normal).multiplyScalar(speed);
+  return flyFrom(physics, killY, pos, vel);
+}
+
+/**
+ * Follow a body's centre from `from` at `velocity` under gravity (no steering) until it hits
+ * something, falls out of the world, or `maxTime` runs out. Neither argument is changed.
+ */
+export function flyFrom(physics: PhysicsWorld, killY: number, from: THREE.Vector3, velocity: THREE.Vector3, maxTime = SIM_TIME): Flight {
+  const pos = _a.copy(from);
+  const vel = _v.copy(velocity);
+  for (let t = 0; t < maxTime; t += SIM_STEP) {
     const next = _b.copy(pos).addScaledVector(vel, SIM_STEP);
     next.y -= 0.5 * GRAVITY * SIM_STEP * SIM_STEP;
     vel.y -= GRAVITY * SIM_STEP;
     const hit = firstHit(physics, pos, next);
-    if (hit) return { land: hit.point, normal: hit.normal, impact: Math.max(0, -vel.dot(hit.normal)), fell: false, time: t + SIM_STEP, end: hit.point };
-    if (next.y < killY) return { land: null, normal: null, impact: 0, fell: true, time: t + SIM_STEP, end: next.clone() };
+    if (hit) return { land: hit.point, normal: hit.normal, impact: Math.max(0, -vel.dot(hit.normal)), fell: false, time: t + SIM_STEP, end: hit.point, velocity: vel.clone() };
+    if (next.y < killY) return { land: null, normal: null, impact: 0, fell: true, time: t + SIM_STEP, end: next.clone(), velocity: vel.clone() };
     pos.copy(next);
   }
-  return { land: null, normal: null, impact: 0, fell: false, time: SIM_TIME, end: pos.clone() };
+  return { land: null, normal: null, impact: 0, fell: false, time: maxTime, end: pos.clone(), velocity: vel.clone() };
 }
 
 function firstHit(physics: PhysicsWorld, from: THREE.Vector3, to: THREE.Vector3): { point: THREE.Vector3; normal: THREE.Vector3 } | null {

@@ -22,6 +22,9 @@ export interface Settings {
   fov: number;
   sensitivity: number;
   invertY: boolean;
+  /** Touch screens: tap the view to shoot there (once: orange, twice: blue), or use the portal buttons. */
+  touchFire: TouchFireSetting;
+  touchBlue: TouchBlueSetting;
   /** A flash and an edge arrow where an opponent opens a portal (see ui/PortalPings). */
   portalPings: boolean;
   /** The PvP bots' difficulty, and how many of them (everyone for themselves). */
@@ -31,7 +34,11 @@ export interface Settings {
   playerName: string;
 }
 
-export type BotDifficultySetting = 'easy' | 'normal' | 'hard' | 'ultra';
+export type TouchFireSetting = 'tap' | 'buttons';
+/** Tap shooting: how the blue portal is asked for (a tap is always orange, except in `alternate`). */
+export type TouchBlueSetting = 'hold' | 'double' | 'alternate';
+
+export type BotDifficultySetting = 'easy' | 'normal' | 'hard' | 'ultra' | 'ultra2';
 
 export const DEFAULT_SETTINGS: Readonly<Settings> = {
   skin: 'a',
@@ -43,6 +50,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   fov: 90,
   sensitivity: 1,
   invertY: false,
+  touchFire: 'tap',
+  touchBlue: 'hold',
   portalPings: true,
   botDifficulty: 'normal',
   botCount: 1,
@@ -96,8 +105,10 @@ export function loadSettings(): Settings {
     fov: clamp(s.fov, 60, 100, d.fov),
     sensitivity: clamp(s.sensitivity, 0.2, 3, d.sensitivity),
     invertY: typeof s.invertY === 'boolean' ? s.invertY : d.invertY,
+    touchFire: oneOf(s.touchFire, ['tap', 'buttons'] as const, d.touchFire),
+    touchBlue: oneOf(s.touchBlue, ['hold', 'double', 'alternate'] as const, d.touchBlue),
     portalPings: typeof s.portalPings === 'boolean' ? s.portalPings : d.portalPings,
-    botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard', 'ultra'] as const, d.botDifficulty),
+    botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard', 'ultra', 'ultra2'] as const, d.botDifficulty),
     botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
     playerName: typeof s.playerName === 'string' ? s.playerName.slice(0, 16) : d.playerName,
   };

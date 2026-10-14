@@ -14,6 +14,10 @@ const JUMP = 1;
 const IMMUNITY = 2;
 const FIRE_ORANGE = 4;
 const FIRE_BLUE = 8;
+/** The shot has its own aim (two more floats follow this command's look); see PlayerCommand.aimX. */
+const AIMED = 16;
+/** Most a shot's aim may be off the view's centre line, as a fraction of the distance ahead (8 is ~83 degrees). */
+const MAX_AIM = 8;
 
 export interface SeqCommand {
   seq: number;
@@ -30,16 +34,23 @@ export function quantizeCommand(cmd: PlayerCommand): PlayerCommand {
   cmd.right = Math.round(clampAxis(cmd.right) * 127) / 127;
   cmd.yaw = Math.fround(clampLook(cmd.yaw));
   cmd.pitch = Math.fround(clampLook(cmd.pitch));
+  cmd.aimX = Math.fround(clampAim(cmd.aimX));
+  cmd.aimY = Math.fround(clampAim(cmd.aimY));
   return cmd;
 }
 
 /** The latest commands (oldest first, the last one numbered `commands[n-1].seq`). */
 export function writeInput(commands: readonly SeqCommand[]): Uint8Array<ArrayBuffer> {
-  const w = new ByteWriter(8 + commands.length * 11);
+  const w = new ByteWriter(8 + commands.length * 19);
   w.u8(BIN_INPUT).u16(commands[commands.length - 1].seq).u8(commands.length);
   for (const { cmd } of commands) {
-    const flags = (cmd.jump ? JUMP : 0) | (cmd.immunity ? IMMUNITY : 0) | (cmd.fire === 'orange' ? FIRE_ORANGE : cmd.fire === 'blue' ? FIRE_BLUE : 0);
+    // Most steps have nothing to aim: the extra floats only travel with a shot that has its own aim.
+    const aimed = cmd.fire !== null && (cmd.aimX !== 0 || cmd.aimY !== 0);
+    const flags =
+      (cmd.jump ? JUMP : 0) | (cmd.immunity ? IMMUNITY : 0) | (aimed ? AIMED : 0) |
+      (cmd.fire === 'orange' ? FIRE_ORANGE : cmd.fire === 'blue' ? FIRE_BLUE : 0);
     w.i8(cmd.forward * 127).i8(cmd.right * 127).u8(flags).f32(cmd.yaw).f32(cmd.pitch);
+    if (aimed) w.f32(cmd.aimX).f32(cmd.aimY);
   }
   return w.bytes();
 }
@@ -63,6 +74,10 @@ export function readInput(data: Uint8Array): SeqCommand[] | null {
       cmd.fire = flags & FIRE_ORANGE ? 'orange' : flags & FIRE_BLUE ? 'blue' : null;
       cmd.yaw = Math.fround(clampLook(r.f32()));
       cmd.pitch = Math.fround(clampLook(r.f32()));
+      if (flags & AIMED) {
+        cmd.aimX = Math.fround(clampAim(r.f32()));
+        cmd.aimY = Math.fround(clampAim(r.f32()));
+      }
       out.push({ seq: (last - (n - 1 - i)) & 0xffff, cmd });
     }
     return r.remaining === 0 ? out : null;
@@ -73,6 +88,10 @@ export function readInput(data: Uint8Array): SeqCommand[] | null {
 
 function clampAxis(v: number): number {
   return Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0;
+}
+
+function clampAim(v: number): number {
+  return Number.isFinite(v) ? Math.max(-MAX_AIM, Math.min(MAX_AIM, v)) : 0;
 }
 
 function clampLook(v: number): number {
@@ -87,5 +106,7 @@ export function copyCommand(from: PlayerCommand, to: PlayerCommand): PlayerComma
   to.yaw = from.yaw;
   to.pitch = from.pitch;
   to.fire = from.fire;
+  to.aimX = from.aimX;
+  to.aimY = from.aimY;
   return to;
 }

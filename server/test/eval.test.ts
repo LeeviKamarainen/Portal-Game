@@ -6,8 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BUILT_IN_MAPS } from '../../src/editor/templates';
-import type { Blueprint } from '../gen/blueprint';
-import { combatExample } from '../gen/blueprintExamples';
+import { scaffold, type Blueprint } from '../gen/blueprint';
+import { combatExample, sinkholeExample } from '../gen/blueprintExamples';
 import { loadConfig } from '../gen/config';
 import { clusterProblems, problemKind, renderMarkdown, stat, summarize, type EvalRun } from '../gen/evalReport';
 import { runEval } from '../gen/evalRun';
@@ -131,6 +131,20 @@ test('measure and fit read a known map', () => {
   assert.equal(bad.passed, 0);
   assert.equal(bad.misses.length, 4);
   assert.match(bad.misses.join('|'), /wanted puzzle/);
+});
+
+test('golden features are judged on the geometry: the hole prompt is met by a hole, not by a floor', () => {
+  const g = GOLDEN.find((x) => x.id === 'hole-platforms')!;
+  assert.equal(g.prompt, '3 platform stage with a giant hole in the middle');
+  const holed = scaffold(sinkholeExample());
+  const yes = fit(holed, g.expect);
+  assert.deepEqual(yes.misses, []);
+  const floored = structuredClone(holed);
+  delete floored.pieces[0].skip;
+  const no = fit(floored, g.expect);
+  assert.equal(no.checked - no.passed, 1);
+  assert.match(no.misses[0], /giant hole in the middle.*no opening in the floor at the centre/);
+  assert.ok(GOLDEN.filter((x) => x.expect.features?.length).length >= 8, 'spatial expectations across the set');
 });
 
 test('hazardOnEachPlatform notices a bare floating platform', () => {

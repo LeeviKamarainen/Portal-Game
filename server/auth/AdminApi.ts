@@ -4,12 +4,14 @@
  *
  *   GET /api/admin/users                 { users: AdminUser[] }
  *   PUT /api/admin/users/:id/rights      { rights: Right[] }  -> { user: AdminUser }
+ *   PUT /api/admin/users/:id/gen-model   { model: 'haiku' | 'sonnet' }  -> { user: AdminUser }
  *
  * `rights` replaces the list of rights a player has on top of their role (see `hasRight`).
+ * `gen-model` picks the Claude model that builds the player's generated maps (their next one on).
  * Errors are `{ error: { code, message } }` like the rest of /api.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { RIGHTS, type AdminUser, type Right } from '../../src/net/accounts';
+import { GEN_MODELS, RIGHTS, type AdminUser, type GenModel, type Right } from '../../src/net/accounts';
 import type { Store, User } from '../store/Store';
 import { publicUser } from './AuthApi';
 import { ApiError, handleApi, originOk, readJsonBody, sendJson } from './http';
@@ -57,6 +59,18 @@ export class AdminApi {
       this.opts.log(`${admin.name} set the rights of ${target.name} to: ${rights.join(', ') || 'none'}`);
       return sendJson(res, 200, { user: this.adminUser(this.opts.store.getUser(target.id)!) });
     }
+    if (parts.length === 3 && parts[0] === 'users' && parts[2] === 'gen-model') {
+      if (method !== 'PUT') throw new ApiError(405, 'method', 'Use PUT.');
+      const id = Number(parts[1]);
+      const body = await readJsonBody(req, BODY_MAX);
+      if (!GEN_MODELS.includes(body.model as GenModel)) throw new ApiError(400, 'invalid', `The model is one of: ${GEN_MODELS.join(', ')}.`);
+      const model = body.model as GenModel;
+      const target = Number.isInteger(id) ? this.opts.store.getUser(id) : null;
+      if (!target) throw new ApiError(404, 'no-such-user', 'No such player.');
+      this.opts.store.setGenModel(target.id, model);
+      this.opts.log(`${admin.name} set the map generator model of ${target.name} to: ${model}`);
+      return sendJson(res, 200, { user: this.adminUser(this.opts.store.getUser(target.id)!) });
+    }
     throw new ApiError(404, 'not-found', 'No such endpoint.');
   }
 
@@ -70,6 +84,7 @@ export class AdminApi {
   private adminUser(user: User): AdminUser {
     return {
       ...publicUser(user),
+      genModel: user.genModel,
       disabled: user.disabled,
       createdAt: user.createdAt,
       lastLoginAt: user.lastLoginAt,

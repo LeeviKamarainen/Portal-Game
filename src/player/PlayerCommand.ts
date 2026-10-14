@@ -24,6 +24,13 @@ export interface PlayerCommand {
   pitch: number;
   /** Portal to shoot this step (bots; the local player's shots go through Game). */
   fire: PortalColor | null;
+  /**
+   * Where the shot goes, in the view's own frame: the ray through the view's centre is (0, 0);
+   * a point to its right/above is positive x/y, as a fraction of the distance straight ahead.
+   * A tap on the touch screen fires at the tapped point without turning the view.
+   */
+  aimX: number;
+  aimY: number;
 }
 
 export interface CommandSource {
@@ -37,11 +44,11 @@ export interface CommandSource {
 }
 
 export function emptyCommand(): PlayerCommand {
-  return { forward: 0, right: 0, jump: false, immunity: false, yaw: 0, pitch: 0, fire: null };
+  return { forward: 0, right: 0, jump: false, immunity: false, yaw: 0, pitch: 0, fire: null, aimX: 0, aimY: 0 };
 }
 
 export function clearCommand(cmd: PlayerCommand): PlayerCommand {
-  cmd.forward = cmd.right = cmd.yaw = cmd.pitch = 0;
+  cmd.forward = cmd.right = cmd.yaw = cmd.pitch = cmd.aimX = cmd.aimY = 0;
   cmd.jump = cmd.immunity = false;
   cmd.fire = null;
   return cmd;
@@ -83,6 +90,8 @@ export class BufferedCommands implements CommandSource {
     cmd.yaw = n.yaw;
     cmd.pitch = n.pitch;
     cmd.fire = n.fire;
+    cmd.aimX = n.aimX;
+    cmd.aimY = n.aimY;
   }
 }
 

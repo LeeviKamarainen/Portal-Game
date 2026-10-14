@@ -6,9 +6,11 @@
  * Every call is synchronous (SQLite is), so keep them off the 60 Hz path: a few at login, at
  * map save, at match end - never one per tick.
  */
-import type { MapSummary, Right, Role, Visibility } from '../../src/net/accounts';
+import type { GenModel, MapSummary, Right, Role, Visibility } from '../../src/net/accounts';
 
 export {
+  DEFAULT_GEN_MODEL,
+  GEN_MODELS,
   MAPS_PER_USER,
   MAP_NAME_MAX,
   RIGHTS,
@@ -19,7 +21,7 @@ export {
   hasRight,
   userNameProblem,
 } from '../../src/net/accounts';
-export type { MapSummary, Right, Role, Visibility } from '../../src/net/accounts';
+export type { GenModel, MapSummary, Right, Role, Visibility } from '../../src/net/accounts';
 
 export interface User {
   id: number;
@@ -27,6 +29,8 @@ export interface User {
   role: Role;
   /** The rights granted on top of the role; see `hasRight`. */
   rights: Right[];
+  /** The model the map generator uses for this user's runs. */
+  genModel: GenModel;
   /** A disabled account cannot log in and has no sessions. */
   disabled: boolean;
   createdAt: number;
@@ -83,6 +87,8 @@ export interface Store {
   setPasswordHash(id: number, passwordHash: string): void;
   setRole(id: number, role: Role): void;
   setRights(id: number, rights: readonly Right[]): void;
+  /** Throws `no-such-user`. Applies to the user's next generation. */
+  setGenModel(id: number, model: GenModel): void;
   /** Disabling ends all of the user's sessions. */
   setDisabled(id: number, disabled: boolean): void;
   recordLogin(id: number): void;

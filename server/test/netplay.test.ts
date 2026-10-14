@@ -36,6 +36,28 @@ after(async () => {
   await server.close();
 });
 
+test('a shot aimed off the view (a tap on a touch screen) crosses the wire; plain steps cost nothing extra', () => {
+  const plain = emptyCommand();
+  plain.forward = 1;
+  const aimed = emptyCommand();
+  aimed.fire = 'orange';
+  aimed.aimX = 0.4321;
+  aimed.aimY = -0.25;
+  const cmds = [plain, aimed].map((cmd, i) => ({ seq: i + 1, cmd: quantizeCommand(cmd) }));
+  const bytes = writeInput(cmds);
+  assert.deepEqual(readInput(bytes), cmds, 'the aim comes back bit for bit');
+  assert.equal(bytes.length, writeInput([cmds[0], cmds[0]]).length + 8, 'only the aimed step carries the two floats');
+  const noFire = emptyCommand();
+  noFire.aimX = 1;
+  assert.equal(readInput(writeInput([{ seq: 1, cmd: quantizeCommand(noFire) }]))![0].cmd.aimX, 0, 'an aim without a shot is dropped');
+  const wild = emptyCommand();
+  wild.fire = 'blue';
+  wild.aimX = 1e9;
+  wild.aimY = Number.NaN;
+  const forged = readInput(writeInput([{ seq: 1, cmd: wild }]))![0].cmd;
+  assert.ok(Math.abs(forged.aimX) <= 8 && forged.aimY === 0, 'a wild aim is clamped, a NaN is nothing');
+});
+
 test('commands survive the wire exactly, and the input queue paces them', () => {
   const cmds = [0, 1, 2, 3].map((i) => {
     const c = emptyCommand();

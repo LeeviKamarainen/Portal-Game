@@ -31,6 +31,8 @@ export class InputManager {
   touchImmunity = false;
   /** Touch devices have no pointer lock: "locked" is just "the game has the touches". */
   private readonly virtualLock = FLAGS.touch;
+  private readonly aimOrange = { x: 0, y: 0 };
+  private readonly aimBlue = { x: 0, y: 0 };
   /** Radians of look to add to the next step's pitch (the on-screen "look down" button). */
   private pitchNudge = 0;
 
@@ -137,11 +139,29 @@ export class InputManager {
     return v;
   }
 
-  /** A portal button was tapped (orange = the left mouse button, blue = the right). */
-  touchFire(color: 'orange' | 'blue'): void {
+  /**
+   * A portal was asked for (orange = the left mouse button, blue = the right), at a point on
+   * the screen - (nx, ny) in -1..1, right and up - or along the crosshair with no point.
+   */
+  touchFire(color: 'orange' | 'blue', nx = 0, ny = 0): void {
     if (!this.locked) return;
-    if (color === 'orange') this.firePrimaryQueued = true;
-    else this.fireSecondaryQueued = true;
+    if (color === 'orange') {
+      this.firePrimaryQueued = true;
+      this.aimOrange.x = nx;
+      this.aimOrange.y = ny;
+    } else {
+      this.fireSecondaryQueued = true;
+      this.aimBlue.x = nx;
+      this.aimBlue.y = ny;
+    }
+  }
+
+  /** Where the queued shot of this colour was asked for on screen ((0, 0) = the crosshair); asking resets it. */
+  takeAim(color: 'orange' | 'blue'): { x: number; y: number } {
+    const a = color === 'orange' ? this.aimOrange : this.aimBlue;
+    const out = { x: a.x, y: a.y };
+    a.x = a.y = 0;
+    return out;
   }
 
   /** Every finger is up: nothing is held. */
@@ -180,5 +200,6 @@ export class InputManager {
     this.mouseDeltaX = 0;
     this.mouseDeltaY = 0;
     this.pitchNudge = 0;
+    this.aimOrange.x = this.aimOrange.y = this.aimBlue.x = this.aimBlue.y = 0;
   }
 }

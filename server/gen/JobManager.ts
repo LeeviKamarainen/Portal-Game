@@ -6,7 +6,7 @@ import type { MapData } from '../../src/world/maps/MapFormat';
 import { isTerminalEvent, type JobEvent, type PublicOutcome } from '../../src/net/generate';
 import { cleanBaseMap } from './base';
 import type { CheckResult } from './check';
-import type { GenConfig } from './config';
+import { configFor, pricesFor, type GenConfig } from './config';
 import { generateMap, type GenOutcome } from './graph';
 import { BudgetedLlm, GenError, estimateCostUsd, type Llm } from './llm';
 import type { GenRequest } from './prompts';
@@ -191,14 +191,17 @@ export class JobManager {
   }
 
   private async run(job: Job, user: User): Promise<void> {
-    const llm = new BudgetedLlm(this.opts.llm!(), this.config);
+    // The model is the admin's choice for this player, read when the run starts.
+    const config = configFor(this.config, user.genModel);
+    const prices = pricesFor(config.draft.model);
+    const llm = new BudgetedLlm(this.opts.llm!(), config);
     let status: JobStatus = 'failed';
     let error: { code: string; message: string } | null = null;
     let outcome: GenOutcome | null = null;
     try {
       outcome = await generateMap(job.request, {
         llm,
-        config: this.config,
+        config,
         check: this.opts.check,
         signal: job.abort.signal,
         emit: (e) => job.push({ type: 'step', node: e.node, message: e.message, ...(e.problems ? { problems: e.problems } : {}), ...(e.detail ? { detail: e.detail } : {}) }),
@@ -223,12 +226,12 @@ export class JobManager {
       tokensOut: used.output,
       error: error ? `${error.code}: ${error.message}` : null,
     });
-    this.log(`generation ${job.id} for ${user.name}: ${job.interrupted ? 'interrupted' : status}, ${llm.usedTokens} tokens, ~$${estimateCostUsd(used).toFixed(4)}`);
+    this.log(`generation ${job.id} for ${user.name}: ${job.interrupted ? 'interrupted' : status}, ${llm.usedTokens} tokens on ${config.draft.model}, ~$${estimateCostUsd(used, prices).toFixed(4)}`);
     job.status = status;
     job.finishedAt = this.now();
     if (outcome) {
       const { ok, map, problems, notes, fixes, attempts, stoppedBy } = outcome;
-      job.push({ type: 'done', status: ok ? 'ok' : 'partial', outcome: { ok, map, problems, notes, fixes, attempts, stoppedBy, tokens: { input: used.input + used.cacheRead + used.cacheWrite, output: used.output }, costUsd: estimateCostUsd(used) } });
+      job.push({ type: 'done', status: ok ? 'ok' : 'partial', outcome: { ok, map, problems, notes, fixes, attempts, stoppedBy, tokens: { input: used.input + used.cacheRead + used.cacheWrite, output: used.output }, costUsd: estimateCostUsd(used, prices) } });
     } else {
       job.push({ type: 'error', status: status === 'cancelled' ? 'cancelled' : 'failed', code: error!.code, message: error!.message });
     }

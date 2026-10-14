@@ -428,6 +428,99 @@ portal where it is going and steps through), called **"Ultra hard"** (`'ultra'` 
   equally lethal opponent in a wide open map every hop still costs a good second of kill
   chances (see tuning) - the place to look next is a trap exit that doubles as a landing.
 
+### 6f. Ultra hard: portal chains in the air, orb vantage walks, no more circling its own exit — *done 2026-10-14*
+
+User request: let Ultra chain portals across the map to reach the orbs - shoot a ceiling exit,
+and mid-air a portal below it nearer the orb, or through several walls - "overall make the
+ultra hard bot really strong".
+
+- [x] **Air chain** (`BotSkill.airChain`, `src/bots/AirChain.ts`, `BotBrain.tryAir`): out of a
+      portal with time to fall (a hop's own exit, a drop, a jump off a ledge) it works out
+      where it will hit a portal surface (`findEntrance`: a flight under gravity, no steering,
+      three parallel flights for the body's width so a rim it would clip is a "close call"
+      and no plan; the opening must still take it after the gun nudges it in off an edge),
+      **shoots the way in first** (orange there) and then, with the opening as it really
+      faces (a floor/ceiling opening's top follows the shot, and with it where the sideways
+      speed goes), picks the exit that carries its velocity through the portal's half turn
+      (`exitVelocity`: right/up/normal -> minus right, up, minus normal) to safe floor with
+      the least left to walk (`safeLanding`: three speeds, floor all round, flash-immunity
+      for a hard landing). Then it holds still and falls in. Out the other side it does it
+      again - up to 5 links until it stands on something. If no exit works for the real
+      opening the way in only takes it back out of the hop's own (safe) exit.
+- [x] **Chain-aware hops from the floor**: an exit is scored by what a chain out of it could
+      reach as well as by where it lands (`chainTable`, built once per exit and shared by
+      every bot on the map, a few per look so no look is slow).
+- [x] **Vantage walks**: an orb with no way on foot (an upper tier on Shaft) or a very long
+      one, and no exit that helps in view from here: it walks to a spot one is in view from
+      (with floor for a way in), then hops (`startVantage` / `walkToVantage`).
+- [x] **Hand over to the fight** (`travelEnemyClear` / `chainEnemyClear`, Ultra 30 m): no hop
+      or chain while an enemy it knows of is within 30 m (a kill is 25 points, an orb 10;
+      a hop is a second without a trap chance) - *unless it has no way on foot at all*
+      (stranded on a platform: it would stand there until they left). Head-to-head vs Hard
+      (4 maps, 40 matches each): hopping at every chance 81/160 wins, with the rule 96-102/160.
+      Hard is no push-over: Ultra without any travel was 95/160.
+- [x] **Fixed for all bots on the way**: (1) a bot popping out of a low *wall* exit stood in
+      the zone where the body still counts as passing through it (the wall around is not
+      solid to it there, the frame boxes are) and its route along the wall walked it back in,
+      round the pair for ever (one Highwire seed stood 190 s) - routes now keep out of the
+      1.9 m x 4 m zone in front of any open wall portal (`inWallMouth`, like open floor
+      portals), and a bot just out of a wall exit first walks straight out (`leaveMouth`);
+      (2) `watchedAt` shared the module-level eye vector with the callers' loops.
+- Numbers (headless, solo bot, orbs/min, 16 seeds a map): Highwire Hard 9.2 / Ultra before
+  9.2-12.7 / Ultra now 16.6-17.1; Catwalk 18.6 / 23.4 / 25.0; Shaft 9.2 / 7.5 / 13.6-15.6;
+  Courtyard 19.6 / 24.8 / 24.7. Chain vs the same bot without: head-to-head 86/160 for chain.
+  About 1.5 chained links a match, 3-4 hops; forecasts land within 3 m about two thirds of
+  the time (fast falls with a lot of sideways speed land 5-9 m off: the portal's funnelling
+  moves the body as it goes in - not modelled); own deaths 6% of matches, same as without.
+- Tests: `server/test/botTravel.test.ts` (airChain plumbing, the half-turn velocity maths, a
+  solo bot chains and wins on Highwire, the wall-exit circling seed); `?test=sim` unchanged.
+- Known limits: islands - a bot dropped onto Shaft's central platform with no orb known
+  stands there (Hard too; Ultra hops off when it has a goal with no route); nav has no
+  "step off the edge with flash immunity" links; the chain's entrance is only on what the
+  body is about to hit (no wall-run shots); both its portals are used up each link, so a
+  prepared trap exit goes with it.
+
+### 6g. Ultra 2: alternating orb rush and hunt — *done 2026-10-14*
+
+User idea: Ultra seems to waver between going for points and killing the player, so let a
+bot commit to one for X seconds, then the other - as a separate difficulty, Ultra hard kept.
+
+- [x] **`ultra2`** (label "Ultra 2"; PvP menu, room lobby, settings): Ultra hard's skill plus
+      `orbPhase` / `huntPhase` (12 s each, starts with the rush), `BotBrain.phase`.
+      Rush: orbs first; no hunting, climbs, drop-ins or steals; no hand-over-to-fight (hops
+      and chains regardless of enemies); `rushTraps`: a trap on someone who walks into one is
+      still taken. Hunt: climbs/traps/steals/drop-ins first and `hunt()` before orbs.
+- Benchmark (vs Hard, 96 matches a variant, 4 maps): Ultra hard 57/96; Ultra 2 49/96 (12/12),
+  49/96 (6/6), 49/96 (20/10), 46/96 with the hunt refusing to take orbs. The literal version
+  (rush ignores enemies completely) was far worse: 13/40, 5/40, 3/40 on Highwire/Catwalk/Shaft
+  where Ultra scored 22, 27, 19. So **Ultra 2 is not stronger than Ultra hard** (about 50% vs
+  Hard, Ultra hard 59-60%): a rush that ignores someone setting traps loses kills (25 points),
+  and a hunt that skips orbs loses points. It is there for the committed, readable behaviour.
+- Tuning knobs, all in `BotSkill`: `orbPhase`, `huntPhase`, `rushTraps`, `huntStays`.
+- Tests: `server/test/botTravel.test.ts` (phases alternate orb > hunt > orb, no steals while
+  rushing, Ultra hard unchanged); `?test=sim` has an `['ultra2', 'hard']` match.
+
+### 6h. Why Ultra seemed to waver, and a faster way to the orbs — *done 2026-10-14*
+
+Probe (48 duels vs Hard, goal sampled every tick): orbs are known 97% of the time but it is
+in the `orb` goal 34% of it; an orb run lasts 1.3 s before something else takes over (traps
+210 times, steals 99, climbs 99 in 441 runs); it takes 53% of the orbs.
+
+- Putting orbs first for *everything* optional (prep, hurting traps, climbs, drop-ins,
+  steals) gets +12% orbs but kills collapse (153 -> 95 -> 39 as the range grows) and wins
+  fall (57/96 -> 43 -> 24): the interruptions are where the kills come from.
+- Skipped one at a time with an orb in reach (35 m, 96 matches, base 57/96 wins, 477 orbs):
+  exit prep 53/96 (kills down), steals 55/96, high-ground climbs 60/96, **drop-ins for show
+  65/96 (+22 orbs, same kills, fewer deaths)**. Climbs + drop-ins together: 62-66/96 at 20,
+  35 and 60 m, +60 orbs. Confirmed on 160 matches: 98 -> 106 wins, orbs 796 -> 877, deaths
+  249 -> 223, kills 257 -> 238.
+- [x] `BotSkill.orbFirst` (metres, Ultra 50) and `orbFirstSkips` (Ultra `combo`, `climb`):
+      an orb within that reach that no enemy is much closer to puts off drop-ins and
+      high-ground climbs for show. A sure kill, traps, prep and steals carry on. Ultra 2
+      keeps 0 (its hunt phase hunts).
+- Left alone on purpose: trap waiting (14% of orb-time in `trap:floor`) and prep (5%); they
+  are what the kills are made of.
+
 ### 7. More tactics, more players
 
 - [x] **Free-for-all, first cut** (2026-10-08): 1-3 bots picked in the PvP menu

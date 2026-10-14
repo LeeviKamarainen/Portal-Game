@@ -14,6 +14,8 @@ import { BOT_DIFFICULTIES, BUILT_IN_ONLINE_MAPS, type BotDifficulty } from '../.
 import { BotController } from '../../src/bots/BotController';
 import { BOT_SKILLS, seededRandom } from '../../src/bots/BotSkill';
 import type { ArenaDef } from '../../src/world/ArenaBuilder';
+import * as THREE from 'three';
+import { exitVelocity } from '../../src/bots/AirChain';
 
 const DT = 1 / 60;
 
@@ -108,3 +110,109 @@ for (const { id, data } of BUILT_IN_ONLINE_MAPS) {
     r.sim.dispose();
   });
 }
+
+test('Ultra hard chains portals in the air; nobody below it does', () => {
+  assert.equal(BOT_SKILLS.ultra.airChain, true);
+  for (const d of ['easy', 'normal', 'hard'] as const) assert.equal(BOT_SKILLS[d].airChain, false);
+  // (A chain needs travel: the exits it picks come from the travel spots.)
+  assert.ok(BOT_SKILLS.ultra.portalTravel);
+});
+
+test('what a portal does to a velocity: the half turn (fall into a floor, out along a wall)', () => {
+  const out = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0);
+  // Falling at 10 m/s into a floor portal whose top points -z, out of a wall portal facing +z.
+  exitVelocity(new THREE.Vector3(0, -10, 0), up, new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, 1), up, out);
+  assert.ok(out.distanceTo(new THREE.Vector3(0, 0, 10)) < 1e-6, `fell ${out.toArray()}`);
+  // Also 4 m/s along the floor portal's top (-z): that goes up the wall.
+  exitVelocity(new THREE.Vector3(0, -10, -4), up, new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, 1), up, out);
+  assert.ok(out.distanceTo(new THREE.Vector3(0, 4, 10)) < 1e-6, `ran ${out.toArray()}`);
+  // Sideways along the floor portal's right (+x for up = -z): comes out the other way along the wall (-x... mirrored).
+  exitVelocity(new THREE.Vector3(3, -10, 0), up, new THREE.Vector3(0, 0, -1), new THREE.Vector3(0, 0, 1), up, out);
+  assert.ok(Math.abs(out.z - 10) < 1e-6 && Math.abs(out.y) < 1e-6 && Math.abs(Math.abs(out.x) - 3) < 1e-6, `slid ${out.toArray()}`);
+  // Speed is kept whatever the turn.
+  assert.ok(Math.abs(out.length() - Math.hypot(3, 10)) < 1e-6);
+});
+
+/** One bot alone: how long it takes to win on orbs (and what it did on the way). */
+async function solo(def: ArenaDef, difficulty: BotDifficulty, seed: number, seconds: number) {
+  const sim = await ArenaSim.load(def, {});
+  try {
+    sim.orbs!.random = seededRandom(seed * 7919 + 1);
+    sim.orbs!.clear(0);
+    const bot = new BotController(BOT_SKILLS[difficulty], seed * 8);
+    const player = sim.addPlayer({ id: 'p1', name: 'BOT' }, bot);
+    bot.attach(sim, player);
+    let orbs = 0;
+    let t = 0;
+    for (; t < seconds && !sim.match!.over; t += DT) {
+      sim.step(DT);
+      for (const e of sim.events.splice(0)) if (e.type === 'score' && e.reason === 'orb') orbs++;
+    }
+    const stats = bot.brain!.stats;
+    return { secs: t, orbs, won: sim.match!.over, hops: stats.travels, air: stats.airHops };
+  } finally {
+    sim.dispose();
+  }
+}
+
+test('an Ultra hard bot alone chains portals in the air and collects orbs', async () => {
+  let air = 0;
+  let hops = 0;
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const r = await solo(PVP_ARENA, 'ultra', seed, 90);
+    console.log(`seed ${seed}: ${r.orbs} orbs in ${r.secs.toFixed(0)} s, ${r.hops} hops, ${r.air} air links`);
+    air += r.air;
+    hops += r.hops;
+    assert.ok(r.won, `seed ${seed}: only ${r.orbs} orbs in 90 s`);
+  }
+  assert.ok(hops >= 6, `only ${hops} hops in six solo matches`);
+  assert.ok(air >= 2, `only ${air} chained links in six solo matches`);
+});
+
+test('an Ultra hard bot that pops out of a low wall exit walks away from it (it once circled its own pair for ever)', async () => {
+  // Seed 8 on Highwire: out of the wall exit at (-9, 2, -21), the route to the next orb ran along that wall.
+  const r = await solo(PVP_ARENA, 'ultra', 8, 120);
+  console.log(`seed 8: ${r.orbs} orbs in ${r.secs.toFixed(0)} s`);
+  assert.ok(r.won, `stuck: ${r.orbs} orbs in 120 s`);
+});
+
+test('Ultra 2 alternates an orb rush with a hunt for the players, and Ultra hard is left as it was', async () => {
+  assert.ok(BOT_DIFFICULTIES.includes('ultra2'));
+  assert.equal(BOT_SKILLS.ultra2.name, 'Ultra 2');
+  assert.equal(BOT_SKILLS.ultra.orbPhase, 0);
+  assert.equal(BOT_SKILLS.ultra2.portalTravel, true);
+  assert.deepEqual({ ...BOT_SKILLS.ultra2, name: '', orbPhase: 0, huntPhase: 0, rushTraps: false, orbFirst: 50 }, { ...BOT_SKILLS.ultra, name: '' });
+  // (Ultra hard puts an orb in reach before drop-ins and climbs for show; Ultra 2 hunts when it is hunting.)
+  assert.ok(BOT_SKILLS.ultra.orbFirst > 0 && BOT_SKILLS.ultra.orbFirstSkips.includes('combo'));
+  assert.equal(BOT_SKILLS.ultra2.orbFirst, 0);
+  const def = PVP_ARENA;
+  const sim = await ArenaSim.load(def, {});
+  try {
+    sim.orbs!.random = seededRandom(7);
+    sim.orbs!.clear(0);
+    const bots = (['ultra2', 'hard'] as const).map((d, i) => {
+      const bot = new BotController(BOT_SKILLS[d], 70 + i);
+      const player = sim.addPlayer({ id: `p${i + 1}`, name: `BOT ${i + 1}` }, bot);
+      bot.attach(sim, player);
+      return { bot, player };
+    });
+    const brain = bots[0].bot.brain!;
+    const { orbPhase, huntPhase } = BOT_SKILLS.ultra2;
+    const seen: string[] = [];
+    let rushSteals = 0;
+    for (let i = 0; i < Math.round(((orbPhase + huntPhase) * 2.2) / DT) && !sim.match!.over; i++) {
+      sim.step(DT);
+      if (brain.phase && brain.phase !== seen[seen.length - 1]) seen.push(brain.phase);
+      // Rushing it neither steals nor drops in on anyone (a trap right there it still takes).
+      if (brain.phase === 'orb' && brain.goal === 'steal') rushSteals++;
+    }
+    console.log(`phases ${seen.join(' > ')}, ${rushSteals} rush ticks stealing`);
+    assert.ok(seen.length >= 3, `only saw ${seen.join(' > ')}`);
+    assert.equal(seen[0], 'orb');
+    assert.equal(seen[1], 'hunt');
+    assert.equal(rushSteals, 0);
+  } finally {
+    sim.dispose();
+  }
+});

@@ -223,6 +223,7 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
     ['easy', 'normal', 'hard', 'normal'],
     ['hard', 'hard', 'normal'],
     ['ultra', 'normal', 'hard'],
+    ['ultra2', 'hard'],
   ];
   const matches: MatchReport[] = [];
   for (let i = 0; i < setups.length; i++) matches.push(await simGame(game, setups[i], 100 + i));
@@ -255,10 +256,10 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   );
   const hard = all.filter((r) => r.difficulty === 'hard');
   // (Ultra hard is Hard and more: it shoots on the move too.)
-  const hardClass = all.filter((r) => r.difficulty === 'hard' || r.difficulty === 'ultra');
+  const hardClass = all.filter((r) => r.difficulty === 'hard' || r.difficulty === 'ultra' || r.difficulty === 'ultra2');
   const hardMoving = hardClass.reduce((n, r) => n + r.movingShots, 0);
   const hardShots = hardClass.reduce((n, r) => n + r.shots, 0);
-  const others = all.filter((r) => r.difficulty !== 'hard' && r.difficulty !== 'ultra');
+  const others = all.filter((r) => r.difficulty !== 'hard' && r.difficulty !== 'ultra' && r.difficulty !== 'ultra2');
   const otherMoving = others.reduce((n, r) => n + r.movingShots, 0);
   const otherShots = others.reduce((n, r) => n + r.shots, 0);
   const hardDropIns = hard.reduce((n, r) => n + r.combos, 0);
@@ -284,7 +285,7 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
     hardShots > 0 && hardMoving / hardShots >= 0.5 && otherMoving / Math.max(otherShots, 1) < 0.25,
     `Hard ${hardMoving}/${hardShots} shots at ${ON_THE_MOVE}+ m/s; Easy/Normal ${otherMoving}/${otherShots}`,
   );
-  const ultra = all.filter((r) => r.difficulty === 'ultra');
+  const ultra = all.filter((r) => r.difficulty === 'ultra' || r.difficulty === 'ultra2');
   const hops = ultra.reduce((n, r) => n + r.travels, 0);
   add(
     'Ultra hard gets about by portal',

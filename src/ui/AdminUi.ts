@@ -1,5 +1,5 @@
 import { AccountError, type AccountClient } from '../net/AccountClient';
-import { RIGHTS, type AdminUser, type Right } from '../net/accounts';
+import { RIGHTS, type AdminUser, type GenModel, type Right } from '../net/accounts';
 
 /** The admin page's menu: what it needs to draw itself again after a change. */
 export interface AdminUiHost {
@@ -10,6 +10,9 @@ const RIGHT_LABELS: Record<Right, string> = { 'generate-maps': 'Map generator' }
 const RIGHT_HINTS: Record<Right, string> = {
   'generate-maps': 'Lets the player describe a map and have Claude build it (costs money, so it is limited per day)',
 };
+
+const MODEL_LABELS: Record<GenModel, string> = { haiku: 'Haiku', sonnet: 'Sonnet' };
+const MODEL_HINT = 'Which Claude model builds this player\'s generated maps. Haiku is fast and cheap; Sonnet costs about 20 times more per map and may lay out harder maps better. Click to switch.';
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
@@ -74,7 +77,7 @@ export class AdminUi {
         ${body}
         <div class="err">${esc(this.error)}</div>
       </div>
-      <div class="note">${RIGHTS.map((r) => `<b>${RIGHT_LABELS[r]}</b>: ${RIGHT_HINTS[r]}.`).join(' ')} Players get the rights on top of their own role, and keep them until you take them away.</div>`;
+      <div class="note">${RIGHTS.map((r) => `<b>${RIGHT_LABELS[r]}</b>: ${RIGHT_HINTS[r]}.`).join(' ')} Players get the rights on top of their own role, and keep them until you take them away. <b>Model</b>: ${esc(MODEL_HINT)} The choice applies from the player's next generation.</div>`;
   }
 
   private row(p: AdminUser): string {
@@ -90,7 +93,8 @@ export class AdminUi {
         return `<button class="btn small ${has ? 'primary' : ''}" data-action="admin-right" data-id="${p.id}" data-right="${r}" title="${esc(RIGHT_HINTS[r])}" ${this.busy ? 'disabled' : ''}>${RIGHT_LABELS[r]}: ${has ? 'on' : 'off'}</button>`;
       }).join('');
     }
-    return `<li><div class="mn">${esc(p.name)}<small>${details}</small></div><div class="acts">${actions}</div></li>`;
+    const model = `<button class="btn small ${p.genModel === 'sonnet' ? 'primary' : ''}" data-action="admin-model" data-id="${p.id}" title="${esc(MODEL_HINT)}" ${this.busy ? 'disabled' : ''}>Model: ${MODEL_LABELS[p.genModel]}</button>`;
+    return `<li><div class="mn">${esc(p.name)}<small>${details}</small></div><div class="acts">${actions}${model}</div></li>`;
   }
 
   /** A click on an `admin-...` action. */
@@ -104,6 +108,26 @@ export class AdminUi {
       const right = el.dataset.right as Right;
       const player = this.players?.find((p) => p.id === id);
       if (player && RIGHTS.includes(right)) void this.setRight(player, right, !player.rights.includes(right));
+      return;
+    }
+    if (action === 'admin-model') {
+      const player = this.players?.find((p) => p.id === Number(el.dataset.id));
+      if (player) void this.setModel(player, player.genModel === 'sonnet' ? 'haiku' : 'sonnet');
+    }
+  }
+
+  private async setModel(player: AdminUser, model: GenModel): Promise<void> {
+    this.busy = true;
+    this.error = '';
+    this.host.redraw();
+    try {
+      const updated = await this.accounts.setGenModel(player.id, model);
+      this.players = (this.players ?? []).map((p) => (p.id === updated.id ? updated : p));
+    } catch (e) {
+      this.error = messageOf(e);
+    } finally {
+      this.busy = false;
+      this.host.redraw();
     }
   }
 

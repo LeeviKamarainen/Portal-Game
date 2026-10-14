@@ -99,6 +99,8 @@ export class Game {
   private readonly keyboard: KeyboardCommands;
   private readonly netCommand = emptyCommand();
   private pendingFire: PortalColor | null = null;
+  /** Where the pending shot goes, in the view's frame (see PlayerCommand.aimX). */
+  private readonly pendingAim = { x: 0, y: 0 };
   /** Match messages that came while the online match was loading. */
   private early: ServerMessage[] = [];
   /** The countdown banner has given way to GO. */
@@ -516,6 +518,7 @@ export class Game {
     this.engine.applySettings(s, FLAGS.quality ?? s.quality);
     this.input.sensitivity = s.sensitivity;
     this.input.invertY = s.invertY;
+    this.touch?.setFireMode(s.touchFire, s.touchBlue);
     if (!s.portalPings) this.pings.clear();
     this.session?.applyLighting();
     if (this.avatar && s.skin !== this.avatarSkin) void this.changeSkin(s.skin);
@@ -576,8 +579,8 @@ export class Game {
     }
 
     if (this.state === 'playing') {
-      if (this.input.consumeFirePrimary()) this.fire('orange');
-      if (this.input.consumeFireSecondary()) this.fire('blue');
+      if (this.input.consumeFirePrimary()) this.fire('orange', this.input.takeAim('orange'));
+      if (this.input.consumeFireSecondary()) this.fire('blue', this.input.takeAim('blue'));
     } else {
       this.input.consumeFirePrimary();
       this.input.consumeFireSecondary();
@@ -622,8 +625,11 @@ export class Game {
       cmd = this.netCommand;
       this.keyboard.read(cmd);
       cmd.fire = this.pendingFire;
+      cmd.aimX = this.pendingAim.x;
+      cmd.aimY = this.pendingAim.y;
     }
     this.pendingFire = null;
+    this.pendingAim.x = this.pendingAim.y = 0;
     net.step(dt, cmd);
     this.loop.timeScale = net.timeScale;
     if (!net.started) {
@@ -753,15 +759,23 @@ export class Game {
     this.pings.add(shooter.id, color, at, shooter.palette[color]);
   }
 
-  fire(color: PortalColor): void {
+  /** `at`: a point on the screen to shoot at ((-1..1) right and up; (0, 0) is the crosshair) - the view doesn't turn. */
+  fire(color: PortalColor, at: { x: number; y: number } = { x: 0, y: 0 }): void {
     const session = this.session;
     if (!session) return;
+    // The point on screen as an offset from the centre line: the tangent of the half-angle at the edge.
+    const cam = this.engine.camera;
+    const reach = Math.tan((cam.fov * Math.PI) / 360);
+    const aimX = at.x * reach * cam.aspect;
+    const aimY = at.y * reach;
     // Online the shot goes to the server with this step's command; you hear it at once.
     if (this.net) {
       this.pendingFire = color;
+      this.pendingAim.x = aimX;
+      this.pendingAim.y = aimY;
       this.audio.play(color === 'orange' ? 'shootOrange' : 'shootBlue', 0.7);
     } else {
-      session.fire(color);
+      session.fire(color, aimX, aimY);
     }
     this.viewModel.fire(color);
     this.heldGun.charge(color);

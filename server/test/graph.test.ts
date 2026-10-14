@@ -8,8 +8,8 @@ import { BUILT_IN_MAPS } from '../../src/editor/templates';
 import { loadConfig } from '../gen/config';
 import { generateMap, type BuildEvent, type GenEvent } from '../gen/graph';
 import { AnthropicLlm, BudgetedLlm, GenError, type AnthropicLike } from '../gen/llm';
-import type { Blueprint } from '../gen/blueprint';
-import { combatExample } from '../gen/blueprintExamples';
+import { scaffold, type Blueprint } from '../gen/blueprint';
+import { combatExample, sinkholeExample } from '../gen/blueprintExamples';
 import { PartialMapReader } from '../gen/partial';
 import { WireMapSchema, pieceFromWire, toWire, type WireMap } from '../gen/wire';
 import { FakeLlm } from './fakeLlm';
@@ -165,6 +165,37 @@ test('if the repair after a review breaks the map, the earlier good map is kept'
   );
   assert.equal(outcome.ok, true);
   assert.equal(outcome.map!.name, 'Highwire');
+});
+
+test('a plan without a requested feature is sent back with what to add, and dropping the feature does not pass', async () => {
+  const noHole = (): Blueprint => {
+    const bp = sinkholeExample();
+    bp.areas = bp.areas.filter((a) => a.id !== 'H1');
+    return bp;
+  };
+  const { llm, outcome, events } = await run({
+    brief: [noHole()],
+    // The first correction drops the feature instead of adding the pit; the features stay as first read.
+    replan: [{ ...noHole(), features: [] }, sinkholeExample()],
+    draft: [toWire(scaffold(sinkholeExample()))],
+  });
+  assert.deepEqual(llm.labels, ['brief', 'replan', 'replan', 'draft']);
+  for (const i of [1, 2]) assert.match((llm.requests[i] as { user: string }).user, /a giant hole in the middle.*Add a pit area \(role "pit"/);
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.plan!.features.length, 3);
+  const planned = events.filter((e) => e.node === 'brief').at(-1)!;
+  assert.ok(planned.detail!.some((l) => /^wants a large bottomless hole in the floor at the centre/.test(l)), planned.detail!.join('\n'));
+});
+
+test('a draft that fills the requested hole is repaired with the feature and the plan in the prompt', async () => {
+  const filled = scaffold(sinkholeExample());
+  filled.pieces.push({ type: 'block', at: [0, -1, 0], size: [20, 1, 20], center: true });
+  const { llm, outcome } = await run({ brief: [sinkholeExample()], draft: [toWire(filled)], repair: [toWire(scaffold(sinkholeExample()))] });
+  assert.deepEqual(llm.labels, ['brief', 'draft', 'repair']);
+  const prompt = (llm.requests[2] as { user: string }).user;
+  assert.match(prompt, /area "H1" \(the hole in the middle\).*is covered/);
+  assert.match(prompt, /The request asks for a large bottomless hole in the floor at the centre.*Leave the floor out/);
+  assert.equal(outcome.ok, true);
 });
 
 test('a cancelled generation rejects with code aborted and asks the model for nothing', async () => {
