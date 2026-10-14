@@ -22,7 +22,6 @@ import { pieceView } from './PieceViews';
 import { BUILT_IN_MAPS, blankMap } from './templates';
 import { carried, directlyAttached, faceMotion, shift, surfaceBox, turnAbout } from './Attach';
 import { GeneratePanel, type GenerateHost, type GeneratorService } from './GeneratePanel';
-import type { MapHead } from '../net/generate';
 
 /**
  * The map editor: build a map from the piece catalogue in 3D, tune every piece in an
@@ -154,19 +153,14 @@ interface Marquee {
   single: boolean;
 }
 
-/** A map the generator is building, drawn in place of the editor's own while it works. */
-interface LiveBuild {
-  group: THREE.Group;
-  symmetric: boolean;
-  /** Yellow box round the newest piece. */
-  cursor: THREE.Box3Helper | null;
-  /** The camera has been pointed at it. */
-  framed: boolean;
-  /** The model has started writing, so the editor's own map is hidden. */
-  shown: boolean;
-  /** What is drawn, piece by piece (index = piece index), so a new version only redraws what differs. */
-  pieces: Piece[];
-  views: THREE.Object3D[];
+/**
+ * The assistant is changing the map: editing is locked, the map's own views are patched piece
+ * by piece as its edits arrive, and the map as it was is kept so a failed or cancelled run can
+ * put it back (a finished one is one undo step).
+ */
+interface LiveEdit {
+  /** The map as it was when the assistant started, as JSON. */
+  before: string;
   /** Green boxes round pieces that just changed. */
   marks: { helper: THREE.Box3Helper; until: number }[];
 }
@@ -221,8 +215,8 @@ export class Editor {
   /** The saved (online) map being edited, so Save online updates it. */
   private cloudId: string | null = null;
   private readonly generate: GeneratePanel | null;
-  /** While the map generator is building a map: what is shown instead of the editor's map (editing is locked). */
-  private live: LiveBuild | null = null;
+  /** While the map assistant is changing the map (editing is locked). */
+  private live: LiveEdit | null = null;
 
   constructor(container: HTMLElement, renderer: THREE.WebGLRenderer, envMap: THREE.Texture, handlers: EditorHandlers) {
     this.renderer = renderer;
@@ -484,30 +478,27 @@ export class Editor {
     this.camera.updateProjectionMatrix();
   }
 
-  // ---------------------------------------------------------------- generated maps, live
+  // ---------------------------------------------------------------- the map assistant, live
 
-  /** What the generator panel may do to the editor (see GeneratePanel.ts). */
+  /** What the assistant panel may do to the editor (see GeneratePanel.ts). */
   private generateHost(): GenerateHost {
     return {
       currentMap: () => this.map,
       begin: () => this.beginLive(),
-      liveStart: (head) => this.liveStart(head),
-      livePiece: (piece, index) => this.livePiece(piece, index),
       liveMap: (map) => this.liveMap(map),
       end: (map, options) => this.endLive(map, options.keepSavedLink),
       status: (text, error) => this.status(text, error),
     };
   }
 
-  /** Locks editing; the editor's own map stays on screen until the model starts writing a new one. */
+  /** Locks editing (the camera still works); the map stays on screen and is patched as edits arrive. */
   private beginLive(): void {
     this.cancelPlacing();
     this.drag = null;
     this.marquee = null;
     this.el.marquee.style.display = 'none';
-    if (this.live) this.discardLive(this.live);
-    this.live = { group: new THREE.Group(), symmetric: false, cursor: null, framed: false, shown: false, pieces: [], views: [], marks: [] };
-    this.scene.add(this.live.group);
+    if (this.live) this.clearMarks(this.live);
+    this.live = { before: JSON.stringify(this.map), marks: [] };
     this.root.classList.add('live');
   }
 
@@ -516,111 +507,57 @@ export class Editor {
     h.geometry.dispose();
   }
 
-  /** Removes every view and marker of a live build. */
-  private clearLive(live: LiveBuild): void {
-    for (const v of live.views) this.disposeView(v);
-    live.views = [];
-    live.pieces = [];
-    if (live.cursor) this.dropHelper(live.cursor);
-    live.cursor = null;
+  private clearMarks(live: LiveEdit): void {
     for (const m of live.marks) this.dropHelper(m.helper);
     live.marks = [];
   }
 
-  private discardLive(live: LiveBuild): void {
-    this.clearLive(live);
-    live.group.removeFromParent();
-  }
-
-  /** Hides the editor's own map behind the generated one (the first time it is needed). */
-  private showLive(live: LiveBuild, symmetric: boolean): void {
-    // Only a change of mirroring redraws everything: the views of a mirrored map carry ghost copies.
-    if (live.symmetric !== symmetric) this.clearLive(live);
-    live.symmetric = symmetric;
-    live.shown = true;
-    this.world.visible = false;
-    this.highlights.visible = false;
-  }
-
-  private frameLive(live: LiveBuild): void {
-    const box = new THREE.Box3();
-    for (const v of live.views) box.expandByObject(v.children[0] ?? v);
-    if (box.isEmpty()) return;
-    live.framed = true;
-    this.frameBox(box);
-  }
-
   /**
-   * Makes piece `index` of the live view `piece`, redrawing it only if it differs from what is
-   * shown. A repair sends the whole map again; nearly all of it is what is already on screen,
-   * and only the changes should appear. Returns the new view, or null when nothing changed.
+   * Makes the shown map `target`: only the pieces that differ are redrawn (a change of mirroring
+   * redraws everything). Returns the indices that changed.
    */
-  private liveSet(live: LiveBuild, index: number, piece: Piece): THREE.Object3D | null {
-    const old = live.pieces[index];
-    if (old && samePiece(old, piece)) return null;
-    if (live.views[index]) this.disposeView(live.views[index]);
-    const view = this.viewFor(piece, index, live.symmetric);
-    live.group.add(view);
-    live.views[index] = view;
-    live.pieces[index] = piece;
-    return view;
+  private syncTo(target: MapData): number[] {
+    const prev = this.map;
+    const changedPieces: number[] = [];
+    if (isSymmetric(prev) !== isSymmetric(target)) {
+      this.map = target;
+      this.rebuildAll();
+      return target.pieces.map((_, i) => i);
+    }
+    const next = target.pieces;
+    this.map = target;
+    for (let i = 0; i < next.length; i++) {
+      const old = prev.pieces[i];
+      if (old && this.views[i] && samePiece(old, next[i])) continue;
+      this.rebuildOne(i);
+      changedPieces.push(i);
+    }
+    while (this.views.length > next.length) this.disposeView(this.views.pop()!);
+    return changedPieces;
   }
 
-  private boxOf(view: THREE.Object3D): THREE.Box3 {
-    return new THREE.Box3().setFromObject(view.children[0] ?? view);
-  }
-
-  /** The model began writing a map (a first draft, or a repair): what is shown stays, and changes patch it. */
-  private liveStart(head: MapHead): void {
+  /** An edit of the assistant's arrived: the pieces that differ are redrawn, and flashed green for a moment. */
+  private liveMap(target: MapData): void {
     const live = this.live;
     if (!live) return;
-    this.showLive(live, isSymmetric({ kind: head.kind, symmetry: head.symmetry } as MapData));
-  }
-
-  /** One piece, as the model finishes writing it; a yellow box marks the newest one that changed. */
-  private livePiece(piece: Piece, index: number): void {
-    const live = this.live;
-    if (!live?.shown) return;
-    const view = this.liveSet(live, index, piece);
-    if (!view) return;
-    if (live.cursor) this.dropHelper(live.cursor);
-    live.cursor = null;
-    if (piece.type !== 'room') {
-      const box = this.boxOf(view);
-      if (!box.isEmpty()) {
-        live.cursor = new THREE.Box3Helper(box.expandByScalar(0.06), 0xffd040);
-        this.scene.add(live.cursor);
+    const prevPieces = this.map.pieces.length;
+    const changedPieces = this.syncTo(structuredClone(target));
+    this.sel = this.sel.filter((i) => i < this.map.pieces.length);
+    this.riders = [];
+    this.refreshHighlights();
+    this.refreshOutline();
+    const now = performance.now();
+    // A first draw of a whole new map is not worth marking piece by piece.
+    if (prevPieces > 0 && changedPieces.length <= 40) {
+      for (const i of changedPieces) {
+        const view = this.views[i];
+        const box = view ? new THREE.Box3().setFromObject(view.children[0] ?? view) : null;
+        if (!box || box.isEmpty()) continue;
+        const helper = new THREE.Box3Helper(box.expandByScalar(0.08), 0x40ff90);
+        this.scene.add(helper);
+        live.marks.push({ helper, until: now + 1800 });
       }
     }
-    if (!live.framed && piece.type === 'room') this.frameLive(live);
-  }
-
-  /**
-   * The map after code changed it (the structure built from the plan, or a checked draft):
-   * what differs from what is shown is redrawn, and flashed green for a moment.
-   */
-  private liveMap(map: MapData): void {
-    const live = this.live;
-    if (!live) return;
-    this.showLive(live, isSymmetric(map));
-    const first = live.pieces.length === 0;
-    const now = performance.now();
-    map.pieces.forEach((p, i) => {
-      const view = this.liveSet(live, i, p);
-      if (!view || first) return;
-      const box = this.boxOf(view);
-      if (box.isEmpty() || live.marks.length >= 40) return;
-      const helper = new THREE.Box3Helper(box.expandByScalar(0.08), 0x40ff90);
-      this.scene.add(helper);
-      live.marks.push({ helper, until: now + 1600 });
-    });
-    while (live.pieces.length > map.pieces.length) {
-      this.disposeView(live.views.pop()!);
-      live.pieces.pop();
-    }
-    if (live.cursor) this.dropHelper(live.cursor);
-    live.cursor = null;
-    if (!live.framed) this.frameLive(live);
   }
 
   /** Called every frame: lets the green change markers go. */
@@ -635,19 +572,42 @@ export class Editor {
     });
   }
 
-  /** Unlocks editing. A map becomes the editor's (undoable, so Undo brings back the previous one). */
+  /**
+   * Unlocks editing. With a map, that map is the editor's (what is shown is brought up to it,
+   * and the map as it was is one undo step); with null whatever the run changed is put back.
+   */
   private endLive(map: MapData | null, keepSavedLink: boolean): void {
-    if (this.live) {
-      this.discardLive(this.live);
-      this.live = null;
-    }
+    const live = this.live;
+    if (!live) return;
+    this.live = null;
+    this.clearMarks(live);
     this.root.classList.remove('live');
-    this.world.visible = true;
-    this.highlights.visible = true;
-    if (!map) return;
-    this.setMap(structuredClone(map));
+    if (!map) {
+      // Cancelled or failed: back to what was there (a no-op when nothing was changed).
+      if (JSON.stringify(this.map) !== live.before) {
+        this.syncTo(JSON.parse(live.before) as MapData);
+        this.sel = [];
+        this.afterSelection();
+        this.saveDraft();
+      }
+      return;
+    }
+    const roomBefore = (JSON.parse(live.before) as MapData).pieces.find((p) => p.type === 'room');
+    const final = structuredClone(map);
+    this.syncTo(final);
+    if (JSON.stringify(this.map) !== live.before) {
+      this.history.push(live.before);
+      if (this.history.length > 200) this.history.shift();
+      this.future.length = 0;
+      this.updateUndo();
+    }
+    this.sel = [];
+    this.afterSelection();
+    this.saveDraft();
     if (!keepSavedLink) this.setCloudId(null);
-    this.frameAll();
+    // A new room (a new map) is worth looking at from the start; a tweak keeps the camera where it is.
+    const roomNow = this.map.pieces.find((p) => p.type === 'room');
+    if (!roomBefore || JSON.stringify(roomBefore) !== JSON.stringify(roomNow)) this.frameAll();
   }
 
   // ---------------------------------------------------------------- selection
@@ -1205,7 +1165,7 @@ export class Editor {
         <label title="Height of the build plane ([ and ])">Height <input type="number" step="0.5" value="0" data-el="height"></label>
         <label title="Pieces standing on, hanging under or mounted on what you move, turn or resize go with it (C)"><input type="checkbox" data-el="carry" checked> Carry attached</label>
         <div class="grow"></div>
-        <button class="b" data-act="generate" data-el="generate" hidden title="Describe a map and have the AI build it, or change this one">Generate</button>
+        <button class="b" data-act="generate" data-el="generate" hidden title="Chat with the map assistant: ask for a map, or for changes to this one">Assistant</button>
         <button class="b primary" data-act="play">▶ Playtest</button>
         <button class="b" data-act="exit">Exit</button>
         <input type="file" accept=".json,application/json" data-el="file" hidden>

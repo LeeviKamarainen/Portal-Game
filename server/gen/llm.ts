@@ -20,6 +20,13 @@ export const noUsage = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheW
 export const totalTokens = (u: Usage): number => u.input + u.output + u.cacheRead + u.cacheWrite;
 export const addUsage = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite });
 
+/**
+ * Tokens as they are billed, in input-token equivalents: cache writes cost 1.25x and cache
+ * reads 0.1x. A chat re-reads its prompt every turn, so counting those reads in full would make
+ * one conversation look like fifty generations to the daily ceiling.
+ */
+export const billedTokens = (u: Usage): number => Math.round(u.input + u.cacheWrite * 1.25 + u.cacheRead * 0.1);
+
 /** USD estimate at list price (Haiku's unless `prices` says otherwise); real billing is in the Anthropic Console. */
 export const estimateCostUsd = (u: Usage, prices: Prices = PRICES): number =>
   (u.input * prices.input + u.output * prices.output + u.cacheRead * prices.cacheRead + u.cacheWrite * prices.cacheWrite) / 1_000_000;
@@ -53,8 +60,53 @@ export interface LlmResult<T> {
   usage: Usage;
 }
 
+/** A tool the model may call (Anthropic's tool definition: name, what it is for, and the JSON schema of its input). */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/**
+ * A content block of a tool-using conversation. Blocks the model produces that the harness has
+ * no use for (its thinking) are carried back verbatim, as the API requires.
+ */
+export type TurnBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | { type: string; [key: string]: unknown };
+
+export interface TurnMessage {
+  role: 'user' | 'assistant';
+  content: string | TurnBlock[];
+}
+
+export interface TurnRequest {
+  label: string;
+  model: string;
+  /** Static, cached together with the tool definitions. */
+  system: string;
+  messages: TurnMessage[];
+  tools: ToolSpec[];
+  thinking: 'off' | 'adaptive';
+  effort: Effort;
+  maxTokens: number;
+  signal?: AbortSignal;
+}
+
+export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'refusal' | 'other';
+
+export interface TurnResult {
+  content: TurnBlock[];
+  stop: StopReason;
+  usage: Usage;
+}
+
 export interface Llm {
   generate<T>(req: LlmRequest<T>): Promise<LlmResult<T>>;
+  /** One model turn of a conversation that may call tools (the map chat); the caller runs the tools and loops. */
+  turn(req: TurnRequest): Promise<TurnResult>;
 }
 
 export type GenErrorCode = 'aborted' | 'refusal' | 'truncated' | 'bad-output' | 'budget' | 'api';
@@ -120,6 +172,49 @@ export class AnthropicLlm implements Llm {
       throw new GenError('bad-output', `The model's answer did not match the expected structure: ${(e as Error).message.slice(0, 300)}`);
     }
   }
+
+  async turn(req: TurnRequest): Promise<TurnResult> {
+    let message: Anthropic.Message;
+    try {
+      const stream = this.client.messages.stream(
+        {
+          model: req.model,
+          max_tokens: req.maxTokens,
+          ...(req.thinking === 'off' ? { thinking: thinkingOff(req.model) } : {}),
+          output_config: { effort: req.effort },
+          system: [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }],
+          tools: req.tools as Anthropic.Tool[],
+          messages: withCacheBreakpoint(req.messages) as Anthropic.MessageParam[],
+        },
+        { signal: req.signal },
+      );
+      message = await stream.finalMessage();
+    } catch (e) {
+      if (e instanceof Anthropic.APIUserAbortError || req.signal?.aborted) throw new GenError('aborted', 'The generation was cancelled.');
+      if (e instanceof Anthropic.APIError) throw new GenError('api', `The model service answered ${e.status ?? 'with an error'}: ${e.message}`);
+      throw e;
+    }
+    const usage: Usage = {
+      input: message.usage.input_tokens,
+      output: message.usage.output_tokens,
+      cacheRead: message.usage.cache_read_input_tokens ?? 0,
+      cacheWrite: message.usage.cache_creation_input_tokens ?? 0,
+    };
+    const stop: StopReason =
+      message.stop_reason === 'end_turn' || message.stop_reason === 'tool_use' || message.stop_reason === 'max_tokens' || message.stop_reason === 'refusal' ? message.stop_reason : 'other';
+    return { content: message.content as unknown as TurnBlock[], stop, usage };
+  }
+}
+
+/** The messages with a cache breakpoint on the last block, so every turn reads the whole conversation so far from the cache. */
+function withCacheBreakpoint(messages: TurnMessage[]): unknown[] {
+  return messages.map((m, i) => {
+    if (i !== messages.length - 1) return m;
+    const blocks: TurnBlock[] = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : [...m.content];
+    const last = blocks[blocks.length - 1];
+    blocks[blocks.length - 1] = { ...last, cache_control: { type: 'ephemeral' } };
+    return { role: m.role, content: blocks };
+  });
 }
 
 /** Characters per token for a conservative size guess (the catalogue prompt measures about 2). */
@@ -161,6 +256,15 @@ export class BudgetedLlm implements Llm {
     if (left < MIN_OUTPUT_TOKENS) throw new GenError('budget', `This generation has used ${Math.round(this.usedTokens / 1000)}K of its ${this.limits.maxJobTokens / 1000}K token budget.`);
     const t0 = Date.now();
     const result = await this.inner.generate({ ...req, maxTokens: Math.min(req.maxTokens, left) });
+    this.used = addUsage(this.used, result.usage);
+    this.calls.push({ label: req.label, usage: result.usage, ms: Date.now() - t0 });
+    return result;
+  }
+
+  /** Turns of a chat are limited by the chat's own budget (agent.ts); this only keeps the books. */
+  async turn(req: TurnRequest): Promise<TurnResult> {
+    const t0 = Date.now();
+    const result = await this.inner.turn(req);
     this.used = addUsage(this.used, result.usage);
     this.calls.push({ label: req.label, usage: result.usage, ms: Date.now() - t0 });
     return result;

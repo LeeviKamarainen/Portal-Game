@@ -1,11 +1,13 @@
-import type { MapData, Piece } from '../world/maps/MapFormat';
-import { GEN_PROMPT_MAX, GEN_PROMPT_MIN, type GenKind, type GenQuota, type GenSize, type GenStartRequest, type JobEvent, type MapHead, type PublicOutcome } from '../net/generate';
+import type { MapData } from '../world/maps/MapFormat';
+import { blankMap, blankPuzzle } from './templates';
+import { GEN_PROMPT_MAX, GEN_PROMPT_MIN, type ChatMessage, type GenKind, type GenQuota, type GenSize, type GenStartRequest, type JobEvent, type PublicOutcome } from '../net/generate';
 
 /**
- * The editor's map generator: describe a map (or a change to the current one), watch the
- * server build it, and have the result land in the editor, where Undo brings back what was
- * there. Everything the server streams is shown as it arrives: the step list here, and the
- * level itself piece by piece in the editor's 3D view through the `GenerateHost`.
+ * The editor's map assistant: a chat drawer in the bottom-right corner. You say what you want
+ * ("a puzzle that needs two portal hops", "make the bridge longer", "put acid under it"), the
+ * model changes the map in the editor with its tools, and the pieces it touches are redrawn as
+ * it works - nothing else is. Each answer is one undo step. The conversation is kept in this
+ * panel and sent back with every message, so "make it bigger" means what it should.
  */
 
 /** What the panel needs from the page: the generator on the server. */
@@ -20,96 +22,150 @@ export interface GeneratorService {
 
 /** What the panel needs from the editor. */
 export interface GenerateHost {
-  /** The map being edited, for a refinement. */
+  /** The map being edited: what the next message is about. */
   currentMap(): MapData;
   /** Editing is locked from here until `end`. */
   begin(): void;
-  /** The model started writing a map (again): what is shown stays, and the pieces that differ replace it. */
-  liveStart(head: MapHead): void;
-  /** Piece number `index` of the map being written, as the model finishes it. */
-  livePiece(piece: Piece, index: number): void;
-  /** The map after code changed it (built from the plan, or a checked draft): changes are patched in. */
+  /** The map after one of the assistant's edits: the pieces that differ are redrawn. */
   liveMap(map: MapData, ok: boolean): void;
-  /** Editing is unlocked. `map` becomes the editor's map (undoable); null leaves what was there. */
+  /** Editing is unlocked. `map` becomes the editor's (undoable); null puts back what was there. */
   end(map: MapData | null, options: { keepSavedLink: boolean }): void;
   status(text: string, error?: boolean): void;
 }
 
 const NEW_EXAMPLES = [
-  'PvP map with big height differences, floating platforms with hazards on each platform',
-  'Copy puzzle map from Portal 1 stage 1',
+  'A puzzle that needs at least two portal hops, with a laser and a locked door',
+  'PvP arena with big height differences and acid under floating platforms',
   'A small symmetric arena with a deep central pit and portal walls on both sides',
-  'Puzzle: shoot a switch to open the door, then cross a room with acid to the exit',
 ];
-const REFINE_EXAMPLES = ['Make the height differences bigger', 'Add hazards on every platform', 'Add more cover in the middle', 'Add more portal walls'];
-/** Maps larger than this cannot be refined (the server rewrites the whole map in one answer). */
-const REFINE_PIECES_MAX = 150;
+const EDIT_EXAMPLES = ['Make the height differences bigger', 'Add acid under the bridge', 'Why can\'t I reach the exit?', 'Add more portal walls'];
+
+const SIZE_KEY = 'portal.assistant.size';
+const HISTORY_KEY = 'portal.assistant.history';
+const DEFAULT_SIZE = { w: 400, h: 540 };
+const MIN_SIZE = { w: 320, h: 260 };
 
 const CSS = `
-.gen { position:absolute; left:232px; top:58px; width:372px; max-height:calc(100% - 100px); overflow:auto; display:none; box-sizing:border-box;
-  background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; box-shadow:0 10px 30px rgba(0,0,0,0.45); }
-.gen.on { display:block; }
-.gen .head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
-.gen .head b { font-size:15px; }
-.gen .x { background:none; border:none; cursor:pointer; color:var(--muted); font-size:16px; padding:2px 6px; }
-.gen .x:disabled { visibility:hidden; }
-.gen textarea { min-height:78px; }
-.gen .count { text-align:right; font-size:11px; color:var(--muted); margin-top:2px; }
-.gen .opts { display:flex; gap:10px; margin:8px 0; flex-wrap:wrap; }
-.gen .opts label { display:flex; align-items:center; gap:5px; color:#c4ccda; }
-.gen .refine { display:flex; align-items:center; gap:6px; margin:6px 0; color:#c4ccda; }
-.gen .refine.off { color:var(--muted); }
-.gen .try { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0; }
+.gen { position:absolute; right:316px; bottom:40px; width:400px; height:540px; display:none; box-sizing:border-box; flex-direction:column; z-index:6;
+  background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 36px rgba(0,0,0,0.5); overflow:hidden; }
+.gen.on { display:flex; }
+.gen .grip { position:absolute; left:0; top:0; width:18px; height:18px; cursor:nwse-resize; z-index:2; touch-action:none; }
+.gen .grip::before { content:''; position:absolute; left:4px; top:4px; width:9px; height:9px; border-left:2px solid var(--muted); border-top:2px solid var(--muted); border-radius:2px 0 0 0; opacity:0.6; }
+.gen .grip:hover::before { opacity:1; border-color:var(--text); }
+.gen .head { display:flex; align-items:center; gap:8px; padding:9px 10px 8px 26px; border-bottom:1px solid var(--line); flex-shrink:0; }
+.gen .head b { font-size:14px; white-space:nowrap; }
+.gen .head .quota { color:var(--muted); font-size:11px; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gen .head .quota.low { color:#ffcf70; }
+.gen .head button { background:none; border:none; cursor:pointer; color:var(--muted); font-size:13px; padding:2px 6px; border-radius:4px; white-space:nowrap; }
+.gen .head button:hover { color:var(--text); background:rgba(255,255,255,0.08); }
+.gen .list { flex:1; overflow:auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; min-height:0; }
+.gen .hello { color:var(--muted); line-height:1.5; }
+.gen .msg { max-width:92%; padding:7px 10px; border-radius:10px; line-height:1.45; overflow-wrap:anywhere; }
+.gen .msg.user { align-self:flex-end; background:rgba(42,184,255,0.18); border:1px solid rgba(42,184,255,0.35); white-space:pre-wrap; }
+.gen .msg.ai { align-self:flex-start; background:rgba(255,255,255,0.06); border:1px solid var(--line); }
+.gen .msg p { margin:0 0 6px; }
+.gen .msg p:last-child, .gen .msg ul:last-child, .gen .msg ol:last-child { margin-bottom:0; }
+.gen .msg ul, .gen .msg ol { margin:4px 0 6px; padding-left:20px; }
+.gen .msg code { background:rgba(0,0,0,0.35); padding:0 4px; border-radius:3px; font-size:12px; }
+.gen .msg h4 { margin:6px 0 4px; font-size:13px; }
+.gen .act { align-self:flex-start; font-size:12px; color:var(--muted); padding-left:4px; max-width:96%; }
+.gen .act .l { display:flex; gap:6px; }
+.gen .act .l::before { content:'✓'; color:#8de0a8; flex-shrink:0; }
+.gen .act.bad .l::before { content:'!'; color:#ffb060; }
+.gen .act .why { display:block; color:#ffb3b3; font-size:11px; margin:1px 0 0 14px; overflow-wrap:anywhere; }
+.gen .act details { margin:2px 0 0 14px; }
+.gen .act summary { cursor:pointer; color:#7fdcff; font-size:11px; }
+.gen .act pre { margin:3px 0 0; padding:5px 7px; max-height:150px; overflow:auto; background:rgba(0,0,0,0.3); border-radius:4px; font-size:11px; line-height:1.4; white-space:pre-wrap; color:#aeb8cb; }
+.gen .note { align-self:stretch; font-size:12px; padding:6px 9px; border-radius:6px; background:rgba(255,255,255,0.05); line-height:1.4; }
+.gen .note.warn { border-left:3px solid #ffb060; color:#ffe2bd; }
+.gen .note.err { border-left:3px solid #ff6b6b; color:#ffd0d0; }
+.gen .note.ok { border-left:3px solid #8de0a8; }
+.gen .note ul { margin:3px 0 0; padding-left:18px; }
+.gen .note .meta { color:var(--muted); font-size:11px; margin-top:3px; }
+.gen .working { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; padding:0 2px; }
+.gen .working i { width:8px; height:8px; border-radius:50%; background:var(--accent); animation:genpulse 0.9s infinite alternate; }
+@keyframes genpulse { from { opacity:0.25; } to { opacity:1; } }
+.gen .foot { border-top:1px solid var(--line); padding:8px 10px 10px; flex-shrink:0; }
+.gen .try { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:7px; }
 .gen .try button { text-align:left; background:none; border:1px solid var(--line); border-radius:12px; padding:3px 9px; color:var(--muted); cursor:pointer; font-size:11px; line-height:1.3; }
 .gen .try button:hover { color:var(--text); border-color:#59a; }
-.gen .quota { color:var(--muted); font-size:12px; margin:8px 0; }
-.gen .quota.low { color:#ffcf70; }
-.gen .go { display:flex; gap:8px; align-items:center; margin-top:6px; }
-.gen .steps { list-style:none; margin:10px 0 0; padding:0; font-size:12px; }
-.gen .steps li { padding:3px 0 3px 18px; position:relative; color:var(--muted); line-height:1.35; }
-.gen .steps li::before { content:'✓'; position:absolute; left:2px; color:#8de0a8; }
-.gen .steps li.now { color:var(--text); }
-.gen .steps li.now::before { content:'›'; color:var(--accent); animation:genpulse 0.9s infinite alternate; }
-.gen .steps li.bad::before { content:'!'; color:#ffb060; }
-.gen .steps li .why { display:block; color:#ffb3b3; font-size:11px; }
-.gen .steps li .plan { margin:3px 0 4px; padding:5px 7px; max-height:150px; overflow:auto; background:rgba(0,0,0,0.3); border-radius:4px; font-size:11px; line-height:1.45; color:#aeb8cb; }
-.gen .result { margin-top:10px; padding:8px 10px; border-radius:6px; background:rgba(255,255,255,0.05); line-height:1.4; }
-.gen .result.ok { border-left:3px solid #8de0a8; }
-.gen .result.warn { border-left:3px solid #ffb060; }
-.gen .result.err { border-left:3px solid #ff6b6b; color:#ffd0d0; }
-.gen .result ul { margin:4px 0 0; padding-left:18px; color:#c4ccda; }
-.gen .result .meta { color:var(--muted); font-size:11px; margin-top:6px; }
-@keyframes genpulse { from { opacity:0.3; } to { opacity:1; } }
+.gen .opts { display:flex; gap:10px; margin-bottom:7px; color:#c4ccda; font-size:12px; }
+.gen .opts label { display:flex; align-items:center; gap:5px; }
+.gen .compose { display:flex; gap:7px; align-items:flex-end; }
+.gen textarea { flex:1; min-height:38px; max-height:120px; resize:none; line-height:1.35; }
+.gen .compose .b { height:38px; }
+.gen .off { color:var(--muted); line-height:1.45; padding:2px 0; }
 .editor.live .bar, .editor.live .side { pointer-events:none; opacity:0.55; }
 .editor.live .bar [data-act="generate"] { pointer-events:auto; opacity:1; }
 `;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-interface Step {
-  text: string;
-  problems: string[];
-  /** More lines under the step: the plan, for the planning step. */
-  detail: string[];
-  bad: boolean;
+/** The little of markdown the model writes (bold, code, lists, headings) as safe HTML. */
+export function renderMarkdown(text: string): string {
+  const inline = (s: string) =>
+    esc(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+      .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>');
+  const out: string[] = [];
+  let list: 'ul' | 'ol' | null = null;
+  const close = () => {
+    if (list) out.push(`</${list}>`);
+    list = null;
+  };
+  for (const line of text.split('\n')) {
+    const bullet = /^\s*[-*•]\s+(.*)$/.exec(line);
+    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    const heading = /^\s*#{1,4}\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      const kind = bullet ? 'ul' : 'ol';
+      if (list !== kind) {
+        close();
+        out.push(`<${kind}>`);
+        list = kind;
+      }
+      out.push(`<li>${inline((bullet ?? numbered)![1])}</li>`);
+    } else if (heading) {
+      close();
+      out.push(`<h4>${inline(heading[1])}</h4>`);
+    } else if (line.trim() === '') {
+      close();
+    } else {
+      close();
+      out.push(`<p>${inline(line)}</p>`);
+    }
+  }
+  close();
+  return out.join('');
 }
 
 export class GeneratePanel {
   private readonly service: GeneratorService;
   private readonly host: GenerateHost;
   private readonly root: HTMLDivElement;
+  private readonly list: HTMLDivElement;
+  private readonly foot: HTMLDivElement;
+  private readonly quotaEl: HTMLSpanElement;
   private open = false;
   private quota: GenQuota | null = null;
-  private prompt = '';
   private kind: GenKind = 'auto';
   private size: GenSize = 'auto';
-  private refine = false;
+  /** What was said so far, as the server takes it back. */
+  private history: ChatMessage[] = [];
   /** The running job's id, or '' between asking the server to start it and its answer. */
   private job: string | null = null;
   private stopWatching: (() => void) | null = null;
   private cancelling = false;
-  private steps: Step[] = [];
-  private result: { tone: 'ok' | 'warn' | 'err'; html: string } | null = null;
+  private draft = '';
+  /** The last thing the model said this turn: the answer that goes into the history. */
+  private reply = '';
+  private working: HTMLDivElement | null = null;
+  private workingText: HTMLSpanElement | null = null;
+  private startedAt = 0;
+  private ticker: number | null = null;
+  private stage = '';
+  private turns: string[] = [];
 
   constructor(container: HTMLElement, service: GeneratorService, host: GenerateHost) {
     this.service = service;
@@ -119,11 +175,25 @@ export class GeneratePanel {
     document.head.appendChild(style);
     this.root = document.createElement('div');
     this.root.className = 'gen';
+    this.root.innerHTML = `
+      <div class="grip" title="Drag to resize"></div>
+      <div class="head"><b>Map assistant</b><span class="quota"></span><button data-act="clear" title="Start a new conversation (the map stays)">New chat</button><button data-act="close" title="Hide">▾</button></div>
+      <div class="list"></div>
+      <div class="foot"></div>`;
     container.appendChild(this.root);
+    this.list = this.root.querySelector('.list')!;
+    this.foot = this.root.querySelector('.foot')!;
+    this.quotaEl = this.root.querySelector('.quota')!;
+    this.restoreSize();
+    this.restoreHistory();
     this.root.addEventListener('click', (e) => this.onClick(e));
     this.root.addEventListener('input', (e) => this.onInput(e));
-    this.root.addEventListener('change', (e) => this.onInput(e));
-    // Keys typed in the prompt are not editor shortcuts (the editor already ignores textareas).
+    // (Not "change" on the text box: it fires when the box is replaced while it has focus, and would bring the sent text back.)
+    this.root.addEventListener('change', (e) => (e.target as HTMLElement).tagName !== 'TEXTAREA' && this.onInput(e));
+    this.root.addEventListener('keydown', (e) => this.onKey(e));
+    this.bindResize(this.root.querySelector('.grip')!);
+    this.renderList();
+    this.renderFoot();
   }
 
   get running(): boolean {
@@ -142,12 +212,14 @@ export class GeneratePanel {
   show(): void {
     this.open = true;
     this.root.classList.add('on');
-    this.render();
+    this.fitToWindow();
     if (!this.running) void this.loadQuota();
+    this.renderFoot();
+    this.root.querySelector<HTMLTextAreaElement>('textarea')?.focus();
   }
 
+  /** Hides the drawer; a running answer carries on and is there when it is shown again. */
   hide(): void {
-    if (this.running) return;
     this.open = false;
     this.root.classList.remove('on');
   }
@@ -158,76 +230,213 @@ export class GeneratePanel {
     this.stopWatching?.();
     this.stopWatching = null;
     this.job = null;
+    this.stopTicker();
     if (job) void this.service.cancel(job).catch(() => {});
     this.host.end(null, { keepSavedLink: true });
+    this.working?.remove();
+    this.working = null;
     this.hide();
   }
 
-  // ---------------------------------------------------------------- actions
+  // ---------------------------------------------------------------- what was said
+
+  /** The conversation survives a reload of the page (this tab only): the model keeps its context. */
+  private restoreHistory(): void {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(HISTORY_KEY) ?? '[]') as ChatMessage[];
+      if (Array.isArray(saved)) this.history = saved.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string').slice(-24);
+    } catch {
+      /* no storage: a fresh conversation */
+    }
+  }
+
+  private saveHistory(): void {
+    try {
+      sessionStorage.setItem(HISTORY_KEY, JSON.stringify(this.history));
+    } catch {
+      /* no storage */
+    }
+  }
+
+  // ---------------------------------------------------------------- size
+
+  private restoreSize(): void {
+    let w = DEFAULT_SIZE.w;
+    let h = DEFAULT_SIZE.h;
+    try {
+      const saved = JSON.parse(localStorage.getItem(SIZE_KEY) ?? 'null') as { w?: number; h?: number } | null;
+      if (saved && Number.isFinite(saved.w) && Number.isFinite(saved.h)) {
+        w = saved.w!;
+        h = saved.h!;
+      }
+    } catch {
+      /* no storage: the default size */
+    }
+    this.setSize(w, h);
+  }
+
+  private maxSize(): { w: number; h: number } {
+    // Left of the inspector (316 px) and below the top bar (46 px); never wider than most of the 3D view.
+    return { w: Math.max(MIN_SIZE.w, window.innerWidth - 316 - 240), h: Math.max(MIN_SIZE.h, window.innerHeight - 40 - 46 - 16) };
+  }
+
+  private setSize(w: number, h: number): void {
+    const max = this.maxSize();
+    this.root.style.width = `${Math.round(Math.min(Math.max(w, MIN_SIZE.w), max.w))}px`;
+    this.root.style.height = `${Math.round(Math.min(Math.max(h, MIN_SIZE.h), max.h))}px`;
+  }
+
+  private fitToWindow(): void {
+    this.setSize(this.root.offsetWidth || DEFAULT_SIZE.w, this.root.offsetHeight || DEFAULT_SIZE.h);
+  }
+
+  /** Dragging the top-left corner resizes the drawer, which stays anchored bottom-right. */
+  private bindResize(grip: HTMLElement): void {
+    grip.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      grip.setPointerCapture(e.pointerId);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const w0 = this.root.offsetWidth;
+      const h0 = this.root.offsetHeight;
+      const move = (m: PointerEvent) => this.setSize(w0 + (startX - m.clientX), h0 + (startY - m.clientY));
+      const up = () => {
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointercancel', up);
+        try {
+          localStorage.setItem(SIZE_KEY, JSON.stringify({ w: this.root.offsetWidth, h: this.root.offsetHeight }));
+        } catch {
+          /* no storage */
+        }
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointercancel', up);
+    });
+    window.addEventListener('resize', () => this.open && this.fitToWindow());
+  }
+
+  // ---------------------------------------------------------------- the conversation
 
   private async loadQuota(): Promise<void> {
     try {
       this.quota = await this.service.quota();
     } catch (e) {
       this.quota = null;
-      this.result = { tone: 'err', html: esc((e as Error).message) };
+      this.note('err', esc((e as Error).message));
     }
-    if (this.open) this.render();
+    this.renderFoot();
   }
 
-  private canRefine(): boolean {
-    const n = this.host.currentMap().pieces.length;
-    return n > 0 && n <= REFINE_PIECES_MAX;
+  private scrollDown(): void {
+    this.list.scrollTop = this.list.scrollHeight;
   }
 
-  private async start(): Promise<void> {
-    const prompt = this.prompt.replace(/\s+/g, ' ').trim();
-    if (prompt.length < GEN_PROMPT_MIN) return this.fail(`Describe the map in ${GEN_PROMPT_MIN}-${GEN_PROMPT_MAX} characters.`);
-    const refine = this.refine && this.canRefine();
-    const request: GenStartRequest = { prompt };
-    if (refine) request.baseMap = this.host.currentMap();
-    else {
+  private append(node: HTMLElement): void {
+    this.working?.remove();
+    this.list.querySelector('.hello')?.remove();
+    this.list.appendChild(node);
+    if (this.working && this.job !== null) this.list.appendChild(this.working);
+    this.scrollDown();
+  }
+
+  private bubble(role: 'user' | 'ai', text: string): void {
+    const el = document.createElement('div');
+    el.className = `msg ${role}`;
+    if (role === 'user') el.textContent = text;
+    else el.innerHTML = renderMarkdown(text);
+    this.append(el);
+  }
+
+  private note(tone: 'ok' | 'warn' | 'err', html: string): void {
+    const el = document.createElement('div');
+    el.className = `note ${tone}`;
+    el.innerHTML = html;
+    this.append(el);
+  }
+
+  private activity(summary: string, ok: boolean, problems: string[] = [], detail: string[] = []): void {
+    const el = document.createElement('div');
+    el.className = `act ${ok ? '' : 'bad'}`;
+    const why = problems.slice(0, 4).map((p) => `<span class="why">${esc(p)}</span>`).join('');
+    const more = detail.length ? `<details><summary>details</summary><pre>${esc(detail.join('\n'))}</pre></details>` : '';
+    el.innerHTML = `<div class="l"><span>${esc(summary)}</span></div>${why}${more}`;
+    this.append(el);
+  }
+
+  private renderList(): void {
+    this.list.innerHTML = '';
+    if (this.history.length > 0 && !this.running) {
+      const back = document.createElement('div');
+      back.className = 'hello';
+      const last = [...this.history].reverse().find((m) => m.role === 'assistant');
+      back.innerHTML = `Earlier in this conversation (${Math.floor(this.history.length / 2)} message${this.history.length === 2 ? '' : 's'}) is remembered.${last ? `<br><br>${renderMarkdown(last.text.slice(0, 600))}` : ''}`;
+      this.list.appendChild(back);
+    } else if (this.history.length === 0 && !this.running) {
+      const hello = document.createElement('div');
+      hello.className = 'hello';
+      hello.innerHTML = 'Tell me what to build or change. I edit the map in the editor with the tools the game gives me, check it builds, and (for puzzles) check that the exit can be reached. Ask for one small change and only that changes.';
+      this.list.appendChild(hello);
+    }
+  }
+
+  private async send(): Promise<void> {
+    const text = this.draft.replace(/\s+/g, ' ').trim();
+    if (this.running || text.length < GEN_PROMPT_MIN) return;
+    if (!this.quota) await this.loadQuota();
+    if (!this.canStart()) return;
+    const request: GenStartRequest = { prompt: text.slice(0, GEN_PROMPT_MAX), mode: 'chat', baseMap: this.host.currentMap(), history: this.history.slice(-20) };
+    if (this.history.length === 0) {
       request.kind = this.kind;
       request.size = this.size;
     }
-    this.steps = [];
-    this.result = null;
+    this.bubble('user', text);
+    this.draft = '';
+    this.reply = '';
+    this.turns = [];
     this.cancelling = false;
     this.job = '';
+    this.startWorking('Starting...');
     this.host.begin();
-    this.host.status(refine ? 'Changing the map...' : 'Generating a map...');
-    this.render();
+    this.host.status('Asking the assistant...');
+    this.renderFoot();
     let jobId: string;
     try {
       const started = await this.service.start(request);
       jobId = started.jobId;
       this.quota = started.quota;
     } catch (e) {
-      this.job = null;
+      this.finishRun();
       this.host.end(null, { keepSavedLink: true });
-      return this.fail((e as Error).message);
+      this.note('err', esc((e as Error).message));
+      this.host.status((e as Error).message, true);
+      this.renderFoot();
+      return;
     }
     this.job = jobId;
     this.stopWatching = this.service.watch(
       jobId,
-      (event) => this.onEvent(event, refine),
+      (event) => this.onEvent(event, text),
       (message) => {
         this.finishRun();
         this.host.end(null, { keepSavedLink: true });
-        this.fail(`${message} The generation may still finish on the server and count towards today's limit.`);
+        this.note('err', `${esc(message)} The answer may still finish on the server and count towards today's limit.`);
+        this.renderFoot();
       },
     );
-    this.render();
+    this.renderFoot();
   }
 
   private cancel(): void {
     if (!this.job || this.cancelling) return;
     this.cancelling = true;
-    this.render();
+    this.setWorking('Stopping...');
+    this.renderFoot();
     void this.service.cancel(this.job).catch((e: Error) => {
       this.cancelling = false;
-      this.host.status(`Could not cancel: ${e.message}`, true);
-      this.render();
+      this.host.status(`Could not stop: ${e.message}`, true);
+      this.renderFoot();
     });
   }
 
@@ -236,103 +445,128 @@ export class GeneratePanel {
     this.stopWatching = null;
     this.job = null;
     this.cancelling = false;
+    this.stopTicker();
+    this.working?.remove();
+    this.working = null;
+    this.workingText = null;
   }
 
-  private fail(message: string): void {
-    this.result = { tone: 'err', html: esc(message) };
-    this.host.status(message, true);
-    this.render();
+  private startWorking(text: string): void {
+    this.working?.remove();
+    const el = document.createElement('div');
+    el.className = 'working';
+    el.innerHTML = '<i></i><span></span>';
+    this.working = el;
+    this.workingText = el.querySelector('span');
+    this.stage = text;
+    this.startedAt = Date.now();
+    this.list.appendChild(el);
+    this.setWorking(text);
+    this.stopTicker();
+    this.ticker = window.setInterval(() => this.setWorking(this.stage), 1000);
+    this.scrollDown();
   }
 
-  private onEvent(event: JobEvent, refine: boolean): void {
+  private setWorking(text: string): void {
+    this.stage = text;
+    if (this.workingText) this.workingText.textContent = `${text} ${Math.round((Date.now() - this.startedAt) / 1000)} s`;
+  }
+
+  private stopTicker(): void {
+    if (this.ticker !== null) window.clearInterval(this.ticker);
+    this.ticker = null;
+  }
+
+  private onEvent(event: JobEvent, prompt: string): void {
     switch (event.type) {
-      case 'step': {
-        const prev = this.steps[this.steps.length - 1];
-        if (prev && prev.text === event.message) break;
-        this.steps.push({ text: event.message, problems: event.problems ?? [], detail: event.detail ?? [], bad: (event.problems?.length ?? 0) > 0 });
-        this.host.status(event.message);
+      case 'turn':
+        this.setWorking(event.n === 1 ? 'Thinking...' : `Working (step ${event.n})...`);
         break;
-      }
-      case 'start':
-        this.host.liveStart(event.head);
+      case 'say':
+        this.reply = event.text;
+        this.bubble('ai', event.text);
         break;
-      case 'piece':
-        this.host.livePiece(event.piece, event.index);
+      case 'tool':
+        this.turns.push(event.summary);
+        this.activity(event.summary, event.ok, event.problems, event.detail);
+        this.host.status(event.summary);
         break;
       case 'map':
         this.host.liveMap(event.map, event.ok);
         break;
+      case 'step':
+        // The older plan-and-draft pipeline's progress, not used by the chat.
+        this.host.status(event.message);
+        break;
+      case 'start':
+      case 'piece':
+        break;
       case 'done':
         this.finishRun();
-        this.onDone(event.outcome, refine);
+        this.onDone(event.outcome, prompt);
         return;
       case 'error':
         this.finishRun();
         this.host.end(null, { keepSavedLink: true });
         if (event.status === 'cancelled') {
-          this.result = { tone: 'warn', html: 'Cancelled. Nothing was changed.' };
-          this.host.status('Generation cancelled.');
+          this.note('warn', 'Stopped. The map is as it was.');
+          this.host.status('Stopped.');
         } else {
-          this.result = { tone: 'err', html: esc(event.message) };
+          this.note('err', esc(event.message));
           this.host.status(event.message, true);
         }
         void this.loadQuota();
         break;
     }
-    this.render();
   }
 
-  private onDone(outcome: PublicOutcome, refine: boolean): void {
+  private onDone(outcome: PublicOutcome, prompt: string): void {
     const list = (items: string[]) => (items.length ? `<ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '');
-    const meta = `${outcome.attempts} draft${outcome.attempts === 1 ? '' : 's'} · ${(outcome.tokens.input + outcome.tokens.output).toLocaleString()} tokens · ~$${outcome.costUsd.toFixed(3)}`;
-    if (!outcome.map) {
-      this.host.end(null, { keepSavedLink: true });
-      this.result = { tone: 'err', html: `The generator could not make a map from that.${list(outcome.problems)}<div class="meta">${meta}</div>` };
+    const meta = `${outcome.attempts} step${outcome.attempts === 1 ? '' : 's'} · ~$${outcome.costUsd.toFixed(3)}`;
+    // What the model said and what it did, for the next message's context.
+    const said = outcome.reply || this.reply;
+    this.history.push({ role: 'user', text: prompt }, { role: 'assistant', text: said || (outcome.map ? 'I changed the map.' : 'Done.') });
+    this.saveHistory();
+    if (outcome.map) {
+      this.host.end(outcome.map, { keepSavedLink: true });
+      this.host.status(outcome.ok ? 'The map was changed. Undo restores the previous one.' : 'The map was changed, but it still has problems. Undo restores the previous one.', !outcome.ok);
     } else {
-      this.host.end(outcome.map, { keepSavedLink: refine });
-      const name = esc(outcome.map.name);
-      if (outcome.ok) {
-        this.result = {
-          tone: 'ok',
-          html: `<b>${name}</b> is in the editor. Undo brings back what was there.${outcome.notes.length ? '<div class="meta">Worth knowing:</div>' + list(outcome.notes) : ''}${outcome.fixes.length ? '<div class="meta">Tidied automatically:</div>' + list(outcome.fixes.slice(0, 6)) : ''}<div class="meta">${meta}</div>`,
-        };
-        this.host.status(`Generated "${outcome.map.name}". Undo restores the previous map.`);
-      } else {
-        const why = outcome.stoppedBy === 'budget' ? 'the token budget ran out' : 'it ran out of attempts';
-        this.result = {
-          tone: 'warn',
-          html: `<b>${name}</b> is in the editor, but ${why} before it passed every check, so it may not play. Still wrong:${list(outcome.problems)}${outcome.notes.length ? '<div class="meta">Worth knowing:</div>' + list(outcome.notes) : ''}<div class="meta">${meta}</div>`,
-        };
-        this.host.status(`Generated "${outcome.map.name}" with ${outcome.problems.length} problem${outcome.problems.length === 1 ? '' : 's'} left. Undo restores the previous map.`, true);
-      }
+      this.host.end(null, { keepSavedLink: true });
     }
+    const parts: string[] = [];
+    if (outcome.map) parts.push(outcome.ok ? 'Done: the map is in the editor (Undo restores the previous one).' : 'The map is in the editor, but it does not pass every check:' + list(outcome.problems));
+    for (const n of outcome.notes) parts.push(esc(n));
+    if (outcome.fixes.length) parts.push(`<span class="meta">Tidied: ${esc(outcome.fixes.slice(0, 3).join('; '))}${outcome.fixes.length > 3 ? '...' : ''}</span>`);
+    this.note(outcome.ok && outcome.notes.length === 0 ? 'ok' : 'warn', `${parts.join('<br>')}<div class="meta">${meta}</div>`);
     void this.loadQuota();
-    this.render();
+    this.renderFoot();
   }
 
-  // ---------------------------------------------------------------- view
+  // ---------------------------------------------------------------- composer
 
   private onInput(e: Event): void {
     const el = e.target as HTMLInputElement;
     switch (el.dataset.f) {
-      case 'prompt': {
-        this.prompt = el.value.slice(0, GEN_PROMPT_MAX);
-        const count = this.root.querySelector('.count');
-        if (count) count.textContent = `${this.prompt.length} / ${GEN_PROMPT_MAX}`;
-        this.syncGo();
+      case 'prompt':
+        this.draft = el.value.slice(0, GEN_PROMPT_MAX);
+        this.syncSend();
         break;
-      }
       case 'kind':
         this.kind = el.value as GenKind;
         break;
       case 'size':
         this.size = el.value as GenSize;
         break;
-      case 'refine':
-        this.refine = el.checked;
-        this.render();
-        break;
     }
+  }
+
+  private onKey(e: KeyboardEvent): void {
+    if ((e.target as HTMLElement).dataset.f === 'prompt' && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      void this.send();
+    }
+    // Typing here is not an editor shortcut.
+    e.stopPropagation();
   }
 
   private onClick(e: MouseEvent): void {
@@ -342,74 +576,73 @@ export class GeneratePanel {
       case 'close':
         this.hide();
         break;
-      case 'go':
-        void this.start();
+      case 'clear':
+        if (this.running) break;
+        this.history = [];
+        this.reply = '';
+        this.saveHistory();
+        this.renderList();
+        this.renderFoot();
         break;
-      case 'cancel':
+      case 'send':
+        void this.send();
+        break;
+      case 'stop':
         this.cancel();
         break;
-      case 'example':
-        this.prompt = btn.dataset.text ?? '';
-        this.render();
+      case 'example': {
+        this.draft = btn.dataset.text ?? '';
+        this.renderFoot();
+        const area = this.root.querySelector<HTMLTextAreaElement>('textarea');
+        area?.focus();
         break;
+      }
     }
-  }
-
-  /** Generate is only possible with a usable description and quota left. */
-  private syncGo(): void {
-    const go = this.root.querySelector<HTMLButtonElement>('[data-act="go"]');
-    if (go) go.disabled = !this.canStart();
   }
 
   private canStart(): boolean {
     const q = this.quota;
-    return !!q && q.enabled && q.allowed && q.used < q.limit && this.prompt.trim().length >= GEN_PROMPT_MIN;
+    return !!q && q.enabled && q.allowed && q.used < q.limit;
   }
 
-  private render(): void {
-    if (!this.open) return;
+  private syncSend(): void {
+    const send = this.root.querySelector<HTMLButtonElement>('[data-act="send"]');
+    if (send) send.disabled = !this.canStart() || this.draft.trim().length < GEN_PROMPT_MIN;
+  }
+
+  private renderFoot(): void {
     const q = this.quota;
     const busy = this.running;
-    const refinable = this.canRefine();
-    const refine = this.refine && refinable;
-    const examples = refine ? REFINE_EXAMPLES : NEW_EXAMPLES;
-    const opt = (v: string, cur: string, label: string) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
     const left = q ? Math.max(0, q.limit - q.used) : null;
-    let quotaLine = '';
-    if (q && !q.enabled) quotaLine = 'The map generator is not set up on this server.';
-    else if (q && !q.allowed) quotaLine = 'Your account has no map generator right. Ask the admin to grant it.';
-    else if (left !== null) quotaLine = left > 0 ? `${left} of ${q!.limit} generations left today.` : `You have used all ${q!.limit} generations for today.`;
-
-    const steps = this.steps
-      .map((s, i) => {
-        const now = busy && i === this.steps.length - 1;
-        const detail = s.detail.length ? `<div class="plan">${s.detail.map((l) => `<div>${esc(l)}</div>`).join('')}</div>` : '';
-        return `<li class="${now ? 'now' : s.bad ? 'bad' : ''}">${esc(s.text)}${detail}${s.problems.slice(0, 4).map((p) => `<span class="why">${esc(p)}</span>`).join('')}</li>`;
-      })
-      .join('');
-
-    this.root.innerHTML = `
-      <div class="head"><b>Generate a map</b><button class="x" data-act="close" ${busy ? 'disabled' : ''} title="Close">✕</button></div>
-      <textarea data-f="prompt" maxlength="${GEN_PROMPT_MAX}" ${busy ? 'disabled' : ''} placeholder="${refine ? 'What should change? e.g. make the platforms higher' : 'Describe the map: its kind, shape, hazards, how it should play...'}">${esc(this.prompt)}</textarea>
-      <div class="count">${this.prompt.length} / ${GEN_PROMPT_MAX}</div>
-      <label class="refine ${refinable ? '' : 'off'}" title="${refinable ? 'Send the map in the editor along with your description and have it changed' : `Only maps with 1-${REFINE_PIECES_MAX} pieces can be changed`}">
-        <input type="checkbox" data-f="refine" ${refine ? 'checked' : ''} ${busy || !refinable ? 'disabled' : ''}> Change the map in the editor instead of making a new one</label>
-      <div class="opts" ${refine ? 'hidden' : ''}>
-        <label>Type <select data-f="kind" ${busy ? 'disabled' : ''}>${opt('auto', this.kind, 'Auto')}${opt('combat', this.kind, 'Combat')}${opt('puzzle', this.kind, 'Puzzle')}</select></label>
-        <label>Size <select data-f="size" ${busy ? 'disabled' : ''}>${opt('auto', this.size, 'Auto')}${opt('small', this.size, 'Small')}${opt('medium', this.size, 'Medium')}${opt('large', this.size, 'Large')}</select></label>
-      </div>
-      ${busy ? '' : `<div class="try">${examples.map((t) => `<button data-act="example" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div>`}
-      <div class="quota ${left === 0 ? 'low' : ''}">${esc(quotaLine)}</div>
-      <div class="go">
+    this.quotaEl.textContent = left === null ? '' : `${left} left today`;
+    this.quotaEl.title = left === null ? '' : `${left} of ${q!.limit} messages left in the last 24 hours`;
+    this.quotaEl.classList.toggle('low', left === 0);
+    let blocked = '';
+    if (q && !q.enabled) blocked = 'The map assistant is not set up on this server.';
+    else if (q && !q.allowed) blocked = 'Your account has no map generator right. Ask the admin to grant it.';
+    else if (left === 0) blocked = `You have used all ${q!.limit} messages for today.`;
+    const opt = (v: string, cur: string, label: string) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+    const pieces = JSON.stringify(this.host.currentMap().pieces);
+    const blank = [blankMap(), blankPuzzle()].some((t) => JSON.stringify(t.pieces) === pieces);
+    const examples = this.history.length === 0 ? (blank ? NEW_EXAMPLES : EDIT_EXAMPLES) : [];
+    this.foot.innerHTML = `
+      ${blocked ? `<div class="off">${esc(blocked)}</div>` : ''}
+      ${!busy && examples.length ? `<div class="try">${examples.map((t) => `<button data-act="example" data-text="${esc(t)}">${esc(t)}</button>`).join('')}</div>` : ''}
+      ${
+        this.history.length === 0 && !busy
+          ? `<div class="opts"><label>Type <select data-f="kind">${opt('auto', this.kind, 'Auto')}${opt('combat', this.kind, 'Combat')}${opt('puzzle', this.kind, 'Puzzle')}</select></label>
+             <label>Size <select data-f="size">${opt('auto', this.size, 'Auto')}${opt('small', this.size, 'Small')}${opt('medium', this.size, 'Medium')}${opt('large', this.size, 'Large')}</select></label></div>`
+          : ''
+      }
+      <div class="compose">
+        <textarea data-f="prompt" maxlength="${GEN_PROMPT_MAX}" rows="1" ${busy || blocked ? 'disabled' : ''} placeholder="${busy ? 'Working...' : this.history.length ? 'Ask for a change...' : 'Describe a map, or a change to this one...'}">${esc(this.draft)}</textarea>
         ${
           busy
-            ? `<button class="b danger" data-act="cancel" ${this.cancelling ? 'disabled' : ''}>${this.cancelling ? 'Cancelling...' : 'Cancel'}</button>`
-            : `<button class="b primary" data-act="go" ${this.canStart() ? '' : 'disabled'}>${refine ? 'Change map' : 'Generate'}</button>`
+            ? `<button class="b danger" data-act="stop" ${this.cancelling ? 'disabled' : ''}>${this.cancelling ? 'Stopping' : 'Stop'}</button>`
+            : `<button class="b primary" data-act="send" ${this.canStart() && this.draft.trim().length >= GEN_PROMPT_MIN ? '' : 'disabled'}>Send</button>`
         }
-      </div>
-      ${steps ? `<ul class="steps">${steps}</ul>` : ''}
-      ${this.result ? `<div class="result ${this.result.tone}">${this.result.html}</div>` : ''}`;
+      </div>`;
     const area = this.root.querySelector<HTMLTextAreaElement>('textarea');
-    if (area && !busy && document.activeElement !== area && this.prompt === '') area.focus();
+    if (area && !busy && this.open && document.activeElement !== area && !blocked) area.focus();
   }
 }

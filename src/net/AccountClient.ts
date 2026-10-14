@@ -130,7 +130,7 @@ export class AccountClient {
       closed = true;
       source.close();
     };
-    for (const type of ['step', 'start', 'piece', 'map', 'done', 'error'] as const) {
+    for (const type of ['turn', 'say', 'tool', 'step', 'start', 'piece', 'map', 'done', 'error'] as const) {
       source.addEventListener(type, (m) => {
         let event: JobEvent;
         try {

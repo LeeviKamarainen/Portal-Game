@@ -17,7 +17,26 @@ export interface NodeSettings {
   maxTokens: number;
 }
 
+/** The map chat's tool loop (agent.ts). */
+export interface AgentSettings {
+  model: string;
+  thinking: 'off' | 'adaptive';
+  effort: Effort;
+  /** Output cap of one model turn. */
+  maxTokens: number;
+  /** Model turns (calls) at most per message. */
+  maxTurns: number;
+  /** List-price dollars at most per message. */
+  maxUsd: number;
+  /** A prompt larger than this many tokens ends the turn (the cheap price tier ends at 100K). */
+  maxPromptTokens: number;
+  /** Wall-clock limit per message, seconds. */
+  maxSeconds: number;
+}
+
 export interface GenConfig {
+  /** The chat: one model with tools. */
+  agent: AgentSettings;
   /** The planning step and the review step: small outputs. */
   fast: NodeSettings;
   /** Drafting and repairing a whole map. */
@@ -71,8 +90,13 @@ export const pricesFor = (model: string): Prices => (model.includes('sonnet') ? 
 export function configFor(config: GenConfig, genModel: GenModel, env: Record<string, string | undefined> = process.env): GenConfig {
   if (genModel !== 'sonnet') return config;
   const model = env.GEN_MODEL_SONNET || SONNET;
-  return { ...config, fast: { ...config.fast, model }, draft: { ...config.draft, model } };
+  // Sonnet costs about 20x as much per token: the dollar limit of one message is raised to match.
+  const maxUsd = Number(env.GEN_AGENT_MAX_USD_SONNET) > 0 ? Number(env.GEN_AGENT_MAX_USD_SONNET) : SONNET_AGENT_USD;
+  return { ...config, agent: { ...config.agent, model, maxUsd }, fast: { ...config.fast, model }, draft: { ...config.draft, model } };
 }
+
+/** What one chat message may spend on Sonnet, list price (a typical one is a few cents). */
+const SONNET_AGENT_USD = 0.75;
 
 const pick = <T extends string>(v: string | undefined, allowed: readonly T[], fallback: T): T => (allowed.includes(v as T) ? (v as T) : fallback);
 const int = (v: string | undefined, fallback: number): number => {
@@ -80,8 +104,26 @@ const int = (v: string | undefined, fallback: number): number => {
   return v !== undefined && Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 };
 
+const num = (v: string | undefined, fallback: number): number => {
+  const n = Number(v);
+  return v !== undefined && Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): GenConfig {
   return {
+    agent: {
+      model: env.GEN_MODEL_AGENT || env.GEN_MODEL_DRAFT || HAIKU,
+      // Hidden thinking before the first edit can eat a whole turn's output (measured: 16K tokens, nothing
+      // built, $0.19 on Sonnet). The plan is written in the answer instead, where the user can read it, and
+      // the model reasons between tool calls, about what the tools reported.
+      thinking: pick(env.GEN_AGENT_THINKING, ['off', 'adaptive'], 'off'),
+      effort: pick(env.GEN_AGENT_EFFORT, ['low', 'medium', 'high'], 'medium'),
+      maxTokens: int(env.GEN_AGENT_MAX_TOKENS, 16_000),
+      maxTurns: int(env.GEN_AGENT_MAX_TURNS, 40),
+      maxUsd: num(env.GEN_AGENT_MAX_USD, 0.12),
+      maxPromptTokens: int(env.GEN_MAX_CALL_INPUT_TOKENS, 100_000) * 0.9,
+      maxSeconds: int(env.GEN_AGENT_MAX_SECONDS, 300),
+    },
     fast: {
       model: env.GEN_MODEL_FAST || HAIKU,
       thinking: 'off',

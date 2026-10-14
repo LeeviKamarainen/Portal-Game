@@ -119,6 +119,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     llm: options.generator?.llm ?? null,
     config: options.generator?.config ?? loadConfig(),
     check: options.generator?.check ?? checker!.check,
+    routes: checker ? checker.routes : undefined,
+    playtest: checker ? checker.playtest : undefined,
     log,
   });
   const generate = new GenerateApi({ jobs, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });

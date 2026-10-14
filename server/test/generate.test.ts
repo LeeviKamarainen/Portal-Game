@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer, type RunningServer, type ServerOptions } from '../main';
-import { BUILT_IN_MAPS } from '../../src/editor/templates';
+import { BUILT_IN_MAPS, blankPuzzle } from '../../src/editor/templates';
 import { checkGenerated } from '../gen/check';
 import { loadConfig, type GenConfig } from '../gen/config';
 import { GenError, type Llm } from '../gen/llm';
@@ -19,7 +19,7 @@ import type { Blueprint } from '../gen/blueprint';
 import { combatExample } from '../gen/blueprintExamples';
 import { toWire } from '../gen/wire';
 import { SqliteStore } from '../store/SqliteStore';
-import { FakeLlm } from './fakeLlm';
+import { ChatFakeLlm, FakeLlm, call as toolCall, say } from './fakeLlm';
 
 const highwire = () => BUILT_IN_MAPS[0].data();
 const brief: Blueprint = { ...combatExample(), notes: ['Approximate.'] };
@@ -92,7 +92,8 @@ async function events(s: RunningServer, jobId: string, cookie: string, lastEvent
   return { status: 200, list, type: res.headers.get('content-type') };
 }
 
-const start = (s: RunningServer, cookie: string, body: object = { prompt: 'a pvp map with tiers' }) => call(s, 'POST', '/api/generate', cookie, body);
+/** Starts a generation with the plan-and-draft pipeline (the chat has its own tests below). */
+const start = (s: RunningServer, cookie: string, body: object = { prompt: 'a pvp map with tiers' }) => call(s, 'POST', '/api/generate', cookie, { mode: 'plan', ...body });
 
 test('without an API key the generator is off; logins and rights are still required first', async () => {
   await withGenerator(null, config(), async (s) => {
@@ -379,3 +380,93 @@ test('a refinement sends the map along: no planning, the change is made, bad bas
     assert.equal(huge.status, 413);
   });
 });
+
+// ---------------------------------------------------------------- the chat
+
+const chat = (s: RunningServer, cookie: string, body: object) => call(s, 'POST', '/api/generate', cookie, body);
+
+test('the chat is the default: the map goes in, turn, say, tool and map events stream out, and the answer ends it', async () => {
+  const model = new ChatFakeLlm(
+    [
+      [say('Adding a ledge.'), toolCall('edit_map', { ops: [{ op: 'add', piece: { type: 'block', at: [6, 0, 6], size: [3, 1, 3], portal: ['top'] } }] })],
+      [toolCall('validate_map')],
+      [say('Added a ledge by the spawn.')],
+    ],
+    { input: 1_000, output: 400, cacheRead: 20_000 },
+  );
+  await withGenerator(() => model as unknown as Llm, config(), async (s) => {
+    const ada = await signUp(s, 'Ada');
+    const history = [
+      { role: 'user', text: 'a small puzzle' },
+      { role: 'assistant', text: 'Built it.' },
+    ];
+    const started = await chat(s, ada, { prompt: 'add a small ledge', baseMap: blankPuzzle(), history });
+    assert.equal(started.status, 202);
+    const { list } = await events(s, started.body.jobId, ada);
+    const types = list.map((e) => e.event);
+    assert.deepEqual(types.filter((t, i) => types.indexOf(t) === i), ['turn', 'say', 'tool', 'map', 'done']);
+    const edit = list.find((e) => e.event === 'tool')!;
+    assert.equal(edit.data.tool, 'edit_map');
+    assert.match(edit.data.summary, /added 1 piece/);
+    const done = list[list.length - 1].data;
+    assert.equal(done.status, 'ok');
+    assert.equal(done.outcome.ok, true);
+    assert.equal(done.outcome.reply, 'Added a ledge by the spawn.');
+    assert.equal(done.outcome.map.pieces.length, blankPuzzle().pieces.length + 1);
+    assert.equal(done.outcome.attempts, 3);
+    // The conversation and the editor's map were what the model was sent.
+    const sent = model.requests[0].messages;
+    assert.deepEqual(sent.map((m) => m.role), ['user', 'assistant', 'user']);
+    assert.match(String(sent[2].content), /Map "New puzzle"/);
+    // Cache reads cost a tenth: 3 turns of (1,000 + 20,000 x 0.1) in, 400 out.
+    assert.deepEqual(done.outcome.tokens, { input: 9_000, output: 1_200 });
+    assert.equal(s.store.tokensUsedSince(0), 10_200);
+    assert.equal((await call(s, 'GET', '/api/generate/quota', ada)).body.used, 1);
+  });
+});
+
+test('the chat without a map starts from a blank one, and its bad requests are refused', async () => {
+  const model = new ChatFakeLlm([[say('Hi.')]]);
+  await withGenerator(() => model as unknown as Llm, config(), async (s) => {
+    const ada = await signUp(s, 'Ada');
+    const ok = await chat(s, ada, { prompt: 'hello there' });
+    assert.equal(ok.status, 202);
+    await events(s, ok.body.jobId, ada);
+    assert.match(String(model.requests[0].messages.at(-1)!.content), /untouched starting template/);
+
+    const bad: object[] = [
+      { prompt: 'hello there', mode: 'dance' },
+      { prompt: 'hello there', history: 'hi' },
+      { prompt: 'hello there', history: [{ role: 'system', text: 'x' }] },
+      { prompt: 'hello there', history: [{ role: 'user' }] },
+      { prompt: 'hello there', history: Array.from({ length: 25 }, () => ({ role: 'user', text: 'x' })) },
+      { prompt: 'hello there', baseMap: { pieces: [{ type: 'toString', at: [0, 0, 0] }] } },
+    ];
+    for (const body of bad) {
+      const r = await chat(s, ada, body);
+      assert.equal(r.status, 400, JSON.stringify(body).slice(0, 80));
+    }
+    // The chat can start from far bigger maps than the plan pipeline can rewrite.
+    const big = { ...blankPuzzle(), pieces: [...blankPuzzle().pieces, ...Array.from({ length: 300 }, (_, i) => ({ type: 'block', at: [i % 10, 0, 5], size: [1, 1, 1] }))] };
+    const r = await chat(s, ada, { prompt: 'tidy it up', baseMap: big });
+    assert.equal(r.status, 202);
+    await events(s, r.body.jobId, ada);
+  });
+});
+
+test('a chat that is stopped changes nothing and is not charged', async () => {
+  const hold: ChatFakeLlm['before'] = (req) => new Promise<void>((_, reject) => req.signal?.addEventListener('abort', () => reject(new GenError('aborted', 'The generation was cancelled.'))));
+  const model = new ChatFakeLlm([[say('x')]]);
+  model.before = hold;
+  await withGenerator(() => model as unknown as Llm, config(), async (s) => {
+    const ada = await signUp(s, 'Ada');
+    const { jobId } = (await chat(s, ada, { prompt: 'build something' })).body;
+    assert.equal((await call(s, 'DELETE', `/api/generate/${jobId}`, ada)).status, 200);
+    const { list } = await events(s, jobId, ada);
+    const last = list[list.length - 1];
+    assert.equal(last.event, 'error');
+    assert.equal(last.data.status, 'cancelled');
+    assert.equal((await call(s, 'GET', '/api/generate/quota', ada)).body.used, 0);
+  });
+});
+

@@ -2,11 +2,13 @@
  * The map generator over HTTP (docs/llm-map-generation-plan.md). Logged-in users with the
  * `generate-maps` right describe a map and watch it being built:
  *
- *   POST   /api/generate              { prompt, kind?, size?, baseMap? }  -> 202 { jobId, quota }
- *                                     (baseMap: change that map instead of designing a new one)
+ *   POST   /api/generate              { prompt, mode?, kind?, size?, baseMap?, history? }  -> 202 { jobId, quota }
+ *                                     (chat, the default: baseMap is the editor's map, history the conversation so far;
+ *                                     mode "plan" is the older plan-and-draft pipeline)
  *   GET    /api/generate/quota        what you may do today: { used, limit, allowed, enabled }
  *   GET    /api/generate/:id          the job's state and, once finished, its outcome
- *   GET    /api/generate/:id/events   server-sent events: step, start, piece, map, then done or error.
+ *   GET    /api/generate/:id/events   server-sent events: turn, say, tool, map (chat; step, start, piece in plan
+ *                                     mode), then done or error.
  *                                     Reconnect with Last-Event-ID (or ?after=) to catch up.
  *   DELETE /api/generate/:id          cancel
  *

@@ -3,13 +3,17 @@ import { hasRight, type Store, type User } from '../store/Store';
 import { ApiError } from '../auth/http';
 import { RateLimiter } from '../auth/RateLimiter';
 import type { MapData } from '../../src/world/maps/MapFormat';
-import { isTerminalEvent, type JobEvent, type PublicOutcome } from '../../src/net/generate';
-import { cleanBaseMap } from './base';
-import type { CheckResult } from './check';
+import { blankMap } from '../../src/editor/templates';
+import { GEN_HISTORY_MAX, GEN_HISTORY_TEXT_MAX, isTerminalEvent, type JobEvent, type PublicOutcome } from '../../src/net/generate';
+import { runAgent, type AgentOutcome, type ChatTurn } from './agent';
+import { cleanBaseMap, cleanChatMap } from './base';
+import { checkGenerated, type CheckOptions, type CheckResult } from './check';
 import { configFor, pricesFor, type GenConfig } from './config';
 import { generateMap, type GenOutcome } from './graph';
-import { BudgetedLlm, GenError, estimateCostUsd, type Llm } from './llm';
+import { BudgetedLlm, GenError, billedTokens, estimateCostUsd, type Llm } from './llm';
 import type { GenRequest } from './prompts';
+import { playtest, type PlayReport, type PlayStep } from './playtest';
+import { analyzeRoutes, type RouteReport } from './routes';
 
 /**
  * Runs map generations for logged-in users (docs/llm-map-generation-plan.md, milestone 3):
@@ -32,10 +36,17 @@ export interface StoredEvent {
 
 export const isTerminal = isTerminalEvent;
 
+/** What a start request asks for: the chat (default) or the older plan-and-draft pipeline. */
+export interface JobRequest extends GenRequest {
+  mode: 'chat' | 'plan';
+  /** The conversation so far (chat only), oldest first. */
+  history: ChatTurn[];
+}
+
 export class Job {
   readonly id: string;
   readonly userId: number;
-  readonly request: GenRequest;
+  readonly request: JobRequest;
   readonly createdAt: number;
   status: JobStatus = 'running';
   finishedAt: number | null = null;
@@ -47,7 +58,7 @@ export class Job {
   done: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<(e: StoredEvent) => void>();
 
-  constructor(id: string, userId: number, request: GenRequest, createdAt: number) {
+  constructor(id: string, userId: number, request: JobRequest, createdAt: number) {
     this.id = id;
     this.userId = userId;
     this.request = request;
@@ -74,7 +85,11 @@ export interface JobManagerOptions {
   llm: (() => Llm) | null;
   config: GenConfig;
   /** Checks a map; the server passes the worker-thread one. Default: in-process. */
-  check?: (map: MapData) => Promise<CheckResult>;
+  check?: (map: MapData, options?: CheckOptions) => Promise<CheckResult>;
+  /** Route analysis for the chat's tools; the server passes the worker-thread one. Default: in-process. */
+  routes?: (map: MapData) => Promise<RouteReport>;
+  /** Scripted playtests for the chat's tools; likewise. */
+  playtest?: (map: MapData, steps: PlayStep[]) => Promise<PlayReport>;
   log?: (line: string) => void;
   now?: () => number;
   /** How long a finished job stays available to viewers (default 10 minutes). */
@@ -85,6 +100,7 @@ const DAY_MS = 24 * 3600 * 1000;
 const PROMPT_MIN = 3;
 const KINDS = ['auto', 'combat', 'puzzle'] as const;
 const SIZES = ['auto', 'small', 'medium', 'large'] as const;
+const MODES = ['chat', 'plan'] as const;
 
 export class JobManager {
   private readonly opts: JobManagerOptions;
@@ -173,7 +189,7 @@ export class JobManager {
     await Promise.all(running.map((j) => j.done));
   }
 
-  private requestOf(input: Record<string, unknown>): GenRequest {
+  private requestOf(input: Record<string, unknown>): JobRequest {
     const prompt = typeof input.prompt === 'string' ? input.prompt.replace(/\s+/g, ' ').trim() : '';
     const max = this.config.limits.promptMax;
     if (prompt.length < PROMPT_MIN || prompt.length > max) throw new ApiError(400, 'invalid', `Describe the map in ${PROMPT_MIN}-${max} characters.`);
@@ -181,8 +197,25 @@ export class JobManager {
     const size = input.size === undefined ? 'auto' : input.size;
     if (!KINDS.includes(kind as never)) throw new ApiError(400, 'invalid', `kind is one of: ${KINDS.join(', ')}.`);
     if (!SIZES.includes(size as never)) throw new ApiError(400, 'invalid', `size is one of: ${SIZES.join(', ')}.`);
-    const request: GenRequest = { prompt, kind: kind as GenRequest['kind'], size: size as GenRequest['size'] };
-    if (input.baseMap !== undefined) {
+    const mode = input.mode === undefined ? 'chat' : input.mode;
+    if (!MODES.includes(mode as never)) throw new ApiError(400, 'invalid', `mode is one of: ${MODES.join(', ')}.`);
+    const request: JobRequest = { prompt, kind: kind as GenRequest['kind'], size: size as GenRequest['size'], mode: mode as JobRequest['mode'], history: [] };
+    if (mode === 'chat') {
+      // The chat always has a map to change: the editor's, or a blank one.
+      if (input.baseMap !== undefined) {
+        const base = cleanChatMap(input.baseMap);
+        if ('error' in base) throw new ApiError(400, 'invalid', base.error);
+        request.baseMap = base.map;
+      } else request.baseMap = blankMap();
+      if (input.history !== undefined) {
+        if (!Array.isArray(input.history) || input.history.length > GEN_HISTORY_MAX) throw new ApiError(400, 'invalid', `history is a list of at most ${GEN_HISTORY_MAX} messages.`);
+        for (const m of input.history as unknown[]) {
+          const t = m as { role?: unknown; text?: unknown };
+          if (!t || (t.role !== 'user' && t.role !== 'assistant') || typeof t.text !== 'string') throw new ApiError(400, 'invalid', 'each history message needs a role (user or assistant) and text.');
+          request.history.push({ role: t.role, text: t.text.slice(0, GEN_HISTORY_TEXT_MAX) });
+        }
+      }
+    } else if (input.baseMap !== undefined) {
       const base = cleanBaseMap(input.baseMap);
       if ('error' in base) throw new ApiError(400, 'invalid', base.error);
       request.baseMap = base.map;
@@ -193,21 +226,38 @@ export class JobManager {
   private async run(job: Job, user: User): Promise<void> {
     // The model is the admin's choice for this player, read when the run starts.
     const config = configFor(this.config, user.genModel);
-    const prices = pricesFor(config.draft.model);
+    const model = job.request.mode === 'chat' ? config.agent.model : config.draft.model;
+    const prices = pricesFor(model);
     const llm = new BudgetedLlm(this.opts.llm!(), config);
     let status: JobStatus = 'failed';
     let error: { code: string; message: string } | null = null;
-    let outcome: GenOutcome | null = null;
+    let outcome: PublicOutcome | null = null;
+    // What the quota counts: the plan pipeline counts every token; a chat re-reads its prompt every
+    // turn, so it counts what was billed (cache reads at a tenth).
+    let tokens = (): { input: number; output: number } => ({ input: llm.used.input + llm.used.cacheRead + llm.used.cacheWrite, output: llm.used.output });
+    if (job.request.mode === 'chat') tokens = () => ({ input: billedTokens(llm.used), output: llm.used.output });
     try {
-      outcome = await generateMap(job.request, {
-        llm,
-        config,
-        check: this.opts.check,
-        signal: job.abort.signal,
-        emit: (e) => job.push({ type: 'step', node: e.node, message: e.message, ...(e.problems ? { problems: e.problems } : {}), ...(e.detail ? { detail: e.detail } : {}) }),
-        onPartial: (e) => job.push(e),
-      });
-      status = outcome.ok ? 'ok' : 'partial';
+      if (job.request.mode === 'chat') {
+        const result = await this.chat(job, llm, config);
+        status = result.ok ? 'ok' : 'partial';
+        outcome = {
+          ok: result.ok,
+          map: result.map,
+          problems: result.problems,
+          notes: result.notes,
+          fixes: result.fixes,
+          attempts: result.turns,
+          stoppedBy: result.stoppedBy === 'turns' ? 'attempts' : result.stoppedBy,
+          tokens: tokens(),
+          costUsd: estimateCostUsd(llm.used, prices),
+          reply: result.reply,
+        };
+      } else {
+        const result = await this.plan(job, llm, config);
+        status = result.ok ? 'ok' : 'partial';
+        const { ok, map, problems, notes, fixes, attempts, stoppedBy } = result;
+        outcome = { ok, map, problems, notes, fixes, attempts, stoppedBy, tokens: tokens(), costUsd: estimateCostUsd(llm.used, prices) };
+      }
     } catch (e) {
       if (e instanceof GenError) {
         status = e.code === 'aborted' ? 'cancelled' : 'failed';
@@ -218,22 +268,45 @@ export class JobManager {
       }
     }
 
-    const used = llm.used;
+    const used = tokens();
     this.store.finishGeneration(job.id, {
       status: job.interrupted ? 'interrupted' : status,
       attempts: outcome?.attempts ?? 0,
-      tokensIn: used.input + used.cacheRead + used.cacheWrite,
+      tokensIn: used.input,
       tokensOut: used.output,
       error: error ? `${error.code}: ${error.message}` : null,
     });
-    this.log(`generation ${job.id} for ${user.name}: ${job.interrupted ? 'interrupted' : status}, ${llm.usedTokens} tokens on ${config.draft.model}, ~$${estimateCostUsd(used, prices).toFixed(4)}`);
+    this.log(`generation ${job.id} for ${user.name}: ${job.interrupted ? 'interrupted' : status}, ${job.request.mode}, ${used.input + used.output} tokens on ${model}, ~$${estimateCostUsd(llm.used, prices).toFixed(4)}`);
     job.status = status;
     job.finishedAt = this.now();
-    if (outcome) {
-      const { ok, map, problems, notes, fixes, attempts, stoppedBy } = outcome;
-      job.push({ type: 'done', status: ok ? 'ok' : 'partial', outcome: { ok, map, problems, notes, fixes, attempts, stoppedBy, tokens: { input: used.input + used.cacheRead + used.cacheWrite, output: used.output }, costUsd: estimateCostUsd(used, prices) } });
-    } else {
-      job.push({ type: 'error', status: status === 'cancelled' ? 'cancelled' : 'failed', code: error!.code, message: error!.message });
-    }
+    if (outcome) job.push({ type: 'done', status: outcome.ok ? 'ok' : 'partial', outcome: { ...outcome, tokens: used } });
+    else job.push({ type: 'error', status: status === 'cancelled' ? 'cancelled' : 'failed', code: error!.code, message: error!.message });
+  }
+
+  private plan(job: Job, llm: BudgetedLlm, config: GenConfig): Promise<GenOutcome> {
+    return generateMap(job.request, {
+      llm,
+      config,
+      check: this.opts.check,
+      signal: job.abort.signal,
+      emit: (e) => job.push({ type: 'step', node: e.node, message: e.message, ...(e.problems ? { problems: e.problems } : {}), ...(e.detail ? { detail: e.detail } : {}) }),
+      onPartial: (e) => job.push(e),
+    });
+  }
+
+  private chat(job: Job, llm: BudgetedLlm, config: GenConfig): Promise<AgentOutcome> {
+    const check = this.opts.check ?? checkGenerated;
+    return runAgent(
+      { prompt: job.request.prompt, kind: job.request.kind, size: job.request.size, baseMap: job.request.baseMap ?? blankMap(), history: job.request.history },
+      {
+        llm,
+        settings: config.agent,
+        prices: pricesFor(config.agent.model),
+        // The user's own pieces keep their hidden faces; the model cannot write any.
+        env: { check: (map) => check(map, { keepHidden: true }), routes: this.opts.routes ?? analyzeRoutes, playtest: this.opts.playtest ?? playtest },
+        signal: job.abort.signal,
+        emit: (e) => job.push(e),
+      },
+    );
   }
 }

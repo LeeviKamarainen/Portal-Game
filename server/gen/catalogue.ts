@@ -11,15 +11,15 @@ import { toWire } from './wire';
  * because it is sent with `cache_control` and a changed byte means a cold cache.
  */
 
-const kindHelp = (f: FieldSpec): string => {
+const kindHelp = (f: FieldSpec, style: 'wire' | 'file'): string => {
   switch (f.kind) {
     case 'number': return 'number';
     case 'bool': return 'true|false';
     case 'select': return `one of ${(f.options ?? []).map((o) => (o === '' ? '(empty)' : o)).join('|')}`;
     case 'faces': return `faces list, any of ${FACE_NAMES.join(',')},sides,all`;
     case 'sides': return `room sides list, any of ${ROOM_SIDES.join(',')},walls`;
-    case 'ids': return 'comma-separated ids';
-    case 'vec3': return '"x,y,z"';
+    case 'ids': return style === 'wire' ? 'comma-separated ids' : 'list of ids';
+    case 'vec3': return style === 'wire' ? '"x,y,z"' : '[x, y, z]';
     case 'color': return '"#rrggbb"';
     default: return 'text';
   }
@@ -28,23 +28,27 @@ const kindHelp = (f: FieldSpec): string => {
 const fmtDefaults = (d: PieceSpec['defaults']): string =>
   d && Object.keys(d).length ? Object.entries(d).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : String(v)}`).join('; ') : 'none';
 
-function pieceLine(type: string, s: PieceSpec): string {
+function pieceLine(type: string, s: PieceSpec, style: 'wire' | 'file'): string {
   const turn = s.turn === 'quarter' ? 'rot in multiples of 90' : s.turn === 'free' ? 'any rot' : 'no rot (use 0)';
   const size = s.sizeLabels ? `size [${s.sizeLabels.join(', ')}]` : 'no size (use [])';
   // "hide" is left out on purpose: models used it on the undersides of floating blocks, which then show nothing from below.
-  const params = (s.fields ?? []).filter((f) => f.key !== 'hide').map((f) => `${f.key} (${kindHelp(f)}${f.hint ? `; ${f.hint}` : ''})`).join('; ') || 'none';
+  const params = (s.fields ?? []).filter((f) => f.key !== 'hide').map((f) => `${f.key} (${kindHelp(f, style)}${f.hint ? `; ${f.hint}` : ''})`).join('; ') || 'none';
   return [`- ${type} [${s.group}] ${s.help}`, `    ${size}; ${turn}; defaults: ${fmtDefaults(s.defaults)}`, `    params: ${params}`].join('\n');
 }
 
-export function buildCatalogue(): string {
+/**
+ * `wire`: the pieces are written as the structured answer of server/gen/wire.ts (params as
+ * key/value pairs). `file`: as in a map file, which is how the chat's edit tools take them.
+ */
+export function buildCatalogue(style: 'wire' | 'file' = 'wire'): string {
   const groups = ['Structure', 'Hazards', 'Interactive', 'Markers'] as const;
   const pieces = groups
-    .map((g) => `## ${g}\n` + Object.entries(PIECES).filter(([, s]) => s.group === g).map(([t, s]) => pieceLine(t, s)).join('\n'))
+    .map((g) => `## ${g}\n` + Object.entries(PIECES).filter(([, s]) => s.group === g).map(([t, s]) => pieceLine(t, s, style)).join('\n'))
     .join('\n\n');
   const kinds = MAP_KINDS.map((k) => `- ${k.id}: ${k.help}`).join('\n');
   return `# Writing maps for the portal arena game
 
-You design levels for a first-person portal-gun game. A level is a list of pieces from a fixed catalogue, each placed with a position, size and rotation. Reply only with the map in the requested structure.
+You design levels for a first-person portal-gun game. A level is a list of pieces from a fixed catalogue, each placed with a position, size and rotation.${style === 'wire' ? ' Reply only with the map in the requested structure.' : ''}
 
 ## Units and axes
 - All lengths are metres. y is up. x is east/west, z is north/south; at rotation 0 a piece's front faces -z (north), and rotation 90 faces -x (west). Rotation is in degrees, counter-clockwise seen from above.
@@ -73,9 +77,15 @@ ${kinds}
 4. A puzzle map needs exactly one goal piece (at = floor centre) and at least one spawn.
 5. Hazards that can be set off by a switch need an id; the switch lists those ids in targets. Only spikes, trapdoor, crusher, ram and dropper can be targets (a dropper with auto=false is a cube dispenser that a switch releases). A door names a receiver id or a floor button's id; a receiver is lit by a laser, a button is held down by a crate (or a player). A reference to an id that does not exist is an error.
 
-## How a piece is written (the output structure)
+${
+  style === 'wire'
+    ? `## How a piece is written (the output structure)
 Each piece has: type, at (3 numbers), size (3 numbers, or an empty list when the piece has no size), rot, center, and params, a list of {key, value} text pairs for the piece's own parameters. Values by parameter kind: numbers as "3.5"; lists as "top,sides"; booleans as "true" or "false"; vec3 as "x,y,z". Only list a parameter when you want something other than its default. Never invent parameter names.
-
+`
+    : `## How a piece is written
+A piece is a JSON object as in a map file: {"type": "block", "at": [x, y, z], "size": [w, h, d], "rot": 0, "portal": ["top", "front"], ...}. Leave out size, rot and any parameter you want at its default. Lists (faces, ids) are JSON lists, vec3 values are [x, y, z], booleans are true/false. Never invent parameter names: the ones listed under each piece are all it has.
+`
+}
 # Piece catalogue (at most ${MAP_PIECES_MAX} pieces per map)
 
 ${pieces}

@@ -14,12 +14,28 @@ export type GenSize = (typeof GEN_SIZES)[number];
 export const GEN_PROMPT_MAX = 500;
 export const GEN_PROMPT_MIN = 3;
 
-/** Body of POST /api/generate. `baseMap` makes it a refinement of that map instead of a new one. */
+/** One earlier message of the conversation, as the chat sends it back with each new request. */
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+/** The longest conversation (in messages) and message the server takes back. */
+export const GEN_HISTORY_MAX = 24;
+export const GEN_HISTORY_TEXT_MAX = 2000;
+
+/**
+ * Body of POST /api/generate. The chat (`mode: 'chat'`, the default) sends the map in the
+ * editor as `baseMap` and the conversation so far as `history`; the model changes that map
+ * with tools. `mode: 'plan'` is the older plan-and-draft pipeline (see docs).
+ */
 export interface GenStartRequest {
   prompt: string;
+  mode?: 'chat' | 'plan';
   kind?: GenKind;
   size?: GenSize;
   baseMap?: MapData;
+  history?: ChatMessage[];
 }
 
 /** GET /api/generate/quota: what this user may do today. */
@@ -57,10 +73,15 @@ export interface PublicOutcome {
   tokens: { input: number; output: number };
   /** List-price estimate in US dollars; the Anthropic Console has the real bill. */
   costUsd: number;
+  /** The chat: what the model said at the end of its turn. */
+  reply?: string;
 }
 
 /** What a viewer is sent, in order. `start`, `piece` and `map` let the editor show the level being built. */
 export type JobEvent =
+  | { type: 'turn'; n: number }
+  | { type: 'say'; text: string }
+  | { type: 'tool'; tool: string; summary: string; ok: boolean; problems?: string[]; detail?: string[] }
   | { type: 'step'; node: GenStep; message: string; problems?: string[]; /** More lines under the message (the plan). */ detail?: string[] }
   | { type: 'start'; stage: 'draft' | 'repair'; head: MapHead }
   | { type: 'piece'; index: number; piece: Piece }

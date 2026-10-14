@@ -1,6 +1,8 @@
 import { Worker } from 'node:worker_threads';
 import type { MapData } from '../../src/world/maps/MapFormat';
-import { checkGenerated, type CheckResult } from './check';
+import { checkGenerated, type CheckOptions, type CheckResult } from './check';
+import { playtest, type PlayReport, type PlayStep } from './playtest';
+import { analyzeRoutes, type RouteReport } from './routes';
 
 /** A map check that takes longer than this is given up on. */
 const CHECK_TIMEOUT_MS = 30_000;
@@ -15,10 +17,13 @@ const CHECK_TIMEOUT_MS = 30_000;
 export const WORKER_LIMITS = { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16 } as const;
 
 interface Pending {
-  resolve(r: CheckResult): void;
+  resolve(r: any): void;
   reject(e: Error): void;
   timer: NodeJS.Timeout;
-  map: MapData;
+  /** Does the work again on this thread, when the worker cannot. */
+  fallback(): Promise<unknown>;
+  /** What to answer when the worker takes too long. */
+  timeout: unknown;
 }
 
 /** Where the worker file is: next to this module when run from source, next to the bundle when built. */
@@ -43,28 +48,45 @@ export class CheckWorker {
   }
 
   /** Same signature as `checkGenerated`, so it can be passed to the graph. */
-  readonly check = (map: MapData): Promise<CheckResult> => {
+  readonly check = (map: MapData, options: CheckOptions = {}): Promise<CheckResult> =>
+    this.call<CheckResult>({ kind: 'check', map, options }, () => checkGenerated(map, options), {
+      ok: false,
+      map,
+      fixes: [],
+      problems: ['The map took too long to check; make it simpler.'],
+    });
+
+  /** Whether the exit can be reached and how (server/gen/routes.ts). */
+  readonly routes = (map: MapData): Promise<RouteReport> =>
+    this.call<RouteReport>({ kind: 'routes', map }, () => analyzeRoutes(map), null);
+
+  /** A scripted playtest in the real simulation (server/gen/playtest.ts). */
+  readonly playtest = (map: MapData, steps: PlayStep[]): Promise<PlayReport> =>
+    this.call<PlayReport>({ kind: 'playtest', map, steps }, () => playtest(map, steps), null);
+
+  private call<T>(message: object, fallback: () => Promise<T>, onTimeout: T | null): Promise<T> {
     const worker = this.broken ? null : this.start();
-    if (!worker) return checkGenerated(map);
-    return new Promise<CheckResult>((resolve, reject) => {
+    if (!worker) return fallback();
+    return new Promise<T>((resolve, reject) => {
       const id = this.nextId++;
       const timer = setTimeout(() => {
         this.pending.delete(id);
         // A stuck check poisons the worker: replace it, and report the map as unbuildable.
         void this.worker?.terminate();
         this.worker = null;
-        resolve({ ok: false, map, fixes: [], problems: ['The map took too long to check; make it simpler.'] });
+        if (onTimeout === null) reject(new Error('The analysis took too long.'));
+        else resolve(onTimeout);
       }, CHECK_TIMEOUT_MS);
-      this.pending.set(id, { resolve, reject, timer, map });
-      worker.postMessage({ id, map });
+      this.pending.set(id, { resolve, reject, timer, fallback, timeout: onTimeout });
+      worker.postMessage({ id, ...message });
     });
-  };
+  }
 
   private start(): Worker | null {
     if (this.worker) return this.worker;
     try {
       const worker = new Worker(workerUrl(), { resourceLimits: { ...WORKER_LIMITS } });
-      worker.on('message', (msg: { id: number; ok: boolean; result?: CheckResult; error?: string }) => {
+      worker.on('message', (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
         const p = this.pending.get(msg.id);
         if (!p) return;
         this.pending.delete(msg.id);
@@ -94,7 +116,7 @@ export class CheckWorker {
     this.pending.clear();
     for (const p of orphans) {
       clearTimeout(p.timer);
-      checkGenerated(p.map).then(p.resolve, (err: unknown) => p.reject(err instanceof Error ? err : new Error(String(err))));
+      p.fallback().then(p.resolve, (err: unknown) => p.reject(err instanceof Error ? err : new Error(String(err))));
     }
   }
 

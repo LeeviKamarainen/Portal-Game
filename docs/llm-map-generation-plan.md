@@ -234,3 +234,32 @@ Found by trying the generator: plans that did not follow the request ("3 platfor
 - **Concurrent edits.** Other sessions edit the same files; keep mechanics changes small and gated behind new pieces.
 - **Bundle and memory.** Worker entry under Vite SSR; 512 MB VM.
 - **Deploys end jobs** because state is in memory.
+
+## Chat and tools - *built 2026-10-14, replaces the plan-and-draft pipeline as the default*
+
+Why: the blueprint pipeline fenced the model in (features, relations it could not build, "no pressure plates, doors approximated") and nothing told it whether the result could be finished. "A difficult multi-part puzzle" on Sonnet came back with stairs that could not be built, a door and receiver "approximated with the laser hazard", and an exit nobody could reach.
+
+**What it is now**
+- **One model, tools, a loop** (`server/gen/agent.ts`, `tools.ts`): the editor's map and the conversation go in; the model looks, edits and checks with tools and answers in chat. No plan to fit and no feature list. What keeps it honest is the tools' reports and a finish gate: the loop will not let it end on a map that does not pass `validate_map`, or (puzzle) whose exit the route check cannot reach, unless a playtest of its own reached the exit. Three rounds, then a warning note.
+- **Tools** (`TOOLS` in `tools.ts`): `view_map`; `edit_map` (add / update / remove / meta / clear, atomic, numbers refer to the map before the call, replies with the touched pieces' extents, their problems, and the renumbering after a removal); `validate_map` (tidy + lint + headless build, keeps the tidying); `check_routes`; `playtest`; `surface_at`.
+- **`check_routes`** (`routes.ts`): the bots' real-collider navigation graph (walk, jump, drop) plus jump pads plus portal hops (an exit portal shot where it can be seen, an entrance beside the player, step in; floors, walls and ceilings). Reports the fewest hops, the route in words, floor nothing reaches (with the nearest reached floor and the gap), and for each door whether it opens by itself / once the level's switches are shot (the real level is run for 2 + 9 s) / never. Doors are taken as open for the geometry. Cannot see momentum flings or a crate shoved by hand.
+- **`playtest`** (`playtest.ts`): a scripted player on the real simulation (`stand`, `shoot`, `walk`, `wait`). Reports what each shot did (portal placed where, switch hit, or why not), trips through portals, and at the end where the beams go, where the crates are, which receivers are lit, buttons down, doors open and whether the exit was reached. This is how beams bent through portals and crates dropped through them get verified.
+- **Chat drawer** (`src/editor/GeneratePanel.ts`): bottom-right, resizable from its top-left corner (size remembered), "New chat" clears the conversation, the conversation survives a page reload (session storage). The editor patches only the pieces an edit changed (green flash) instead of redrawing the map; one answer is one undo step.
+- **API**: `POST /api/generate` takes `mode: 'chat'` (default) with `baseMap` (up to 600 pieces, not tidied) and `history` (24 messages). Events: `turn`, `say`, `tool`, `map`, then `done` (with `reply`) or `error`. `mode: 'plan'` is still the old pipeline (blueprint, features, graph); the CLI keeps it as `--legacy`. It is no longer used by the editor and can be deleted when the chat has earned its place.
+- **Budget**: per message `GEN_AGENT_MAX_TURNS` (40), `GEN_AGENT_MAX_USD` (0.12 Haiku; Sonnet 0.75 via `GEN_AGENT_MAX_USD_SONNET`), 100K-token prompt, 300 s. The daily quota counts messages; the token ceiling counts billed tokens (cache reads at a tenth), because a chat re-reads its prompt every turn. Hidden thinking is off by default (`GEN_AGENT_THINKING`): with it on, Sonnet spent a whole 16K-token turn thinking and built nothing ($0.19). The plan is written in the answer instead.
+- **CLI**: `npm run gen -- "<message>" [--base map.json] [--then "<follow-up>"]... [--sonnet] [--out file.json]`.
+
+**Measured** (Sonnet 5.5, your prompt, 4 runs; Haiku 5.5 one run):
+
+| run | result |
+|---|---|
+| Haiku, thinking on | 16K tokens of thinking, nothing built, 87 s |
+| Haiku, thinking off | 16 turns, $0.011, built a door/button puzzle, kept arguing with the checker |
+| Sonnet, thinking on | 10K-token first turn, a 28-piece three-part puzzle, could not verify it ($0.22) |
+| Sonnet, thinking on, again | 16K tokens thinking, nothing built, $0.19 |
+| Sonnet, plan in text, with playtest | first edit after 8 s; beam bent through two portals lit the receiver and opened the door in the real simulation; ran out of steps (24) on a three-part design, $0.40 - the step limit is now 40 and the model is told when few are left |
+
+**Open**
+- A crate that must be shoved by hand (as in Catapult) is not something either tool can play; the model is told to say so.
+- Tried only on one prompt family; the eval harness (`gen:eval`) still measures the legacy pipeline. A chat eval (scripted conversations, solvability by `playtest`) is the next step.
+- The legacy pipeline (`graph.ts`, `blueprint.ts`, `features.ts`, `partial.ts`, `eval*`, `golden.ts`) is untouched and can be removed.

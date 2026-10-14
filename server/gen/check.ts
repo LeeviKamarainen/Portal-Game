@@ -20,8 +20,8 @@ const DEFAULT_FOG = { color: '#0b0e14', near: 30, far: 150 };
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const isVec3 = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every(isNum);
-const r2 = (n: number) => Math.round(n * 100) / 100;
-const fmt = (v: ArrayLike<number>) => `[${Array.from(v).map(r2).join(', ')}]`;
+export const r2 = (n: number) => Math.round(n * 100) / 100;
+export const fmt = (v: ArrayLike<number>) => `[${Array.from(v).map(r2).join(', ')}]`;
 /** Text that ends up on other players' screens: no markup, no control characters. */
 const clean = (s: unknown, max: number) => String(s ?? '').replace(/[<>\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
@@ -34,8 +34,16 @@ export interface AutofixResult {
   fixes: string[];
 }
 
+export interface CheckOptions {
+  /**
+   * Leave a piece's "hidden faces" alone. A generated map has none (the model cannot write
+   * them), so they are dropped; a map the user built by hand keeps what it has.
+   */
+  keepHidden?: boolean;
+}
+
 /** Tidies a map without guessing: rounding, clamping to legal values, dropping what the game ignores. */
-export function autofix(input: MapData): AutofixResult {
+export function autofix(input: MapData, options: CheckOptions = {}): AutofixResult {
   const map = structuredClone(input);
   const fixes: string[] = [];
   const note = (s: string) => fixes.push(s);
@@ -106,7 +114,7 @@ export function autofix(input: MapData): AutofixResult {
     if (p.center === false) delete p.center;
     // "Hidden faces" is for hand-built maps. Generated ones used it on the undersides of floating
     // blocks, which then show nothing from below, so every face is drawn.
-    if (p.hide !== undefined) {
+    if (p.hide !== undefined && !options.keepHidden) {
       delete p.hide;
       hiddenFaces++;
     }
@@ -158,7 +166,7 @@ export interface Solid {
 
 export const inside = (s: Solid, x: number, z: number) => x >= s.minX - 1e-6 && x <= s.maxX + 1e-6 && z >= s.minZ - 1e-6 && z <= s.maxZ + 1e-6;
 
-function fieldProblem(f: FieldSpec, v: unknown): string | null {
+export function fieldProblem(f: FieldSpec, v: unknown): string | null {
   switch (f.kind) {
     case 'number': return isNum(v) ? null : 'must be a number';
     case 'bool': return typeof v === 'boolean' ? null : 'must be true or false';
@@ -602,8 +610,8 @@ export interface CheckResult {
 }
 
 /** Autofix, then lint, then (only when lint is clean) build. `ok` means it can be saved and played. */
-export async function checkGenerated(raw: MapData): Promise<CheckResult> {
-  const tidy = autofix(raw);
+export async function checkGenerated(raw: MapData, options: CheckOptions = {}): Promise<CheckResult> {
+  const tidy = autofix(raw, options);
   const support = fixSupport(tidy.map);
   const map = support.map;
   const fixes = [...tidy.fixes, ...support.fixes];
