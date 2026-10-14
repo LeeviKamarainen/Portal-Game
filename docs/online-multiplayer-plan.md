@@ -257,6 +257,13 @@ that has come to rest leaves it hovering - the physics engine has put the crate 
 - [ ] Deployed and played from two different networks - needs a Fly.io (or VPS) account:
       `fly launch --no-deploy --copy-config`, `fly volumes create portal_data --size 1`,
       set `ALLOWED_ORIGINS` to the app's address, `fly deploy`.
+      Map generator (docs/llm-map-generation-plan.md, milestone 7): also
+      `fly secrets set ANTHROPIC_API_KEY=...` (without it the generator stays off), a spend
+      limit in the Anthropic Console, and after the first deploy
+      `fly ssh console -C "node dist-server/admin.js grant <name> generate-maps"`. The image
+      has no `tsx`, so the admin tool ships bundled as `dist-server/admin.js`; the map-check
+      worker thread is capped at 128 MB of heap (server plus worker run at about 270 MB on the
+      512 MB machine).
 
 ### 7. Polish — *in progress 2026-10-09*
 

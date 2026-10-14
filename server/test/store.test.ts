@@ -189,3 +189,55 @@ test('on disk: data and the schema version survive a restart', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('generation jobs: the quota counts running and spent runs, not free failures or lost ones', () => {
+  const { store, clock } = fresh();
+  const ada = store.createUser('Ada', 'h');
+  const bob = store.createUser('Bob', 'h');
+  const day = 24 * 3600 * 1000;
+
+  store.startGeneration(ada.id, 'g1', 'a pvp map', 'auto');
+  assert.equal(store.countGenerationsSince(ada.id, clock.t - day), 1, 'a running job counts');
+  store.finishGeneration('g1', { status: 'ok', attempts: 2, tokensIn: 20_000, tokensOut: 3_000 });
+
+  store.startGeneration(ada.id, 'g2', 'refused', 'auto');
+  store.finishGeneration('g2', { status: 'failed', attempts: 0, tokensIn: 0, tokensOut: 0, error: 'refusal' });
+  store.startGeneration(ada.id, 'g3', 'lost to a restart', 'auto');
+  assert.equal(store.interruptRunningGenerations(), 1);
+  store.startGeneration(ada.id, 'g4', 'cancelled after spending', 'puzzle');
+  store.finishGeneration('g4', { status: 'cancelled', attempts: 1, tokensIn: 9_000, tokensOut: 100 });
+  assert.equal(store.countGenerationsSince(ada.id, clock.t - day), 2, 'g1 and g4: the free failure and the interrupted run are not charged');
+
+  store.startGeneration(bob.id, 'g5', 'bob', 'combat');
+  store.finishGeneration('g5', { status: 'partial', attempts: 3, tokensIn: 50_000, tokensOut: 5_000 });
+  assert.equal(store.countGenerationsSince(bob.id, clock.t - day), 1, 'per user');
+  assert.equal(store.tokensUsedSince(clock.t - day), 23_000 + 9_100 + 55_000, 'everyone, for the global ceiling');
+
+  clock.t += 2 * day;
+  assert.equal(store.countGenerationsSince(ada.id, clock.t - day), 0, 'a day later the quota is back');
+  assert.equal(store.tokensUsedSince(clock.t - day), 0);
+
+  const recent = store.recentGenerations(ada.id, 10);
+  assert.deepEqual(recent.map((r) => r.id), ['g4', 'g3', 'g2', 'g1']);
+  assert.equal(recent.find((r) => r.id === 'g2')!.error, 'refusal');
+  assert.equal(recent.find((r) => r.id === 'g3')!.status, 'interrupted');
+});
+
+test('generation jobs go with their user, and the schema upgrades an existing database', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'portal-store-'));
+  try {
+    const path = join(dir, 'game.db');
+    const first = new SqliteStore(path);
+    const ada = first.createUser('Ada', 'h');
+    first.startGeneration(ada.id, 'g1', 'p', 'auto');
+    first.deleteUser(ada.id);
+    assert.equal(first.tokensUsedSince(0), 0);
+    assert.deepEqual(first.recentGenerations(ada.id, 5), []);
+    first.close();
+    const again = new SqliteStore(path);
+    assert.equal(again.interruptRunningGenerations(), 0, 'reopening an up-to-date database changes nothing');
+    again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

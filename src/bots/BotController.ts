@@ -35,7 +35,7 @@ const _p = new THREE.Vector3();
  * Perception has seen or heard.
  *
  * Each step: perceive, let the brain decide (BotBrain: escape, trap, steal, orbs, hunt,
- * explore), walk (PathFollower), then turn the head (LookController) - toward a shot it
+ * explore - and, for the top difficulty, portal travel), walk (PathFollower), then turn the head (LookController) - toward a shot it
  * means to take, else an enemy in sight (or just lost, or hunted), else where it is going
  * with the odd glance aside, else a look around - and fire if a shot is lined up.
  */
@@ -87,6 +87,7 @@ export class BotController implements CommandSource {
       look: this.look,
       traps,
       climbs: this.skill.portalClimb ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav) : null,
+      travel: this.skill.portalTravel ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav, 'any') : null,
     });
   }
 
@@ -139,7 +140,11 @@ export class BotController implements CommandSource {
   read(cmd: PlayerCommand, dt: number): void {
     clearCommand(cmd);
     const { session, self, perception, follower, brain } = this;
-    if (!session || !self || !perception || self.dead) return;
+    if (!session || !self || !perception) return;
+    if (self.dead) {
+      if (this.autonomous) brain?.died();
+      return;
+    }
     const now = session.time;
     perception.update(dt);
 

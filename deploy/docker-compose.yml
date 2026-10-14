@@ -1,0 +1,44 @@
+# The game server behind Caddy (automatic https), for a VPS such as Hetzner.
+# Steps: docs/deploy-hetzner.md.   Run from this folder:
+#   cp .env.example .env     (then edit SITE_HOST)
+#   docker compose up -d --build
+
+services:
+  game:
+    build:
+      context: ..
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/game.db
+      # The page address the browser connects from; anything else is refused.
+      ALLOWED_ORIGINS: https://${SITE_HOST:?set SITE_HOST in deploy/.env}
+      # Caddy terminates https: secure cookies, and the client address comes from Caddy.
+      COOKIE_SECURE: "1"
+      TRUST_PROXY: "1"
+      # Empty = the AI map generator stays off.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      REGISTRATION: ${REGISTRATION:-open}
+    volumes:
+      - game-data:/data # accounts and saved maps (SQLite): the one thing that must survive
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      game:
+        condition: service_healthy
+    ports:
+      - "80:80" # certificate challenge + redirect to https
+      - "443:443"
+    environment:
+      SITE_HOST: ${SITE_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # certificates: keep, or Let's Encrypt rate limits bite on rebuilds
+      - caddy-config:/config
+
+volumes:
+  game-data:
+  caddy-data:
+  caddy-config:

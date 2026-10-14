@@ -223,6 +223,44 @@ const SCRIPTS: Record<string, Script> = {
     bot.steerTo(2.2, 2.2, 3);
     bot.walkTo(2.2, 2.2, { tol: 0.5, timeout: 5 });
   },
+
+  catapult(bot) {
+    const cube = bot.session.arena.props[0];
+    const grounded = () => bot.session.player.isGrounded;
+    // The switch across the pit releases the cube: it lands on the far platform.
+    bot.lookAt(V(8, 8, -21.9));
+    bot.step();
+    bot.game.fire('orange');
+    bot.wait(3.5);
+    if (Math.abs(cube.getPosition().y - 5.4) > 0.3) throw new Failure('the cube never landed on the far platform');
+    // Step on the jump pad: over the acid, onto the far platform. Keys off while flying.
+    bot.walkTo(-11, 11.4, { tol: 0.4, until: () => !grounded() });
+    bot.waitUntil(() => grounded() && bot.pos.z < -5, 6, 'the landing on the far platform');
+    // From up here the glass is not in the way: a portal on the cell's back wall, one on the floor.
+    bot.wait(0.3);
+    bot.fire('blue', V(10, 2.4, 19.9));
+    bot.fire('orange', V(8, 5, -9.5));
+    // Shove the cube into the floor portal: in line behind it, letting go as it tips in, then braking.
+    const hole = V(8, 5, -9.5);
+    for (let t = 0; t < 25 && cube.getPosition().z < 10; t += DT) {
+      const me = bot.pos;
+      const at = cube.getPosition();
+      const along = at.clone().sub(hole).setY(0).normalize();
+      const behind = at.clone().addScaledVector(along, 1.2);
+      const lateral = Math.abs((me.x - at.x) * along.z - (me.z - at.z) * along.x);
+      const inLine = lateral < 0.2 && me.distanceTo(at) < 1.6;
+      const target = inLine ? at : behind;
+      bot.face(Math.atan2(-(target.x - me.x), -(target.z - me.z)), 0);
+      if (inLine) bot.step(at.z > hole.z - 0.8 ? ['KeyS'] : ['KeyW']);
+      else bot.step(me.distanceTo(behind) > 0.3 ? ['KeyW'] : []);
+    }
+    if (cube.getPosition().z < 10) throw new Failure('the cube never went through the portal');
+    bot.waitUntil(() => bot.session.arena.hazards.some((h) => 'isOpen' in h && (h as { isOpen: boolean }).isOpen), 6, 'the exit door');
+    // Back across on the return pad, then out through the door.
+    bot.walkTo(-11, -19, { tol: 0.4, until: () => !grounded() });
+    bot.waitUntil(() => grounded() && bot.pos.z > 5, 6, 'the landing on the near ledge');
+    bot.walkTo(-6, 23.5, { tol: 0.8 });
+  },
 };
 
 export interface PlaythroughResult {

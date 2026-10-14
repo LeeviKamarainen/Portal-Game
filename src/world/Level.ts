@@ -6,7 +6,7 @@ import { materials, type MaterialName } from './Materials';
 
 /**
  * Static level geometry: axis-aligned solid boxes, each with one cuboid collider and up to
- * six visual faces.
+ * six visual faces, and slopes (wedges) whose sloping top is a face like any other.
  *
  * Faces that accept portals are kept as individual meshes so a portal can cut its opening
  * into one (see `Face.setHole`); every other face is merged per material into a handful of
@@ -48,6 +48,15 @@ export class Face {
   mesh: THREE.Mesh | null = null;
   private readonly holes = new Map<object, THREE.Vector2[]>();
 
+  /** Face-local outline, for faces that are not full rectangles (a wedge's triangular sides). */
+  private readonly outline: THREE.Vector2[] | null;
+
+  /**
+   * `up` is the face's own up direction (default: world up on upright faces, -z/+z on
+   * floors and ceilings); it only needs to lie roughly in the face's plane - a slope passes
+   * the direction it climbs. `outline` is a polygon in face-local coordinates that replaces
+   * the width x height rectangle.
+   */
   constructor(
     solid: Solid,
     center: THREE.Vector3,
@@ -55,17 +64,20 @@ export class Face {
     width: number,
     height: number,
     portalable: boolean,
+    opts: { up?: THREE.Vector3; outline?: THREE.Vector2[] } = {},
   ) {
     this.solid = solid;
     this.center = center;
     this.normal = normal;
-    this.up = Math.abs(normal.y) > 0.5 ? new THREE.Vector3(0, 0, normal.y > 0 ? -1 : 1) : new THREE.Vector3(0, 1, 0);
+    if (opts.up) this.up = opts.up.clone().addScaledVector(normal, -opts.up.dot(normal)).normalize();
+    else this.up = Math.abs(normal.y) > 0.5 ? new THREE.Vector3(0, 0, normal.y > 0 ? -1 : 1) : new THREE.Vector3(0, 1, 0);
     this.right = new THREE.Vector3().crossVectors(this.up, normal).normalize();
     this.width = width;
     this.height = height;
     this.portalable = portalable;
+    this.outline = opts.outline ?? null;
 
-    this.proxy = new THREE.Mesh(new THREE.PlaneGeometry(width, height));
+    this.proxy = new THREE.Mesh(this.outline ? new THREE.ShapeGeometry(new THREE.Shape(this.outline)) : new THREE.PlaneGeometry(width, height));
     this.proxy.matrixAutoUpdate = false;
     this.proxy.matrix.makeBasis(this.right, this.up, this.normal).setPosition(center);
     this.proxy.matrixWorld.copy(this.proxy.matrix);
@@ -87,12 +99,14 @@ export class Face {
   buildGeometry(): THREE.BufferGeometry {
     const hw = this.width / 2;
     const hh = this.height / 2;
-    const shape = new THREE.Shape([
-      new THREE.Vector2(-hw, -hh),
-      new THREE.Vector2(hw, -hh),
-      new THREE.Vector2(hw, hh),
-      new THREE.Vector2(-hw, hh),
-    ]);
+    const shape = new THREE.Shape(
+      this.outline ?? [
+        new THREE.Vector2(-hw, -hh),
+        new THREE.Vector2(hw, -hh),
+        new THREE.Vector2(hw, hh),
+        new THREE.Vector2(-hw, hh),
+      ],
+    );
     for (const outline of this.holes.values()) shape.holes.push(new THREE.Path(outline));
     const geo = new THREE.ShapeGeometry(shape, 1);
 
@@ -140,6 +154,15 @@ export interface BoxOptions {
   /** Material for portalable faces (default: floor for upward faces, panel otherwise). */
   portalMaterial?: MaterialName;
   castShadow?: boolean;
+}
+
+export interface SlopeOptions {
+  /** The sloping top takes portals. */
+  portalable?: boolean;
+  /** Material of the plain faces. */
+  material?: MaterialName;
+  /** Material of the sloping top when it takes portals (default: floor). */
+  portalMaterial?: MaterialName;
 }
 
 export class Level {
@@ -207,6 +230,107 @@ export class Level {
       }
     }
     return solid;
+  }
+
+  /**
+   * A wedge: a ramp over a base `width` wide and `run` long that starts at ground level at
+   * `base` and climbs `rise` along the horizontal axis-aligned unit vector `dir`. Its sloping
+   * top is one rectangular face (portalable if asked, oriented up the slope); the high end,
+   * the two triangular sides and the underside are plain. Gentle slopes (up to about 40
+   * degrees) are walked on like floor.
+   */
+  slope(base: THREE.Vector3, dir: THREE.Vector3, rise: number, run: number, width: number, opts: SlopeOptions = {}): Solid {
+    const side = new THREE.Vector3(-dir.z, 0, dir.x);
+    const at = (t: number, y: number, s: number) => base.clone().addScaledVector(dir, t).addScaledVector(side, s).setY(base.y + y);
+    const hw = width / 2;
+    // Foot (low end), crest (high end at ground level) and top (high end up in the air),
+    // each at both sides of the width.
+    const foot = [at(0, 0, -hw), at(0, 0, hw)];
+    const crest = [at(run, 0, -hw), at(run, 0, hw)];
+    const top = [at(run, rise, -hw), at(run, rise, hw)];
+    const corners = [...foot, ...crest, ...top];
+
+    const flat = new Float32Array(corners.length * 3);
+    corners.forEach((c, i) => c.toArray(flat, i * 3));
+    const desc = RAPIER.ColliderDesc.convexHull(flat);
+    if (!desc) throw new Error('slope: the corners do not span a volume');
+    const body = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const collider = this.physics.world.createCollider(desc.setFriction(0.8), body);
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const c of corners) {
+      min.min(c);
+      max.max(c);
+    }
+    const solid: Solid = { collider, faces: [], min, max };
+    this.physics.registerOwner(collider.handle, { type: 'solid', ref: solid });
+    this.faceByCollider.set(collider.handle, solid);
+    this.solids.push(solid);
+
+    const mats = materials();
+    const mid = (a: THREE.Vector3, b: THREE.Vector3) => a.clone().add(b).multiplyScalar(0.5);
+    const matName = opts.material ?? 'metal';
+    const addFace = (face: Face, portalable: boolean, portalMat: MaterialName) => {
+      solid.faces.push(face);
+      this.faces.push(face);
+      this.raycastTargets.push(face.proxy);
+      if (portalable) {
+        const mesh = new THREE.Mesh(face.buildGeometry(), mats[portalMat]);
+        mesh.receiveShadow = true;
+        mesh.castShadow = true;
+        face.mesh = mesh;
+        this.scene.add(mesh);
+      } else {
+        const key = `${matName}|1`;
+        if (!this.staticBatches.has(key)) this.staticBatches.set(key, []);
+        this.staticBatches.get(key)!.push(face.buildGeometry());
+      }
+    };
+
+    // The sloping top.
+    const topNormal = new THREE.Vector3(0, run, 0).addScaledVector(dir, -rise).normalize();
+    const uphill = dir.clone().multiplyScalar(run).setY(rise).normalize();
+    addFace(new Face(solid, mid(foot[0], top[1]), topNormal, width, Math.hypot(run, rise), !!opts.portalable, { up: uphill }), !!opts.portalable, opts.portalMaterial ?? 'floor');
+    // The high end, upright.
+    addFace(new Face(solid, mid(crest[0], top[1]), dir.clone(), width, rise, false), false, 'panel');
+    // Underneath.
+    const alongX = Math.abs(dir.x) > 0.5;
+    addFace(new Face(solid, mid(foot[0], crest[1]), new THREE.Vector3(0, -1, 0), alongX ? run : width, alongX ? width : run, false), false, 'panel');
+    // The two triangular sides, each facing outward.
+    for (const s of [-1, 1]) {
+      const a = at(0, 0, s * hw);
+      const b = at(run, 0, s * hw);
+      const c = at(run, rise, s * hw);
+      const n = side.clone().multiplyScalar(s);
+      const centroid = a.clone().add(b).add(c).divideScalar(3);
+      const probe = new Face(solid, centroid, n, 1, 1, false);
+      const local = [a, b, c].map((p) => {
+        const l = probe.toLocal(p);
+        return new THREE.Vector2(l.x, l.y);
+      });
+      const xs = local.map((v) => v.x);
+      const ys = local.map((v) => v.y);
+      const w = Math.max(...xs) - Math.min(...xs);
+      const h = Math.max(...ys) - Math.min(...ys);
+      addFace(new Face(solid, centroid, n, w, h, false, { outline: local }), false, 'panel');
+    }
+    return solid;
+  }
+
+  /**
+   * An invisible ramp (the convex hull of `points`) laid over stepped geometry so that
+   * whatever walks or rolls over it glides instead of taking each step. It is not a solid
+   * (no face, no portal surface) and rays, sight and beams pass through it: only bodies
+   * feel it.
+   */
+  ramp(points: THREE.Vector3[]): void {
+    const flat = new Float32Array(points.length * 3);
+    points.forEach((p, i) => p.toArray(flat, i * 3));
+    const desc = RAPIER.ColliderDesc.convexHull(flat);
+    if (!desc) throw new Error('ramp: the points do not span a volume');
+    const body = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const collider = this.physics.world.createCollider(desc.setFriction(0.8), body);
+    this.physics.registerOwner(collider.handle, { type: 'ramp', ref: null });
   }
 
   /** A closed room shell (walls 1 m thick) around the interior box. Only inner faces are drawn. */

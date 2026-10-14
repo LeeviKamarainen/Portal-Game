@@ -4,7 +4,12 @@ dist-server
 data
 .git
 .claude
+deploy
+docs
+generated
 *.log
+.env
+.env.*
 generated/
 .env*
 .claude

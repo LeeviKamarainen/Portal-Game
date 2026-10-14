@@ -23,6 +23,12 @@ const STUCK_LIMIT = 5;
 const DROUGHT_LIMIT = 60;
 /** Moving at least this fast when it fires counts as shooting on the move, m/s. */
 const ON_THE_MOVE = 1.5;
+/** A bot that scores nothing in a match this long (or longer) is lost. */
+const SCORELESS_AFTER = 30;
+/** Hard drops in from a ceiling at least once per this many seconds of match. */
+const DROP_IN_EVERY = 45;
+/** A free-for-all bot with this many traps set has had the chance to pick more than one target. */
+const FFA_BUSY = 3;
 
 type Internals = { load(def: ArenaDef, mode: string, index: number): Promise<void> };
 
@@ -57,6 +63,8 @@ export interface BotReport {
   /** Portal climbs up to someone, and drop-ins from a ceiling, it came through. */
   climbs: number;
   combos: number;
+  /** Hops by portal toward an orb or an enemy it came through (Ultra hard). */
+  travels: number;
   /** Who its traps went for (enemy id -> traps started on them). */
   trapsOn: Record<string, number>;
 }
@@ -119,6 +127,7 @@ export async function simGame(game: Game, difficulties: BotDifficulty[], seed: n
         blindPlans: 0,
         climbs: 0,
         combos: 0,
+        travels: 0,
         trapsOn: {},
       },
     };
@@ -182,6 +191,7 @@ export async function simGame(game: Game, difficulties: BotDifficulty[], seed: n
     const stats = w.bot.brain!.stats;
     r.climbs = stats.climbs;
     r.combos = stats.dropIns;
+    r.travels = stats.travels;
     r.trapsOn = Object.fromEntries(stats.trapsOn);
   }
   return { seed, winner: s.match!.winner?.id ?? null, time: s.time, bots: watches.map((w) => w.report) };
@@ -193,7 +203,7 @@ function describe(m: MatchReport): string {
   const bots = m.bots
     .map(
       (r) =>
-        `${r.id}(${r.difficulty}) ${r.score} pts [${r.orbs} orbs, ${r.kills} kills, ${r.deaths} deaths${r.ownGoals.length ? ` (own: ${r.ownGoals.join(' ')})` : ''}, ${r.steals} steals, ${r.climbs} climbs, ${r.combos} drop-ins, ${r.movingShots}/${r.shots} shots moving, still ${r.longestStill.toFixed(1)} s ${r.stillGoal}, drought ${r.drought.toFixed(0)} s, turn ${deg(r.peakTurn)}/${deg(r.turnCap)}°/s${Object.keys(r.trapsOn).length > 1 ? `, traps on ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ')}` : ''}]`,
+        `${r.id}(${r.difficulty}) ${r.score} pts [${r.orbs} orbs, ${r.kills} kills, ${r.deaths} deaths${r.ownGoals.length ? ` (own: ${r.ownGoals.join(' ')})` : ''}, ${r.steals} steals, ${r.climbs} climbs, ${r.combos} drop-ins, ${r.travels} hops, ${r.movingShots}/${r.shots} shots moving, still ${r.longestStill.toFixed(1)} s ${r.stillGoal}, drought ${r.drought.toFixed(0)} s, turn ${deg(r.peakTurn)}/${deg(r.turnCap)}°/s${Object.keys(r.trapsOn).length > 1 ? `, traps on ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ')}` : ''}]`,
     )
     .join(' vs ');
   return `seed ${m.seed}: ${m.winner ?? 'no winner'} at ${m.time.toFixed(0)} s - ${bots}`;
@@ -208,9 +218,11 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
     ['normal', 'normal'],
     ['hard', 'normal'],
     ['easy', 'hard'],
+    ['ultra', 'hard'],
     // Free for all.
     ['easy', 'normal', 'hard', 'normal'],
     ['hard', 'hard', 'normal'],
+    ['ultra', 'normal', 'hard'],
   ];
   const matches: MatchReport[] = [];
   for (let i = 0; i < setups.length; i++) matches.push(await simGame(game, setups[i], 100 + i));
@@ -218,7 +230,14 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
   const lines = matches.map(describe);
 
   add('every match is won within the time limit', matches.every((m) => m.winner), `${matches.map((m) => `${m.winner ?? '-'} ${m.time.toFixed(0)} s`).join(', ')}`);
-  add('every bot scores in every match', all.every((r) => r.score > 0), all.map((r) => `${r.id}(${r.difficulty}) ${r.score}`).join(', '));
+  // (A Hard bot can end a free-for-all in under 20 s: someone who never got a look in then is
+  // no sign of anything wrong - only a bot that scores nothing in a match that ran on is.)
+  const scoreless = matches.flatMap((m) => m.bots.filter((r) => r.score === 0 && m.time >= SCORELESS_AFTER).map((r) => `${r.id}(${r.difficulty}) in ${m.time.toFixed(0)} s`));
+  add(
+    `every bot scores in every match that runs ${SCORELESS_AFTER}+ s`,
+    scoreless.length === 0,
+    `${all.map((r) => `${r.id}(${r.difficulty}) ${r.score}`).join(', ')}${scoreless.length ? ` - none: ${scoreless.join(', ')}` : ''}`,
+  );
   const still = Math.max(...all.map((r) => r.longestStill));
   add(`nobody stands stuck more than ${STUCK_LIMIT} s`, still <= STUCK_LIMIT, `longest ${still.toFixed(1)} s (${all.find((r) => r.longestStill === still)?.stillGoal})`);
   const drought = Math.max(...all.map((r) => r.drought));
@@ -235,21 +254,42 @@ export async function runSimTests(game: Game): Promise<{ text: string; results: 
     all.map((r) => `${r.id}(${r.difficulty}) ${deg(r.peakTurn)}/${deg(r.turnCap)}°/s, ${r.blindPlans} blind`).join(', '),
   );
   const hard = all.filter((r) => r.difficulty === 'hard');
-  const hardMoving = hard.reduce((n, r) => n + r.movingShots, 0);
-  const hardShots = hard.reduce((n, r) => n + r.shots, 0);
-  const others = all.filter((r) => r.difficulty !== 'hard');
+  // (Ultra hard is Hard and more: it shoots on the move too.)
+  const hardClass = all.filter((r) => r.difficulty === 'hard' || r.difficulty === 'ultra');
+  const hardMoving = hardClass.reduce((n, r) => n + r.movingShots, 0);
+  const hardShots = hardClass.reduce((n, r) => n + r.shots, 0);
+  const others = all.filter((r) => r.difficulty !== 'hard' && r.difficulty !== 'ultra');
   const otherMoving = others.reduce((n, r) => n + r.movingShots, 0);
   const otherShots = others.reduce((n, r) => n + r.shots, 0);
   const hardDropIns = hard.reduce((n, r) => n + r.combos, 0);
   const hardMatches = matches.filter((m) => m.bots.some((r) => r.difficulty === 'hard')).length;
-  add('Hard drops in from the ceiling, now and then', hardDropIns >= hardMatches, `${hardDropIns} drop-ins (and ${hard.reduce((n, r) => n + r.climbs, 0)} climbs to high ground) by Hard in ${hardMatches} matches`);
+  // (A direct trap on someone in reach comes first and Hard's matches are short: about one a minute.)
+  const hardSeconds = matches.filter((m) => m.bots.some((r) => r.difficulty === 'hard')).reduce((n, m) => n + m.time, 0);
+  add(
+    'Hard drops in from the ceiling, now and then',
+    hardDropIns >= Math.floor(hardSeconds / DROP_IN_EVERY),
+    `${hardDropIns} drop-ins (and ${hard.reduce((n, r) => n + r.climbs, 0)} climbs to high ground) by Hard in ${hardMatches} matches, ${hardSeconds.toFixed(0)} s`,
+  );
+  // (Of the bots that set a few traps at all: a match of 20 s has no time for a second target.)
   const ffa = matches.filter((m) => m.bots.length > 2).flatMap((m) => m.bots);
-  const spread = ffa.filter((r) => Object.keys(r.trapsOn).length > 1).length;
-  add('free for all: bots go after more than one opponent', spread >= Math.ceil(ffa.length / 2), `${spread} of ${ffa.length} set traps on more than one: ${ffa.map((r) => `${r.id} ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ') || '-'}`).join(', ')}`);
+  const busy = ffa.filter((r) => Object.values(r.trapsOn).reduce((n, v) => n + v, 0) >= FFA_BUSY);
+  const spread = busy.filter((r) => Object.keys(r.trapsOn).length > 1).length;
+  add(
+    'free for all: bots go after more than one opponent',
+    busy.length > 0 && spread >= Math.ceil(busy.length / 2),
+    `${spread} of ${busy.length} that set ${FFA_BUSY}+ traps set them on more than one: ${ffa.map((r) => `${r.id} ${Object.entries(r.trapsOn).map(([k, v]) => `${k}:${v}`).join(' ') || '-'}`).join(', ')}`,
+  );
   add(
     'Hard shoots on the move; the others stop to aim',
     hardShots > 0 && hardMoving / hardShots >= 0.5 && otherMoving / Math.max(otherShots, 1) < 0.25,
     `Hard ${hardMoving}/${hardShots} shots at ${ON_THE_MOVE}+ m/s; Easy/Normal ${otherMoving}/${otherShots}`,
+  );
+  const ultra = all.filter((r) => r.difficulty === 'ultra');
+  const hops = ultra.reduce((n, r) => n + r.travels, 0);
+  add(
+    'Ultra hard gets about by portal',
+    ultra.length > 0 && hops >= 1,
+    `${hops} hops by ${ultra.length} Ultra hard bots (${ultra.map((r) => `${r.id} ${r.travels}`).join(', ')})`,
   );
 
   const passed = results.filter((r) => r.pass).length;
@@ -270,6 +310,7 @@ export async function runBalance(game: Game): Promise<{ text: string; results: u
     ['easy', 'normal'],
     ['normal', 'hard'],
     ['easy', 'hard'],
+    ['hard', 'ultra'],
   ];
   const rows: string[] = [];
   const results: unknown[] = [];

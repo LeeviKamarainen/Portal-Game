@@ -21,7 +21,7 @@ const PITCH_SCALE = 32767 / (Math.PI / 2);
 
 const SOUND_IDS: readonly SoundName[] = [
   'shootOrange', 'shootBlue', 'portalOpen', 'fizzle', 'teleport', 'hurt', 'death', 'respawn',
-  'goal', 'slam', 'warn', 'door', 'sizzle', 'orb', 'steal', 'land', 'click',
+  'goal', 'slam', 'warn', 'door', 'sizzle', 'orb', 'steal', 'land', 'click', 'launch',
 ];
 
 const OUTCOMES: readonly ShotOutcome[] = ['fizzle', 'placed', 'stolen', 'switch'];

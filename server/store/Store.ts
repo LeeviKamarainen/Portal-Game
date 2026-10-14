@@ -43,6 +43,24 @@ export interface MapRecord extends MapSummary {
   json: string;
 }
 
+export type GenerationStatus = 'running' | 'ok' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+
+/** One run of the map generator: kept for the daily quota and so spend can be audited. */
+export interface GenerationRecord {
+  id: string;
+  userId: number;
+  prompt: string;
+  kind: string;
+  status: GenerationStatus;
+  attempts: number;
+  /** Input tokens, including prompt-cache reads and writes. */
+  tokensIn: number;
+  tokensOut: number;
+  error: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+}
+
 export type StoreErrorCode = 'bad-name' | 'name-taken' | 'bad-map-name' | 'map-too-big' | 'map-limit' | 'no-such-user';
 
 export class StoreError extends Error {
@@ -89,6 +107,20 @@ export interface Store {
   listMapsOf(ownerId: number): MapSummary[];
   /** Public maps, newest first. */
   listPublicMaps(limit: number, offset?: number): MapSummary[];
+
+  // --- the map generator (docs/llm-map-generation-plan.md) ---
+  startGeneration(userId: number, id: string, prompt: string, kind: string): void;
+  finishGeneration(id: string, result: { status: GenerationStatus; attempts: number; tokensIn: number; tokensOut: number; error?: string | null }): void;
+  /**
+   * Generations that count against a user's quota since `sinceMs`: running ones, and finished
+   * ones that spent tokens. A run that failed before costing anything, or was lost to a restart, is free.
+   */
+  countGenerationsSince(userId: number, sinceMs: number): number;
+  /** Tokens spent by everyone since `sinceMs`, for the global daily ceiling. */
+  tokensUsedSince(sinceMs: number): number;
+  /** Marks runs that were still going when the server stopped; returns how many. */
+  interruptRunningGenerations(): number;
+  recentGenerations(userId: number, limit: number): GenerationRecord[];
 
   close(): void;
 }

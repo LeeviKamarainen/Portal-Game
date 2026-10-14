@@ -189,7 +189,8 @@ export class LaserEmitter implements Hazard {
         undefined,
         (c) => {
           if (c.handle === this.emitterCollider || c.handle === skip) return false;
-          return ctx.physics.getOwner(c.handle)?.type !== 'portal-tunnel';
+          const t = ctx.physics.getOwner(c.handle)?.type;
+          return t !== 'portal-tunnel' && t !== 'ramp';
         },
       );
       if (!hit) {

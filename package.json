@@ -8,10 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:server": "tsx --test server/test/*.test.ts",
-    "server": "tsx watch server/main.ts",
-    "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir",
+    "server": "tsx watch --env-file-if-exists=.env server/main.ts",
+    "build:server": "vite build --ssr server/main.ts --outDir dist-server --emptyOutDir && vite build --ssr server/gen/checkWorker.ts --outDir dist-server --emptyOutDir false && vite build --ssr server/admin.ts --outDir dist-server --emptyOutDir false",
     "start": "node dist-server/main.js",
-    "admin": "tsx server/admin.ts"
+    "admin": "tsx server/admin.ts",
+    "admin:prod": "node dist-server/admin.js",
+    "gen": "tsx --env-file-if-exists=.env server/gen/cli.ts",
+    "gen:eval": "tsx --env-file-if-exists=.env server/gen/eval.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
@@ -22,8 +25,12 @@
     "vite": "^8.2.2"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "@dimforge/rapier3d-compat": "^0.20.0",
+    "@langchain/core": "^1.2.17",
+    "@langchain/langgraph": "^1.4.21",
     "three": "^0.185.1",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   }
 }

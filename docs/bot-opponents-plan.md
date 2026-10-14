@@ -294,6 +294,140 @@ and flicks faster; harder bots move and turn faster.
 - [x] Balance (50 matches per pairing): Normal beats Easy 84% (was 76%), **Hard beats Normal
       82%** (was 90% - Normal got faster too), Hard beats Easy 96%; Hard wins in ~49 s.
 
+### 6d. Any map, any hazard, a much quicker Hard — *done 2026-10-10*
+
+User request: the AI should work on other levels too (it only knew Highwire's acid pit), bots
+should launch enemies to the ceiling more often where there are portal ceiling tiles and port
+enemies over any nearby hazard, and Hard should be a lot quicker on its actions.
+
+What was wrong: `TrapSpots` only looked near acid pools (and below a 14 m height cap), so on
+Catwalk, Shaft and Courtyard the bots had **no trap exits at all** (0 spots - no traps, no
+climbs or drop-ins either, which wait for a trap exit in view); even on Highwire, Hard's chain
+of actions was slow (reaction delay on every own shot, 3 s trap cooldown, exit then floor).
+
+- [x] **Hazard-agnostic trap exits** (`TrapSpots.ts`). Every portal-taking wall and ceiling
+      point is flown out of at the three exit speeds and the landing is read off the arena
+      itself: acid, static spikes, the kill plane (`kind: 'lethal'`); a cycling spike bed, which
+      kills only inside its window (`Hazard.deadlyWindow()`, `kind: 'timed'` - the bot holds
+      the floor shot until the victim would land in the window); and plain **fall damage**
+      (`kind: 'fall'`: the game's own `(impact - 13) * 4`). Health never regenerates, so a drop
+      from a ceiling slot that takes 50 is half a kill and the second one finishes it. Highwire:
+      84 lethal + ~530 fall exits (was 56); Catwalk/Shaft/Courtyard: 330-580 (was 0), built in
+      100-250 ms per match.
+- [x] **Ceiling launches.** A ceiling exit drops whoever comes out straight down, so among exits
+      that only hurt they get a bonus (they land under the slot, in view, in reach of a second
+      drop - and on Catwalk's 3 m bridge over the acid often off it). A sure kill still always
+      outranks a fall. Spots are scored by value against the enemy's health (`trapValue`; Hard
+      sees it, the others count the damage their own traps did, per life).
+- [x] **Quicker Hard** (`BotSkill`): reaction 0.15 -> 0.06 s, shot cooldown 0.25 -> 0.12 s,
+      thinks every 0.04 s, turn 620 -> 900°/s, settles faster, runs 1.22 -> 1.3x; its trap and
+      steal shots are `decisive` (no reaction delay, as climb shots always were); trap cooldown
+      3 -> 0.5 s, climb cooldown 6 -> 2.5 s, drop-in roll every 1.2 s at 60%; looks at where a
+      shot landed after 0.05 s; and `anticipate`: with nobody to trap it parks its exit in the
+      best deadly spot in view, so the trap is one shot when someone steps on good floor.
+      Median time from deciding on a trap to the floor portal opening: 0.9 s -> 0.45 s; first
+      shot 0.87 -> 0.1 s after seeing an enemy standing in the open. A direct trap now comes
+      before a drop-in for show.
+- [x] **Floor shots are aimed in metres, not degrees.** A floor portal is ~2 m long along the
+      line of fire, so the slack is about 0.8 m on the ground - but from 25 m away at eye height
+      1 degree of aim error is ~6 m of floor. Half of all floor shots were missing by 2-5 m
+      (and Easy/Normal's much more). The fire tolerance is now that slack as an angle, and a bot
+      only starts a floor trap from within the reach its aim can hold (`floorReach`: further
+      from higher ground) - otherwise it closes in first.
+- [x] Fixed on the way (all found by the new headless benchmarks): a sidestep carried on in
+      the direction it was chosen in view space while the head turned (fast Hard heads turned
+      it off bridges), and checked 3 m of floor for a 4 m slide; a bot that died mid-climb
+      kept the climb plan after respawning and stood there until it timed out; a climb whose
+      entrance ended up behind something just waited (now re-picks or gives up); its own
+      climb entrance left open beside it became a death trap the moment a trap exit was placed
+      (no new exit while its own floor portal is within 3.6 m; a sprung trap's portals are
+      left alone until the victim has been through, so a drop-in's exit shot no longer
+      redirects its own victim); landing margins for drop-ins (a ceiling exit over a narrow
+      bridge is a coin toss: floor all round at 2.4 m); stuck in a hollow below the walkway
+      (a jump gets out); standing inside a portal's avoid margin blocked every route
+      (the way out stays open); unlinked portals no longer count as obstacles; the same portal
+      stolen back and forth forever (2 tries per 30 s); tiers reachable only by portal (Catwalk's
+      bridge) are no longer a dead end - drops up to 12 m are in the graph at a price per point
+      of fall damage.
+- [x] Tests: `?test=brain` 17 checks (new: exits on every built-in map; Hard traps someone on a
+      map with no acid by a long drop; the drop-in test now takes direct traps out of the
+      picture); `server/test/botTraps.test.ts` (5: exits on every map, ceiling slot over spikes
+      is a kill and over floor a long fall with its damage, the kill plane, a cycling bed's
+      window matches the bed, a bot traps on a bare map). All other suites pass (sim 10, bots 8,
+      nav 7, players 15, scoring 14, hazards 14, arenas 8, portals 15; server 155).
+- Balance (40 matches per pairing and map, 150 s limit, sides swapped, headless):
+
+  | | Highwire | Catwalk | Shaft | Courtyard |
+  |---|---|---|---|---|
+  | Normal beats Easy | 34/40, 68 s | 34/40, 51 s | 26/40 (+6 unfinished), 91 s | 32/40, 48 s |
+  | **Hard beats Normal** | 40/40, 46 s | 40/40, 22 s | 34/40, 27 s | 40/40, 26 s |
+  | **Hard beats Easy** | 39/40, 42 s | 40/40, 21 s | 32/40, 35 s | 40/40, 25 s |
+
+  Before this change, on the same seeds: Highwire Hard beat Normal 28/30 in ~51 s and Easy 30/30
+  in ~52 s; on the other three maps nobody was ever killed (0 trap kills) and matches were
+  slower (Hard v Easy 45 / 70 (+10 unfinished) / 40 s; Hard v Normal 43 / 66 (+9 unfinished) /
+  40 s on Catwalk / Shaft / Courtyard). Kills per minute in Hard-v-Hard: Highwire 3.9 -> 4.7,
+  the others 0 -> 3.5-6.5.
+- Known limits: against another Hard the victim's flash immunity (Hard flashes before hard
+  landings) cancels most single fall traps - they still burn the immunity (5 s) for the follow-up;
+  a wall exit flings the victim to somewhere the bot can't always follow up; timed hazards other
+  than spike beds (crushers, rams, trapdoors) aren't used as trap landings yet.
+
+### 6e. Ultra hard: getting about by portal — *done 2026-10-11*
+
+User request: a version of the bot even harder than Hard that keeps everything Hard does and
+also gets around the map by portal ("teleports immediately to the points" - read as: puts a
+portal where it is going and steps through), called **"Ultra hard"** (`'ultra'` in the code).
+
+- [x] **`ultra` skill** (`BotSkill`): Hard's abilities plus `portalTravel`, and numbers a notch
+      past Hard: reaction 0.03 s, turn 1200°/s, thinks every 0.03 s, shot cooldown 0.1 s, aim
+      error 0.5° with a 0.1° wobble, runs 1.5x (Hard 1.3x), view range 90 m, drop-ins rolled
+      every 0.9 s at 75%, trap cooldown 0.35 s. Selectable in the PvP menu ("Play vs Ultra hard
+      bot"), the room lobby and settings (`BOT_DIFFICULTIES` / `BOT_DIFFICULTY_LABEL`).
+- [x] **Travel spots** (`ClimbSpots` with tier `'any'`): every portal-taking wall and ceiling
+      point where whoever comes out lands on walkable, safe floor - any tier (a climb only
+      wanted high ground) - sampled every 2 m. Built per arena on first use (Highwire 168 spots
+      in ~10 ms) and only for skills with `portalTravel`.
+- [x] **The hop** (`BotBrain.tryTravel`): on its way to an orb, an enemy (hunting) or an explore
+      target it looks every 0.3 s for an exit in clear view that lands it much nearer *by real
+      route* (nav A*, not distance: a 20 m jump up a tier can be a 150-unit walk, or no
+      route at all), shoots the exit, then a floor portal beside itself, and walks in - the
+      climb's own stage machine (`why: 'travel'`), so it shares the climb's shot, check and
+      abandon code. Chains hops when still far; after one toward an enemy it traps them at once.
+- [x] **Not in front of anyone who would steal them**: an enemy within steal range with a clear
+      line to the spot it stands on or to the exit rules a hop out (stealing turns the way in
+      into their trap); if a portal of its own is taken mid-hop it abandons rather than walking
+      into it (`hopPortalsIntact`, also for ordinary climbs).
+- [x] **A chance at a trap interrupts a hop** that is still being set up (not the walk-in).
+- Bugs found by the benchmarks, fixed for every bot: (1) **a floor portal that opened up to a
+  metre off where it was aimed (a narrow walkway) was never walked into** - the bot walked
+  to the aimed point and jittered beside the open portal until it timed out (a climb's way
+  in now steers to where the portal really is); (2) **no path from the air blocked the orb for
+  10 s**: right after any ceiling exit the bot is mid-fall, `goTo` finds no floor to route
+  from and `goForOrb` flagged the orb unreachable - the bot wandered for 10 s (this cost
+  every ceiling climb/drop-in that was followed by orbs, and made Ultra's hops look
+  worthless until fixed); (3) sidestepping was switched off for the whole of a climb (a
+  walk to a vantage point included) - now only for the last step, the walk into the portal.
+- Tuning story (head-to-head, Highwire, seats swapped, 150 s cap): travel cost fights more
+  than expected - ~22% of the time in hops with no kill chance, plus a trap exit lost every
+  hop (`exit ready` 83% -> 42% of the time). Hopping at every chance lost 3:1 to the same bot
+  without travel. The current values (`TRAVEL_MIN_WALK 30`, `TRAVEL_MIN_SAVING 15`,
+  `+TRAVEL_READY_COST 10` with an exit set, `TRAVEL_REST 0.8`, exit re-prep every 0.4 s after
+  a hop, interrupt for traps) with the airborne fix: **Ultra vs Hard 22-26 on Highwire (48
+  matches; 14-10, 11-13, 20-4 on Catwalk/Shaft/Courtyard at 24 each), ~4.6 hops a match,
+  38% more orbs**; Ultra vs Normal 47-1. The same Ultra *without* travel beats Hard 27-21 -
+  travel is worth orbs and surprise, not duel strength; against a human the extra orb speed
+  is what shows.
+- [x] Tests: `server/test/botTravel.test.ts` (6: difficulty plumbing; hops and no own deaths on
+  Highwire; plays all four built-in maps, travel spots built in time); `?test=sim` has an
+  Ultra-vs-Hard match and an Ultra FFA match, a "gets about by portal" check, and counts
+  Ultra with Hard for "shoots on the move"; `?test=balance` has a Hard-vs-Ultra pairing.
+  All other suites pass (brain 17, sim 11, bots 8, nav 7; server 202 + 1 skipped).
+- Known limits: hops need a clear view of an exit from where it stands (no walking to a
+  vantage point first, unlike climbs); the entrance is always a floor portal beside it; with an
+  equally lethal opponent in a wide open map every hop still costs a good second of kill
+  chances (see tuning) - the place to look next is a trap exit that doubles as a landing.
+
 ### 7. More tactics, more players
 
 - [x] **Free-for-all, first cut** (2026-10-08): 1-3 bots picked in the PvP menu

@@ -1,13 +1,15 @@
+import { FLAGS } from '../core/Flags';
 import { ARENAS, PVP_ARENA } from '../world/arenas';
 import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type Settings } from '../core/Settings';
 import { SkinPreview } from './SkinPreview';
 import { DEFAULT_RULES } from '../game/Match';
 import { mapKind, type MapData } from '../world/maps/MapFormat';
 import { readEditorDraft } from '../editor/draft';
-import { BOT_DIFFICULTIES, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_SECONDS, type BotDifficulty, type MapChoice } from '../net/protocol';
+import { BOT_DIFFICULTIES, BOT_DIFFICULTY_LABEL, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_SECONDS, type BotDifficulty, type MapChoice } from '../net/protocol';
 import type { OnlineView } from '../net/OnlineLobby';
 import type { AccountClient } from '../net/AccountClient';
 import { ACCOUNT_CSS, AccountUi } from './AccountUi';
+import { AdminUi } from './AdminUi';
 
 /**
  * The main menu (tutorial stages, PvP, settings) and the pause menu, drawn as HTML over the
@@ -37,7 +39,7 @@ export interface MenuHandlers {
   onlineError(message: string): void;
 }
 
-type Page = 'main' | 'pause' | 'tutorial' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps';
+type Page = 'main' | 'pause' | 'tutorial' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin';
 type SettingsTab = 'character' | 'graphics' | 'lighting' | 'controls';
 
 const previewUrls = import.meta.glob('../assets/players/Previews/*.png', {
@@ -156,6 +158,20 @@ const CSS = `
   .menu .row { flex-direction:column; align-items:flex-start; }
   .menu .slider input { width:150px; }
 }
+/* A phone held sideways: little height, so less air around the lists, and a thumb-sized row. */
+@media (max-height: 520px) {
+  .menu .page { padding:18px max(24px, env(safe-area-inset-left)) 16px; }
+  .menu h1 { font-size:34px; }
+  .menu h2 { font-size:26px; }
+  .menu .tagline { margin-top:6px; }
+  .menu .stack { margin-top:14px; gap:2px; }
+  .menu .item { padding:9px 16px 9px 20px; }
+  .menu .item .t { font-size:19px; }
+  .menu .stages { margin-top:16px; }
+  .menu .card { margin-top:14px; }
+  .menu .settings { margin-top:12px; }
+  .menu .foot { padding-top:14px; }
+}
 `;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -183,6 +199,7 @@ export class Menu {
   private codeField = '';
   private readonly accounts: AccountClient;
   private readonly ui: AccountUi;
+  private readonly admin: AdminUi;
 
   constructor(container: HTMLElement, settings: Settings, handlers: MenuHandlers, accounts: AccountClient) {
     this.settings = settings;
@@ -191,11 +208,16 @@ export class Menu {
     this.nameField = settings.playerName;
     this.ui = new AccountUi(accounts, {
       redraw: () => {
-        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page);
+        if (this.isOpen && (this.page === 'account' || this.page === 'maps' || this.page === 'lobby')) this.show(this.page, true);
       },
       edit: (data, id) => this.handlers.editAccountMap(data, id),
       useInRoom: (data) => this.handlers.setRoomMap({ kind: 'custom', data }),
       lobbyError: (message) => this.handlers.onlineError(message),
+    });
+    this.admin = new AdminUi(accounts, {
+      redraw: () => {
+        if (this.isOpen && this.page === 'admin') this.show('admin', true);
+      },
     });
     const style = document.createElement('style');
     style.textContent = CSS + ACCOUNT_CSS;
@@ -287,7 +309,8 @@ export class Menu {
   /** The server said who is logged in (or that nobody is): the pages that show it redraw. */
   setAccount(): void {
     this.ui.userChanged();
-    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps')) this.show(this.page);
+    this.admin.userChanged();
+    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps' || this.page === 'admin')) this.show(this.page);
   }
 
   /** The name to play under: the account's, when logged in. */
@@ -313,10 +336,16 @@ export class Menu {
     return this.muted ? '\u{1F507} Sound off' : '\u{1F50A} Sound on';
   }
 
-  private show(page: Page): void {
+  /**
+   * Draws `page`. `redraw`: it is already showing and only its data changed, so nothing is
+   * fetched again (a page's load ends in a redraw: fetching here too would loop forever, and
+   * the buttons would be replaced under the mouse between press and release).
+   */
+  private show(page: Page, redraw = false): void {
     if (this.page === 'account' && page !== 'account') this.ui.leftPage();
     this.page = page;
-    if (page === 'maps') void this.ui.loadMaps(true);
+    if (!redraw && page === 'maps') void this.ui.loadMaps(true);
+    if (!redraw && page === 'admin') void this.admin.load();
     this.root.classList.toggle('dim', page !== 'main');
     this.root.classList.toggle('peek', page === 'settings' && (this.tab === 'lighting' || this.tab === 'graphics'));
     if (page !== 'settings' || this.tab !== 'character') this.preview?.stop();
@@ -327,7 +356,7 @@ export class Menu {
   private render(page: Page): string {
     const back = `<button class="back" data-action="back">‹ Back</button>`;
     const foot = `<div class="foot"><button class="btn" data-action="mute">${this.muteLabel()}</button>
-      <span>M toggles sound in game &middot; Esc opens this menu</span></div>`;
+      <span>${FLAGS.touch ? 'The &#9776; button pauses the game' : 'M toggles sound in game &middot; Esc opens this menu'}</span></div>`;
     switch (page) {
       case 'main': {
         const done = ARENAS.filter((a) => this.progress.has(a.id)).length;
@@ -341,6 +370,7 @@ export class Menu {
             ${this.item('settings', 'Settings', 'Character, graphics, lighting, controls')}
             ${this.item('editor', 'Map editor', 'Build arenas from blocks, hazards and switches')}
             ${this.accounts.user ? this.item('maps', 'My maps', 'Maps you saved online, and the ones players share') : ''}
+            ${this.accounts.isAdmin ? this.item('admin', 'Admin', 'Players and the rights they have') : ''}
             ${this.item('account', this.accounts.user ? `Account <span class="chip idle">${esc(this.accounts.user.name)}</span>` : 'Log in', this.accounts.user ? 'Your name, password and saved maps' : 'Register or log in to keep maps online')}
           </div>${foot}`;
       }
@@ -382,7 +412,7 @@ export class Menu {
             <div class="d">${esc(PVP_ARENA.blurb ?? '')}</div>
             <ul>
               <li class="ok">Scoring: point orbs, portal kill credit, first to ${DEFAULT_RULES.scoreToWin} wins</li>
-              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is</li>
+              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is; Ultra hard is Hard that also gets about by portal</li>
               <li class="ok">Shoot an opponent's portal to steal it</li>
               <li>Online opponents</li>
             </ul>
@@ -394,10 +424,10 @@ export class Menu {
             </div>
             <div class="d" style="margin-top:10px">Bot difficulty</div>
             <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap">
-              ${(['easy', 'normal', 'hard'] as const)
+              ${BOT_DIFFICULTIES
                 .map(
                   (d) =>
-                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${d[0].toUpperCase()}${d.slice(1)} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
+                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${BOT_DIFFICULTY_LABEL[d]} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
                 )
                 .join('')}
             </div>
@@ -410,6 +440,8 @@ export class Menu {
         return `${back}${this.ui.renderAccount()}${foot}`;
       case 'maps':
         return `${back}${this.ui.renderMaps()}${foot}`;
+      case 'admin':
+        return `${back}${this.admin.render()}${foot}`;
       case 'settings':
         return `${back}
           <div class="eyebrow">Options</div>
@@ -512,7 +544,7 @@ export class Menu {
         </div>
         <div class="d" style="margin-top:14px">Bot difficulty</div>
         <div class="seg" style="margin-top:6px; display:inline-flex">
-          ${BOT_DIFFICULTIES.map((d) => `<button class="${lobby.difficulty === d ? 'on' : ''}" data-action="room-difficulty" data-difficulty="${d}">${d[0].toUpperCase()}${d.slice(1)}</button>`).join('')}
+          ${BOT_DIFFICULTIES.map((d) => `<button class="${lobby.difficulty === d ? 'on' : ''}" data-action="room-difficulty" data-difficulty="${d}">${BOT_DIFFICULTY_LABEL[d]}</button>`).join('')}
         </div>
         <div class="line" style="margin-top:20px">
           <button class="btn primary" data-action="room-start" ${lobby.members.length + lobby.bots < 2 ? 'disabled title="Add a bot or wait for a friend"' : ''}>Start match</button>
@@ -591,10 +623,14 @@ export class Menu {
         ].join('');
       case 'controls':
         return [
-          this.sliderRow('sensitivity', 'Mouse sensitivity', '', 0.2, 3, 0.05, (v) => `${v.toFixed(2)}×`),
-          this.segRow('invertY', 'Invert mouse Y', '', [
+          this.sliderRow('sensitivity', FLAGS.touch ? 'Look sensitivity' : 'Mouse sensitivity', '', 0.2, 3, 0.05, (v) => `${v.toFixed(2)}×`),
+          this.segRow('invertY', FLAGS.touch ? 'Invert look Y' : 'Invert mouse Y', '', [
             ['false', 'Off'],
             ['true', 'On'],
+          ]),
+          this.segRow('portalPings', 'Enemy portal pings', 'A flash and an edge arrow where an opponent opens a portal, within earshot.', [
+            ['true', 'On'],
+            ['false', 'Off'],
           ]),
           `<div class="row"><div><div class="lbl">Sound</div><div class="sub">Also M in game.</div></div>
             <button class="btn" data-action="mute">${this.muteLabel()}</button></div>`,
@@ -662,9 +698,14 @@ export class Menu {
       this.ui.click(a, el);
       return;
     }
+    if (a.startsWith('admin-')) {
+      this.admin.click(a, el);
+      return;
+    }
     switch (a) {
       case 'account':
       case 'maps':
+      case 'admin':
         this.show(a);
         break;
       case 'back':
@@ -718,8 +759,9 @@ export class Menu {
         break;
       case 'pvp-play': {
         const d = el.dataset.difficulty;
-        if (d === 'easy' || d === 'normal' || d === 'hard') {
-          this.settings.botDifficulty = d;
+        const picked = BOT_DIFFICULTIES.find((k) => k === d);
+        if (picked) {
+          this.settings.botDifficulty = picked;
           saveSettings(this.settings);
         }
         this.handlers.playPvp();
@@ -776,7 +818,7 @@ export class Menu {
           character: ['skin'],
           graphics: ['quality', 'fov'],
           lighting: ['brightness', 'ambient', 'glow', 'shadows'],
-          controls: ['sensitivity', 'invertY'],
+          controls: ['sensitivity', 'invertY', 'portalPings'],
         };
         for (const k of keys[this.tab]) (this.settings as unknown as Record<string, unknown>)[k] = DEFAULT_SETTINGS[k];
         this.changed();

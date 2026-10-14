@@ -7,13 +7,22 @@ import { PLAYER_FEET_OFFSET } from '../player/PlayerController';
 import type { NavGraph, NavNode } from './NavGraph';
 import { EXIT_SPEEDS, flyOut } from './TrapSpots';
 
-/** Candidate exits are tried this far apart on a surface. */
+/** Candidate exits are tried this far apart on a surface (travel spots, many more of them: twice as far). */
 const SPACING = 1;
+const TRAVEL_SPACING = 2;
 /** "High ground": floor at least this far above the lowest walkable floor. */
 const HIGH = 5;
 /** A wall exit is only worth simulating with high floor this far out in front of it, and this far below it. */
 const WALL_FRONT = 1.2;
 const WALL_BELOW = 3;
+/**
+ * Whoever lands has to have floor all round: a body coming straight down out of a ceiling
+ * drifts (it steers in the air, and comes out up to a portal's half-length off its centre),
+ * and one that comes out of a wall carries on a little - so a landing on a narrow bridge over
+ * a pit is no climb, it is a coin toss. Floor this far out.
+ */
+const LAND_MARGIN_DROP = 2.4;
+const LAND_MARGIN_WALL = 1.0;
 
 /** An exit portal that lands whoever comes out of it on walkable floor (high floor, for a wall). */
 export interface ClimbSpot {
@@ -30,7 +39,14 @@ export interface ClimbSpot {
   readonly impact: number;
 }
 
+/**
+ * high: exits that put someone on high ground (a climb) or drop them in from a ceiling.
+ * any: every exit that lands someone on walkable floor, whatever tier - for getting about by portal.
+ */
+export type ClimbTier = 'high' | 'any';
+
 const spotsFor = new WeakMap<object, ClimbSpots>();
+const travelSpotsFor = new WeakMap<object, ClimbSpots>();
 
 /**
  * Portal climbs for an arena, worked out once like the trap spots: points on portal-taking
@@ -40,6 +56,9 @@ const spotsFor = new WeakMap<object, ClimbSpots>();
  * a portal on the floor beside itself, and walks in. Examples on Highwire: low on a room wall
  * just above a walkway, or any ceiling that takes portals (the slot over the pillar drops you
  * 10 m onto it - flash immunity takes the landing).
+ *
+ * Tier `'any'` is the same search without the high-ground requirement: every exit that lands
+ * on safe walkable floor, whichever tier - the places an Ultra hard bot hops to (`portalTravel`).
  */
 export class ClimbSpots {
   readonly spots: ClimbSpot[] = [];
@@ -48,22 +67,26 @@ export class ClimbSpots {
   private readonly physics: PhysicsWorld;
   private readonly nav: NavGraph;
   private readonly high: number;
+  private readonly spacing: number;
 
-  static for(key: object, arena: ArenaBuilder, level: Level, physics: PhysicsWorld, nav: NavGraph): ClimbSpots {
-    let c = spotsFor.get(key);
+  static for(key: object, arena: ArenaBuilder, level: Level, physics: PhysicsWorld, nav: NavGraph, tier: ClimbTier = 'high'): ClimbSpots {
+    const cache = tier === 'any' ? travelSpotsFor : spotsFor;
+    let c = cache.get(key);
     if (!c) {
-      c = new ClimbSpots(arena, level, physics, nav);
-      spotsFor.set(key, c);
+      c = new ClimbSpots(arena, level, physics, nav, tier);
+      cache.set(key, c);
     }
     return c;
   }
 
-  constructor(arena: ArenaBuilder, level: Level, physics: PhysicsWorld, nav: NavGraph) {
+  constructor(arena: ArenaBuilder, level: Level, physics: PhysicsWorld, nav: NavGraph, tier: ClimbTier = 'high') {
     const t0 = performance.now();
     this.arena = arena;
     this.physics = physics;
     this.nav = nav;
-    this.high = Math.min(...nav.nodes.map((n) => n.y)) + HIGH;
+    // (Any tier: no floor is too low for a wall exit to land on.)
+    this.high = tier === 'any' ? -Infinity : Math.min(...nav.nodes.map((n) => n.y)) + HIGH;
+    this.spacing = tier === 'any' ? TRAVEL_SPACING : SPACING;
     for (const face of level.faces) if (face.portalable) this.sampleFace(face);
     this.buildMs = performance.now() - t0;
   }
@@ -80,8 +103,8 @@ export class ClimbSpots {
     const hh = face.height / 2 - my;
     if (hw < 0 || hh < 0) return;
     const probe = new THREE.Vector3();
-    for (let y = -hh; y <= hh + 1e-6; y += SPACING) {
-      for (let x = -hw; x <= hw + 1e-6; x += SPACING) {
+    for (let y = -hh; y <= hh + 1e-6; y += this.spacing) {
+      for (let x = -hw; x <= hw + 1e-6; x += this.spacing) {
         const point = face.toWorld(x, y);
         if (kind === 'wall') {
           // Cheap test first: high floor just in front, a little below the opening's centre.
@@ -111,6 +134,20 @@ export class ClimbSpots {
       land ??= f.land;
       impact = Math.max(impact, f.impact);
     }
-    if (node && land) this.spots.push({ face, point, normal: face.normal.clone(), kind, land, node, impact });
+    if (node && land && this.roomAround(land, kind === 'ceiling' ? LAND_MARGIN_DROP : LAND_MARGIN_WALL, node.y)) {
+      this.spots.push({ face, point, normal: face.normal.clone(), kind, land, node, impact });
+    }
+  }
+
+  /** Walkable, safe floor at the same height in every direction `margin` out from `at`. */
+  private roomAround(at: THREE.Vector3, margin: number, floorY: number): boolean {
+    const probe = new THREE.Vector3();
+    for (let k = 0; k < 8; k++) {
+      const a = (k * Math.PI) / 4;
+      probe.set(at.x + Math.cos(a) * margin, floorY + PLAYER_FEET_OFFSET, at.z + Math.sin(a) * margin);
+      const n = this.nav.nearest(probe, 0);
+      if (!n || n.hazards.length || Math.abs(n.y - floorY) > 0.6) return false;
+    }
+    return true;
   }
 }

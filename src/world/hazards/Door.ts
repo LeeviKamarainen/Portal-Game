@@ -2,14 +2,14 @@ import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { Level } from '../Level';
 import { glowMaterial, materials } from '../Materials';
-import { type Hazard, type HazardContext } from './Hazard';
-import type { LaserReceiver } from './Laser';
+import { type Hazard, type HazardContext, type PowerSource } from './Hazard';
 
 const OPEN_SPEED = 1.6;
 
 /**
- * A sliding blast door held open by a powered laser receiver. Its status strip is red
- * while shut and green while open, matching the receiver's lens.
+ * A sliding blast door held open by a power source: a lit laser receiver or a pressed
+ * floor button. Its status strip is red while shut and green while open, matching the
+ * source's lens.
  */
 export class Door implements Hazard {
   private readonly body: RAPIER.RigidBody;
@@ -17,11 +17,11 @@ export class Door implements Hazard {
   private readonly status: THREE.MeshBasicMaterial;
   private readonly closed: THREE.Vector3;
   private readonly travel: number;
-  private readonly receiver: LaserReceiver;
+  private readonly receiver: PowerSource;
   private open = 0;
   private wasOpening = false;
 
-  constructor(level: Level, min: THREE.Vector3, max: THREE.Vector3, receiver: LaserReceiver) {
+  constructor(level: Level, min: THREE.Vector3, max: THREE.Vector3, receiver: PowerSource) {
     this.receiver = receiver;
     const size = max.clone().sub(min);
     this.closed = min.clone().add(max).multiplyScalar(0.5);

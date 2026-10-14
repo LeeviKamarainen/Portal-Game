@@ -10,7 +10,7 @@ import type { KnownEnemy, Perception } from './Perception';
 import type { NavGraph, NavNode } from './NavGraph';
 import type { PathFollower } from './PathFollower';
 import type { LookController } from './LookController';
-import type { TrapSpot, TrapSpots } from './TrapSpots';
+import { PORTAL_DELAY, trapValue, type TrapSpot, type TrapSpots } from './TrapSpots';
 import type { ClimbSpot, ClimbSpots } from './ClimbSpots';
 
 export type Goal = 'idle' | 'escape' | 'climb' | 'trap' | 'steal' | 'orb' | 'hunt' | 'explore';
@@ -36,11 +36,49 @@ export interface BrainRecord {
 const TRAP_MIN = 4;
 /** Furthest it will shoot an exit portal. */
 const EXIT_RANGE = 45;
-/** After springing a trap (or giving one up), wait this long before the next. */
-const TRAP_COOLDOWN = 3;
+/**
+ * An exit is worth taking if it kills or takes at least this share of what health the enemy
+ * has left (damage stays: health doesn't come back, so a second drop finishes them).
+ */
+const MIN_TRAP_VALUE = 0.45;
+/**
+ * Choosing among exits, in points: a sure kill always beats a fall (whatever is in view); of
+ * falls, the more damage the better, a ceiling drop a good deal ahead (it lands the victim
+ * right under the slot, in view and in reach of a second one - and often off a narrow
+ * walkway); each metre of distance costs a little (further is harder to hit).
+ */
+const KILL_SCORE = 100;
+const TIMED_SCORE = 90;
+const FALL_SCORE = 30;
+const DROP_BONUS = 12;
+const EXIT_DISTANCE_COST = 0.4;
+/** Candidates that get the (ray-casting) look: this many of the best-scored at most. */
+const EXIT_RAYS = 80;
+/** Working out whether a trap exit can be seen from a climb's landing: this many tried. */
+const TRAP_VIEW_TRIES = 30;
+/** A timed hazard (cycling spikes) is only worth waiting for if its window opens within this long, seconds. */
+const TIMED_WAIT = 2;
+/**
+ * How far off the mark a trap shot may land, metres. A floor portal is about 2 m long and
+ * lies along the line of fire, so a miss along the ground is forgiven up to this; but that
+ * one metre is a tiny angle from far off and low down (a hair of aim error at 25 m is 6 m
+ * of floor), so the angle it has to hold - and how far away it tries - follows from this.
+ */
+const FLOOR_SLACK = 0.8;
+const EXIT_SLACK = 0.5;
+/** Never asked to hold the view closer than this, radians (a hand is not steadier). */
+const MIN_ANGLE = 0.0026;
 /** Give up on a trap if the enemy has been out of sight this long, or it all takes too long. */
 const TRAP_PATIENCE = 1.5;
 const TRAP_TIME_LIMIT = 6;
+const TRAP_TIME_LIMIT_TIMED = 9;
+/** Sprung trap: long enough for the victim to drop through and come out the other side. */
+const PORTAL_HOLD = 1.6;
+/** Its own floor portal this close is a step away: a new exit would make it a live trap for itself. */
+const OWN_ENTRANCE_NEAR = 3.6;
+/** Setting a trap exit in advance (`anticipate`): tries this often, and gives up on a shot after this long. */
+const PREP_EVERY = 1.5;
+const PREP_TIME_LIMIT = 3;
 /** An exit spot that didn't work is left alone this long. */
 const BAD_SPOT_TIME = 15;
 /** Lead a walking target by this much of its velocity. */
@@ -68,13 +106,15 @@ const DODGE_TIME = 0.5;
 const DODGE_REST = 1;
 /** Someone is lining up a floor portal on it when their aim meets its floor this close to its feet. */
 const AIMED_AT = 1.8;
-/** A sidestep needs safe floor this far out to that side, metres. */
-const DODGE_CLEAR = [1, 2, 3];
+/** A sidestep needs safe floor all the way to where it would end up (running speed times DODGE_TIME, plus this much), metres. */
+const DODGE_MARGIN = 1;
 /** A floor trap goes no nearer than this to where it is, or will be in this long (it may be walking), m / s. */
 const OWN_FLOOR_CLEAR = 3;
 const OWN_FLOOR_AHEAD = 0.6;
 /** Keep this far from an open floor portal's centre: half its length, a body's width and a margin. */
 const FLOOR_PORTAL_CLEAR = 2.2;
+/** ...but never nearer than this (half its length): that is on it. */
+const FLOOR_PORTAL_EDGE = 1.3;
 /** An escape is over once this far from where it set off. */
 const ESCAPE_REACH = 6;
 /** Too close to a laser beam. */
@@ -82,6 +122,9 @@ const LASER_CLEARANCE = 0.9;
 /** Steals portals up to this far away, and gives up on one after this long. */
 const STEAL_RANGE = 32;
 const STEAL_TIME_LIMIT = 3;
+/** The same portal is gone for this many times at most in this long (stealing it back and forth never ends). */
+const STEAL_REPEAT = 2;
+const STEAL_REPEAT_TIME = 30;
 /** A portal this close to a trap exit spot is someone's trap exit. */
 const AT_TRAP_SPOT = 1.6;
 /** Strafing while it aims: this far to the side, metres (plus up to 2 more). */
@@ -99,28 +142,63 @@ const ENTRANCE_RINGS = [2.4, 3.2];
 /** Give up on a climb after this long (walking into the entrance: after this long). */
 const CLIMB_TIME_LIMIT = 14;
 const CLIMB_WALK_LIMIT = 3;
-const CLIMB_COOLDOWN = 6;
+/** No clear line to a climb shot's mark for this long: look for another (or give up). */
+const CLIMB_BLOCKED = 0.7;
+/** A floor portal that opened this far from where it was aimed (a narrow walkway shifts it) is still the one it made. */
+const ENTRANCE_SLACK = 1.6;
 /** Through: this close to the exit, up on the high floor. */
 const CLIMB_THROUGH = 4;
 /** Climb shots wait until the view is within this much of the mark (at the mark's distance), metres. */
 const CLIMB_AIM = 0.3;
 /** After a climb it tries to trap them straight away for this long (in the air, then landing). */
 const AFTER_CLIMB = 2;
-/** Ceiling drop-ins for the fun of it (`comboChance`): rolled this often; they're this far from where it lands at most. */
-const COMBO_ROLL = 3;
+/** A drop-in for show waits this long after a trap on someone was last tried (a retry is quicker). */
+const COMBO_AFTER_TRAP = 2;
+/** Ceiling drop-ins for the fun of it (`comboChance`, rolled every `comboEvery`): they're this far from where it lands at most. */
 const COMBO_REACH = 30;
-/** Looking at where a shot landed: this soon after it (a planned one: the next moment). */
-const CHECK_AFTER = 0.15;
+/** Looking at where a planned shot landed: the next moment (others: the skill's `checkDelay`). */
 const CHECK_AFTER_PLANNED = 0.04;
 /** Who to go after: nearness (out to this far) and their score count about equally; the current one gets a little extra. */
 const FOCUS_RANGE = 50;
 const FOCUS_STICKY = 0.15;
+const FOCUS_WOUNDED = 0.15;
+/**
+ * Portal travel (`portalTravel` skills), in route-cost units (about metres of walking). A hop
+ * costs more than its two shots and the step in: for a good second it can do nothing else (a
+ * trap chance interrupts it, but not a walk-in), and the trap exit it had set goes with it -
+ * so it is only worth it for a walk of at least TRAVEL_MIN_WALK that it cuts by
+ * TRAVEL_MIN_SAVING (and TRAVEL_READY_COST more with an exit set, TRAVEL_OVERHEAD for the
+ * steps), looked into this often while on its way somewhere. Tuned in head-to-head matches
+ * against Hard on Highwire (48 a go): these - about five hops a match, a good third more orbs
+ * taken - keep even with Hard in a fight.
+ */
+const TRAVEL_EVERY = 0.3;
+const TRAVEL_MIN_WALK = 30;
+const TRAVEL_OVERHEAD = 6;
+const TRAVEL_MIN_SAVING = 15;
+const TRAVEL_READY_COST = 10;
+/** Of the exits that would help (nearest the goal first), this many get the look and this many a real route. */
+const TRAVEL_LOOKS = 40;
+const TRAVEL_ROUTES = 4;
+/** After a hop (or one given up) it walks on for this long before the next - and sets a trap exit up quickly in the meantime. */
+const TRAVEL_REST = 0.8;
+const TRAVEL_PREP_EVERY = 0.4;
+/** No floor for a way in: look again after this long. */
+const TRAVEL_NO_ENTRANCE = 1;
+/** A hop gives up after this long; one toward an enemy when they have moved this far from where it was headed. */
+const TRAVEL_TIME_LIMIT = 8;
+const TRAVEL_DEST_DRIFT = 18;
+/** After a hop's portal was stolen: no new hop for this long (they are looking at it). */
+const TRAVEL_STOLEN_REST = 2;
+/** Anyone this much further than steal range (and with a line to a portal it opens) would take it: it waits for them to be elsewhere. */
+const TRAVEL_WATCH_MARGIN = 6;
 /** Looking for somewhere to shoot an exit from: this many floor points tried, this far off at most. */
 const VANTAGE_TRIES = 60;
 const VANTAGE_RANGE = 30;
 /** No vantage point found: look again after this long. */
 const VANTAGE_RETRY = 2;
 
+const _up = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
 const _w = new THREE.Vector3();
 const _eye = new THREE.Vector3();
@@ -137,7 +215,12 @@ export interface BrainContext {
   traps: TrapSpots;
   /** Portal climbs onto high ground (only for skills with `portalClimb`). */
   climbs: ClimbSpots | null;
+  /** Every exit that lands on walkable floor, for getting about by portal (only for skills with `portalTravel`). */
+  travel: ClimbSpots | null;
 }
+
+/** What a portal hop is for: an orb, an enemy, or just somewhere to be. */
+type TravelKind = 'orb' | 'enemy' | 'explore';
 
 interface ClimbPlan {
   /** approach: walking to somewhere it can shoot the exit from (and has floor for a way in). */
@@ -153,10 +236,15 @@ interface ClimbPlan {
   key: string;
   /** This stage's shot missed once already. */
   retried: boolean;
-  /** Up to someone on high ground, or a drop-in from a ceiling for the fun of it. */
-  why: 'high' | 'combo';
+  /** Since when this stage's shot has had no clear line (0: it has). */
+  blockedSince: number;
+  /** Up to someone on high ground, a drop-in from a ceiling for the fun of it, or a hop toward `dest`. */
+  why: 'high' | 'combo' | 'travel';
   /** Floor height it set off from. */
   fromFeet: number;
+  /** A hop (why 'travel'): where it is headed, and for what. */
+  dest?: THREE.Vector3;
+  destKind?: TravelKind;
 }
 
 interface TrapPlan {
@@ -168,8 +256,10 @@ interface TrapPlan {
   /** When a shot was fired (stage 'check': when to look at the result). */
   firedAt: number;
   startedAt: number;
-  /** Planned before a climb: the shots come with no reaction delay. */
+  /** Planned before a climb (or a skill that decides for itself): the shots come with no reaction delay. */
   planned: boolean;
+  /** Just setting the exit up in advance, no enemy yet (`anticipate`). */
+  prep: boolean;
 }
 
 interface StealPlan {
@@ -190,6 +280,8 @@ interface StealPlan {
  *     on a wall over their floor, or a ceiling above it), a portal on the floor beside itself,
  *     walk in, and set a trap on them on the way down (flashing immunity for a hard landing).
  *     Now and then (`comboChance`) the same through a ceiling just to drop in on someone.
+ *  1c. Travel (`portalTravel` skills): on its way to an orb, an enemy or somewhere to explore,
+ *     an exit in view that lands it much nearer than walking would - the same steps as a climb.
  *  2. Trap: an enemy it can see stands on floor that takes portals - put the exit somewhere
  *     deadly to come out of (see TrapSpots), then a portal under the enemy's feet.
  *  3. Steal: an enemy portal it can see - someone's trap exit becomes its own exit, a floor
@@ -212,7 +304,7 @@ export class BotBrain {
   /** The enemy it last went after (trap, climb, hunt): kept to unless another is clearly better. */
   focusId: string | null = null;
   /** Running totals (the log only keeps the last few hundred records): climbs made, traps started on whom. */
-  readonly stats = { climbs: 0, dropIns: 0, trapsOn: new Map<string, number>() };
+  readonly stats = { climbs: 0, dropIns: 0, travels: 0, trapsOn: new Map<string, number>(), sprung: new Map<string, number>() };
 
   private readonly c: BrainContext;
   private nextThink = 0;
@@ -220,6 +312,14 @@ export class BotBrain {
   private trapReadyAt = 0;
   private trapRollAt = 0;
   private trapRolled = false;
+  private prepAt = 0;
+  /** After springing a trap: its portals are left as they are until the victim has been through (or this long). */
+  private holdPortalsUntil = 0;
+  private holdFor: string | null = null;
+  /** Last time a trap on someone was on (started, failed, given up): drop-ins for show wait for a retry first. */
+  private trapActiveAt = -Infinity;
+  /** Damage its own traps have done to each enemy, and which life of theirs it was (what it can know without seeing health). */
+  private readonly hurt = new Map<string, { damage: number; life: number }>();
   private lastShot = -Infinity;
   private readonly badSpots = new Map<TrapSpot, number>();
   private readonly badOrbs: { at: THREE.Vector3; until: number }[] = [];
@@ -231,7 +331,8 @@ export class BotBrain {
   /** Enemies last seen where no trap works (spawn pads, near orbs, no portal floor). */
   private readonly notTrappable = new Map<string, { at: THREE.Vector3; until: number }>();
   private dodgeUntil = -Infinity;
-  private dodgeDir = 1;
+  /** Which way the sidestep goes, in the world (the head may turn meanwhile): unit, horizontal. */
+  private readonly dodgeDir = new THREE.Vector3();
   /** Floor portals it knows of (its own and seen ones): routes never step on them. */
   private floorPortals: THREE.Vector3[] = [];
   /** Which colour the last trap shot was, and where it was aimed (to check where it landed). */
@@ -240,6 +341,8 @@ export class BotBrain {
   private steal: StealPlan | null = null;
   private stealReadyAt = 0;
   private steals = 0;
+  /** Portals it has gone for, how often lately: the same one back and forth is a stalemate, not a plan. */
+  private readonly stealTries = new Map<Portal, { n: number; at: number }>();
   /** Whether to go for each enemy portal, decided once per placement. */
   private readonly stealCalls = new Map<Portal, { at: THREE.Vector3; go: boolean }>();
   private strafeDir = 1;
@@ -249,6 +352,8 @@ export class BotBrain {
   private afterClimb: { enemy: string; until: number } | null = null;
   private climbReadyAt = 0;
   private comboRollAt = 0;
+  private travelRollAt = 0;
+  private travelReadyAt = 0;
   private climbs = 0;
   private readonly badClimbs = new Map<ClimbSpot, number>();
   private readonly climbTrapView = new Map<ClimbSpot, boolean>();
@@ -276,15 +381,50 @@ export class BotBrain {
     this.pruneBad(now);
     this.dropCrumb(now);
     if (this.escape()) return;
+    // A chance at a trap beats a hop that is still being set up (its portals are left where they are).
+    if (this.climb?.why === 'travel' && this.climb.stage !== 'walk') {
+      const hop = this.climb;
+      this.climb = null;
+      const enemy = now >= this.trapReadyAt && this.trapRolled ? this.visibleEnemy() : null;
+      if (enemy && this.startTrap(enemy, now, false)) {
+        this.record('travel:interrupted', 'a trap');
+        this.travelReadyAt = now + 1;
+        return;
+      }
+      this.climb = hop;
+    }
     if (this.climb && this.planClimb(now)) return;
     if (this.trapAfterClimb(now)) return;
+    // A trap under way carries on; a sure kill in reach comes before a drop-in for show (the
+    // quickest kill first) - but a mere fall doesn't: the drop-in's trap on the way down kills.
+    if ((this.trap || this.sureKillAvailable()) && this.planTrap(now)) return;
     if (this.planCombo(now)) return;
     if (this.planTrap(now)) return;
     if (this.planClimb(now)) return;
     if (this.planSteal(now)) return;
     if (this.goForOrb(now)) return;
     if (this.hunt(now)) return;
-    this.explore();
+    this.explore(now);
+  }
+
+  /**
+   * Dead: whatever it was in the middle of is over (it comes back on its spawn pad with its
+   * portals closed) - a climb it still believed in would have it stand there staring at a
+   * floor portal it no longer has, until it gave up.
+   */
+  died(): void {
+    if (this.goal === 'idle' && !this.trap && !this.steal && !this.climb) return;
+    this.trap = null;
+    this.steal = null;
+    this.climb = null;
+    this.afterClimb = null;
+    this.hasOrbTarget = false;
+    this.dodgeUntil = -Infinity;
+    this.aim = null;
+    this.goal = 'idle';
+    this.nextThink = 0;
+    this.trapReadyAt = 0;
+    this.c.follower.stop();
   }
 
   private setGoal(g: Goal, detail = ''): void {
@@ -307,15 +447,26 @@ export class BotBrain {
 
   private refreshFloorPortals(): void {
     const own = Object.values(this.c.self.portals);
+    // (One whose partner isn't placed takes nobody anywhere: not in the way.)
     this.floorPortals = [
-      ...own.filter((p) => p.placed && p.normal.y > 0.7).map((p) => p.surfaceCenter),
-      ...[...this.c.perception.portals.entries()].filter(([p]) => p.normal.y > 0.7).map(([, at]) => at),
+      ...own.filter((p) => p.isOpen && p.normal.y > 0.7).map((p) => p.surfaceCenter),
+      ...[...this.c.perception.portals.entries()].filter(([p]) => p.isOpen && p.normal.y > 0.7).map(([, at]) => at),
     ];
   }
 
-  /** Floor on or beside an open floor portal (it may lie either way round; a body is ~0.8 m wide). */
+  /**
+   * Floor on or beside an open floor portal (it may lie either way round; a body is ~0.8 m
+   * wide). Already inside that margin (a portal opened right by it - say, someone's trap),
+   * the way out has to stay open: only floor nearer the portal than it stands now is off limits.
+   */
   private onFloorPortal(n: NavNode): boolean {
-    return this.floorPortals.some((p) => Math.hypot(p.x - n.x, p.z - n.z) < FLOOR_PORTAL_CLEAR && Math.abs(p.y - n.y) < 0.6);
+    const pos = this.pos;
+    return this.floorPortals.some((p) => {
+      if (Math.abs(p.y - n.y) >= 0.6) return false;
+      const mine = Math.hypot(p.x - pos.x, p.z - pos.z);
+      const clear = mine < FLOOR_PORTAL_CLEAR && Math.abs(p.y - (pos.y - PLAYER_FEET_OFFSET)) < 0.6 ? Math.max(mine - 0.15, FLOOR_PORTAL_EDGE) : FLOOR_PORTAL_CLEAR;
+      return Math.hypot(p.x - n.x, p.z - n.z) < clear;
+    });
   }
 
   /** Off dangerous floor, out of a beam. */
@@ -392,7 +543,9 @@ export class BotBrain {
       const top = Math.max(match.rules.scoreToWin * 0.25, ...match.players.map((p) => p.score));
       lead = (match.player(e.id)?.score ?? 0) / top;
     }
-    return near + lead + (e.id === this.focusId ? FOCUS_STICKY : 0);
+    // Someone already hurt is the nearer kill (a fall's damage stays).
+    const wounded = (1 - this.healthOf(e.id) / 100) * FOCUS_WOUNDED;
+    return near + lead + wounded + (e.id === this.focusId ? FOCUS_STICKY : 0);
   }
 
   /** The one of `among` it would most like to go after. */
@@ -417,20 +570,23 @@ export class BotBrain {
   private planTrap(now: number): boolean {
     const { skill, random } = this.c;
     if (this.trap) {
-      const e = this.c.perception.enemies.get(this.trap.enemy);
+      const tr = this.trap;
+      if (tr.prep) return this.keepPrepping(now);
+      const e = this.c.perception.enemies.get(tr.enemy);
       // (An omniscient bot always knows where they are: what counts is having a shot.)
-      const lost = !e?.visible || now - this.trap.lastChance > TRAP_PATIENCE;
-      const tooLong = now - this.trap.startedAt > TRAP_TIME_LIMIT;
-      if ((lost || tooLong) && this.trap.stage !== 'check') {
+      const lost = !e?.visible || now - tr.lastChance > TRAP_PATIENCE;
+      const tooLong = now - tr.startedAt > (tr.spot.kind === 'timed' ? TRAP_TIME_LIMIT_TIMED : TRAP_TIME_LIMIT);
+      if ((lost || tooLong) && tr.stage !== 'check') {
         this.record('trap:abandon', lost ? 'no shot' : 'took too long');
         this.trap = null;
         this.trapReadyAt = now + 1;
+        this.trapActiveAt = now;
         return false;
       }
       // Moved out of sight of the exit spot it was going for: another one, if there is one.
-      if (this.trap.stage === 'exit' && !this.c.perception.clearShot(_w.copy(this.trap.spot.point).addScaledVector(this.trap.spot.normal, 0.05))) {
-        const other = this.pickSpot();
-        if (other) this.trap.spot = other;
+      if (tr.stage === 'exit' && !this.c.perception.clearShot(_w.copy(tr.spot.point).addScaledVector(tr.spot.normal, 0.05))) {
+        const other = this.pickSpot(this.healthOf(tr.enemy));
+        if (other) tr.spot = other;
       }
       this.whileAiming(e?.position ?? null);
       return true;
@@ -443,12 +599,66 @@ export class BotBrain {
     }
     if (!this.trapRolled) return false;
     const enemy = this.visibleEnemy();
-    return !!enemy && this.startTrap(enemy, now, false);
+    if (enemy && this.startTrap(enemy, now, false)) return true;
+    return skill.anticipate && this.prepareExit(now);
+  }
+
+  /**
+   * A kill (not just damage) is on offer against the enemy it would go after: a lethal or
+   * timed exit set or in view, and a trap possible now. A look only - nothing is started.
+   */
+  private sureKillAvailable(): boolean {
+    if (this.climb || this.steal || this.afterClimb) return false;
+    const enemy = this.visibleEnemy();
+    if (!enemy) return false;
+    const health = this.healthOf(enemy.id);
+    const have = this.exitStillThere() ? this.exitSpot : null;
+    if (have && this.usable(have, health) && trapValue(have, health) >= 0.9) return true;
+    const found = this.pickSpot(health);
+    return !!found && trapValue(found, health) >= 0.9;
+  }
+
+  /** Eye height above the floor under `at`, at least a metre (a low shot gets nowhere). */
+  private heightAbove(at: THREE.Vector3, feetOffset: number): number {
+    return Math.max(1, this.c.perception.eye(_eye).y - (at.y - feetOffset));
+  }
+
+  /**
+   * The furthest it can lay a floor portal under `enemy` and expect to be near enough: the
+   * distance at which the angle the slack leaves (FLOOR_SLACK, a glancing shot) is as small
+   * as its hand holds. From higher ground the angle is steeper and it reaches further.
+   */
+  private floorReach(enemy: KnownEnemy): number {
+    const { skill } = this.c;
+    const hold = Math.max(skill.aimWobble * 1.5, MIN_ANGLE);
+    const reach = Math.sqrt((FLOOR_SLACK * this.heightAbove(enemy.position, PLAYER_FEET_OFFSET)) / hold);
+    return Math.min(skill.trapRange, reach);
+  }
+
+  /** The angle within which a shot at `point` (on the floor, `onFloor`) lands within the slack. */
+  private shotTolerance(point: THREE.Vector3, onFloor: boolean): number {
+    const eye = this.c.perception.eye(_eye);
+    const d = Math.max(1, eye.distanceTo(point));
+    const tol = onFloor ? (FLOOR_SLACK * Math.max(1, eye.y - point.y)) / (d * d) : EXIT_SLACK / d;
+    return Math.min(this.c.skill.aimTolerance, Math.max(tol, MIN_ANGLE * 0.6));
+  }
+
+  /**
+   * What it believes someone's health to be: Hard (omniscient) knows; the others know only
+   * the damage their own traps did to them (it stays: health doesn't come back).
+   */
+  private healthOf(id: string): number {
+    const p = this.c.session.playerById(id);
+    if (this.c.skill.omniscient) return p?.controller.health.value ?? 100;
+    const h = this.hurt.get(id);
+    // (A new life starts at full health.)
+    if (!h || !p || h.life !== p.respawns) return 100;
+    return Math.max(1, 100 - h.damage);
   }
 
   /**
    * A trap on `enemy`, if one works from here: they stand on portal-taking floor it has a
-   * clear shot at, and a deadly exit is set or in view. `straightAway` (just out of a portal
+   * clear shot at, and a good exit is set or in view. `straightAway` (just out of a portal
    * climb, maybe still in the air): even if they're close.
    */
   private startTrap(enemy: KnownEnemy, now: number, straightAway: boolean): boolean {
@@ -458,7 +668,7 @@ export class BotBrain {
       return false;
     };
     const d = enemy.position.distanceTo(this.pos);
-    if ((!straightAway && d < TRAP_MIN) || d > skill.trapRange || Math.abs(enemy.velocity.y) > 1.5) return no('out of range');
+    if ((!straightAway && d < TRAP_MIN) || d > this.floorReach(enemy) || Math.abs(enemy.velocity.y) > 1.5) return no('out of range');
     const floor = this.floorUnder(enemy);
     if (!floor) {
       if (enemy.velocity.lengthSq() < 1) this.notTrappable.set(enemy.id, { at: enemy.position.clone(), until: now + NOT_TRAPPABLE_TIME });
@@ -467,16 +677,64 @@ export class BotBrain {
     // (An omniscient bot knows where they are through walls - it still needs a clear shot.)
     if (!perception.clearShot(floor.setY(floor.y + 0.05))) return no('no clear shot at their floor');
     this.notTrappable.delete(enemy.id);
-    const ready = this.exitStillThere();
-    const spot = ready ? this.exitSpot! : this.pickSpot();
+    // The exit it has set, if it is as good as any in view (a shot saved); else the best one in view.
+    const health = this.healthOf(enemy.id);
+    const have = this.exitStillThere() ? this.exitSpot! : null;
+    const haveValue = have && this.usable(have, health) ? trapValue(have, health) : 0;
+    let spot: TrapSpot | null = have && haveValue >= 0.9 ? have : null;
+    if (!spot) {
+      const found = this.pickSpot(health);
+      spot = found && trapValue(found, health) > haveValue + 0.2 ? found : haveValue >= MIN_TRAP_VALUE ? have : found;
+    }
     if (!spot) return no('no deadly exit in view');
-    this.trap = { stage: ready ? 'floor' : 'exit', spot, enemy: enemy.id, lastChance: now, firedAt: 0, startedAt: now, planned: straightAway };
+    const ready = spot === have;
+    // A new exit re-links its floor portal: not while one of its own is open right beside it.
+    if (!ready && this.ownFloorPortalNear()) return no('its own floor portal is too close');
+    this.trap = { stage: ready ? 'floor' : 'exit', spot, enemy: enemy.id, lastChance: now, firedAt: 0, startedAt: now, planned: straightAway || skill.decisive, prep: false };
+    this.trapActiveAt = now;
     this.focusId = enemy.id;
     this.stats.trapsOn.set(enemy.id, (this.stats.trapsOn.get(enemy.id) ?? 0) + 1);
     this.steal = null;
     this.setGoal('trap', enemy.id);
-    this.record('trap:start', `${ready ? 'exit already set' : 'placing exit'}${straightAway ? ' (straight after a climb)' : ''}`);
+    this.record('trap:start', `${spot.kind}/${spot.cause} ${ready ? 'exit already set' : 'placing exit'}${straightAway ? ' (straight after a climb)' : ''}`);
     this.whileAiming(enemy.position);
+    return true;
+  }
+
+  /**
+   * Hard: no one to trap right now, so put the exit up now - in the best deadly spot it can
+   * see - and the trap is a single shot when someone steps on good floor.
+   */
+  private prepareExit(now: number): boolean {
+    const { perception } = this.c;
+    if (now < this.prepAt || this.climb || this.steal || this.exitStillThere() || this.ownFloorPortalNear() || this.portalsBusy(now)) return false;
+    this.prepAt = now + (this.c.skill.portalTravel ? TRAVEL_PREP_EVERY : PREP_EVERY);
+    // Against a full-health body (it doesn't know yet who it will meet).
+    const spot = this.pickSpot(100);
+    if (!spot || perception.enemies.size === 0) return false;
+    this.trap = { stage: 'exit', spot, enemy: '', lastChance: now, firedAt: 0, startedAt: now, planned: true, prep: true };
+    this.record('trap:prepare', `${spot.kind}/${spot.cause}`);
+    return true;
+  }
+
+  /** A pre-set exit goes on while it still has the shot; a real chance cancels it. */
+  private keepPrepping(now: number): boolean {
+    const tr = this.trap!;
+    if (tr.stage === 'check') return true;
+    const lost = now - tr.startedAt > PREP_TIME_LIMIT || now - tr.lastChance > 0.5;
+    if (lost) {
+      this.record('trap:prepare-abandon');
+      this.trap = null;
+      return false;
+    }
+    const enemy = this.visibleEnemy();
+    if (enemy) {
+      // Someone to trap: drop the prep (the trap takes the exit shot over, or just starts).
+      this.trap = null;
+      if (this.startTrap(enemy, now, false)) return true;
+      this.trap = tr;
+    }
+    this.whileAiming(null);
     return true;
   }
 
@@ -502,28 +760,84 @@ export class BotBrain {
     if (n && !n.hazards.length && !nav.blocked(n) && !this.onFloorPortal(n)) follower.goTo(nav.standAt(n));
   }
 
+  /**
+   * Whether a portal it has just used for a trap is still at work: moving either of them now
+   * (a climb's exit, a steal, a new exit) would send the victim somewhere else, or nowhere.
+   */
+  private portalsBusy(now: number): boolean {
+    if (now >= this.holdPortalsUntil) return false;
+    // Dead (or gone): the trap has done what it will.
+    const victim = this.holdFor ? this.c.session.playerById(this.holdFor) : null;
+    if (!victim || victim.dead) {
+      this.holdPortalsUntil = 0;
+      return false;
+    }
+    return true;
+  }
+
+  /** An open floor portal of its own within a few steps (a climb's way in it left behind, say). */
+  private ownFloorPortalNear(): boolean {
+    const o = this.c.self.portals.orange;
+    return o.placed && o.normal.y > 0.7 && o.surfaceCenter.distanceTo(this.pos) < OWN_ENTRANCE_NEAR;
+  }
+
   private exitStillThere(): boolean {
     const exit = this.c.self.portals.blue;
     return !!this.exitSpot && exit.placed && exit.owner === this.c.self.id && exit.surfaceCenter.distanceTo(this.exitSpot.point) < 1.6;
   }
 
-  /** The nearest trap exit it can shoot from here. */
-  private pickSpot(): TrapSpot | null {
-    const { perception, traps } = this.c;
+  /**
+   * Whether the exit is any use: a kill or enough damage - a timed one only if its window
+   * opens soon (and can still be hit).
+   */
+  private usable(s: TrapSpot, health: number): boolean {
+    if (trapValue(s, health) < MIN_TRAP_VALUE) return false;
+    if (s.kind !== 'timed') return true;
+    const t = this.timing(s);
+    return !!t && t.earliest <= TIMED_WAIT && t.latest >= 0.2;
+  }
+
+  /**
+   * When a floor portal has to be shot for whoever drops through to land in the hazard's
+   * deadly window: `earliest` .. `latest` seconds from now. Null if the window is too short for
+   * the spread of flight times (or not coming).
+   */
+  private timing(s: TrapSpot): { earliest: number; latest: number } | null {
+    const w = s.hazard?.deadlyWindow?.();
+    if (!w) return null;
+    const earliest = Math.max(0, w.from - (s.flight[0] + PORTAL_DELAY));
+    const latest = w.to - (s.flight[1] + PORTAL_DELAY);
+    return latest >= earliest ? { earliest, latest } : null;
+  }
+
+  /**
+   * The best exit it can shoot from here against someone with `health`: a sure kill over a
+   * fall, the nearer of equals, a ceiling drop a little ahead (it lands right under the
+   * slot, in view, for a second drop).
+   */
+  private pickSpot(health: number): TrapSpot | null {
+    const { perception, traps, session } = this.c;
     perception.eye(_eye);
-    let best: TrapSpot | null = null;
-    let bestD = Infinity;
+    const cands: { s: TrapSpot; score: number }[] = [];
     for (const s of traps.spots) {
       if (this.badSpots.has(s)) continue;
+      const value = trapValue(s, health);
+      if (value < MIN_TRAP_VALUE) continue;
       _v.copy(_eye).sub(s.point);
       const d = _v.length();
-      if (d > EXIT_RANGE || d >= bestD || s.normal.dot(_v) < 0.25 * d) continue;
-      if (!perception.clearShot(_w.copy(s.point).addScaledVector(s.normal, 0.05))) continue;
-      if (this.c.session.noPortalNear(s.point, perception.orbs)) continue;
-      best = s;
-      bestD = d;
+      if (d > EXIT_RANGE || s.normal.dot(_v) < 0.25 * d) continue;
+      if (s.kind === 'timed' && !this.usable(s, health)) continue;
+      const base = value >= 1 ? KILL_SCORE : s.kind === 'timed' ? TIMED_SCORE : value * FALL_SCORE + (s.drop ? DROP_BONUS : 0);
+      cands.push({ s, score: base - d * EXIT_DISTANCE_COST });
     }
-    return best;
+    cands.sort((a, b) => b.score - a.score);
+    // (The nearest are often right behind something: a budget of rays, not a short list.)
+    for (const { s } of cands.slice(0, EXIT_RAYS)) {
+      if (!perception.clearShot(_w.copy(s.point).addScaledVector(s.normal, 0.05))) continue;
+      if (session.noPortalNear(s.point, perception.orbs)) continue;
+      return s;
+    }
+    return null;
   }
 
   /** The point on portal-taking floor under where the enemy will be, or null. */
@@ -575,13 +889,24 @@ export class BotBrain {
       // Came down off the high ground (or, for a drop-in, wandered off from where it lands).
       const away = (k: KnownEnemy) =>
         cl.why === 'high' ? k.position.y - pos.y < CLIMB_UP - 1 : Math.hypot(k.position.x - cl.spot.land.x, k.position.z - cl.spot.land.z) > COMBO_REACH + 6;
-      const gone = cl.stage !== 'walk' && (!e || away(e));
-      const tooLong = now - cl.startedAt > CLIMB_TIME_LIMIT || (cl.stage === 'walk' && now - cl.stageAt > CLIMB_WALK_LIMIT);
+      const gone = cl.stage !== 'walk' && (cl.why === 'travel' ? this.travelOver(cl) : !e || away(e));
+      const tooLong = now - cl.startedAt > (cl.why === 'travel' ? TRAVEL_TIME_LIMIT : CLIMB_TIME_LIMIT) || (cl.stage === 'walk' && now - cl.stageAt > CLIMB_WALK_LIMIT);
       if (gone || tooLong) {
-        this.record('climb:abandon', gone ? (cl.why === 'high' ? 'they came down' : 'they moved off') : 'took too long');
+        this.record('climb:abandon', `${cl.why}/${cl.stage}: ${gone ? (cl.why === 'travel' ? 'no longer going there' : cl.why === 'high' ? 'they came down' : 'they moved off') : 'took too long'}`);
         if (tooLong) this.badClimbs.set(cl.spot, now + BAD_SPOT_TIME);
         this.climb = null;
-        this.climbReadyAt = now + CLIMB_COOLDOWN;
+        if (cl.why === 'travel') this.travelReadyAt = now + TRAVEL_REST;
+        else this.climbReadyAt = now + this.c.skill.climbCooldown;
+        return false;
+      }
+      // Someone stole a portal of its own meanwhile (an enemy's shot turns it theirs): the way in
+      // now leads to their trap, not to where it set the exit. Walk away from it.
+      if (cl.stage !== 'approach' && cl.stage !== 'exit' && !this.hopPortalsIntact(cl)) {
+        this.record('climb:abandon', `${cl.why}/${cl.stage}: a portal of its own was taken`);
+        this.climb = null;
+        if (cl.why === 'travel') this.travelReadyAt = now + TRAVEL_STOLEN_REST;
+        else this.climbReadyAt = now + this.c.skill.climbCooldown;
+        follower.stop();
         return false;
       }
       if (cl.stage === 'approach') {
@@ -605,7 +930,7 @@ export class BotBrain {
           this.record('climb:abandon', `no shot from the vantage point (${status}${spot ? ', no floor for a way in' : ''})`);
           this.badClimbs.set(cl.spot, now + BAD_SPOT_TIME);
           this.climb = null;
-          this.climbReadyAt = now + CLIMB_COOLDOWN;
+          this.climbReadyAt = now + this.c.skill.climbCooldown;
           return false;
         }
         this.climb = { ...cl, stage: 'exit', spot, entrance, firedAt: 0, stageAt: now };
@@ -614,7 +939,7 @@ export class BotBrain {
       follower.stop();
       return true;
     }
-    if (!climbs || !skill.portalClimb || now < this.climbReadyAt || !self.controller.isGrounded) return false;
+    if (!climbs || !skill.portalClimb || now < this.climbReadyAt || !self.controller.isGrounded || this.portalsBusy(now)) return false;
     const pos = this.pos;
     // Someone well above it, that a trap from down here can't reach.
     const enemy = this.target([...perception.enemies.values()].filter((e) => e.visible && e.position.y - pos.y >= CLIMB_UP));
@@ -641,6 +966,7 @@ export class BotBrain {
         startedAt: now,
         key: `climb:${this.climbs++}`,
         retried: false,
+        blockedSince: 0,
         why: 'high',
         fromFeet: pos.y - PLAYER_FEET_OFFSET,
       };
@@ -655,9 +981,17 @@ export class BotBrain {
     return true;
   }
 
+  /** Its exit is still its own at the climb's spot, and (once the way in is open) so is the way in. */
+  private hopPortalsIntact(cl: ClimbPlan): boolean {
+    const { blue, orange } = this.c.self.portals;
+    const me = this.c.self.id;
+    if (!blue.placed || blue.owner !== me || blue.surfaceCenter.distanceTo(cl.spot.point) > ENTRANCE_SLACK) return false;
+    return cl.stage === 'entrance' || (orange.placed && orange.owner === me);
+  }
+
   private startClimb(spot: ClimbSpot, enemy: KnownEnemy, entrance: THREE.Vector3, why: ClimbPlan['why'], now: number): void {
     const key = `climb:${this.climbs++}`;
-    this.climb = { stage: 'exit', spot, enemy: enemy.id, entrance, firedAt: 0, stageAt: now, startedAt: now, key, retried: false, why, fromFeet: this.pos.y - PLAYER_FEET_OFFSET };
+    this.climb = { stage: 'exit', spot, enemy: enemy.id, entrance, firedAt: 0, stageAt: now, startedAt: now, key, retried: false, blockedSince: 0, why, fromFeet: this.pos.y - PLAYER_FEET_OFFSET };
     this.focusId = enemy.id;
     this.trap = null;
     this.steal = null;
@@ -677,11 +1011,22 @@ export class BotBrain {
   /** Through: straight on with a trap on them - in the air, as soon as it has a clear shot. */
   private climbThrough(now: number): boolean {
     const cl = this.climb!;
-    this.record('climb:through', `${cl.spot.kind}${cl.why === 'combo' ? ' (drop-in)' : ''}`);
+    this.record('climb:through', `${cl.spot.kind}${cl.why === 'combo' ? ' (drop-in)' : cl.why === 'travel' ? ' (hop)' : ''}`);
     if (cl.why === 'combo') this.stats.dropIns++;
+    else if (cl.why === 'travel') this.stats.travels++;
     else this.stats.climbs++;
     this.climb = null;
-    this.climbReadyAt = now + CLIMB_COOLDOWN;
+    if (cl.why === 'travel') {
+      // Out the other side: on again (another hop, if it is still a long way) - and a trap on whoever it came for.
+      this.travelRollAt = 0;
+      this.travelReadyAt = now + TRAVEL_REST;
+      // (Its trap exit went with the hop: set one up again before anything else.)
+      this.prepAt = 0;
+      if (!cl.enemy) return false;
+      this.afterClimb = { enemy: cl.enemy, until: now + AFTER_CLIMB };
+      return this.trapAfterClimb(now);
+    }
+    this.climbReadyAt = now + this.c.skill.climbCooldown;
     this.afterClimb = { enemy: cl.enemy, until: now + AFTER_CLIMB };
     return this.trapAfterClimb(now);
   }
@@ -694,9 +1039,10 @@ export class BotBrain {
    */
   private planCombo(now: number): boolean {
     const { climbs, skill, random, self, perception, session } = this.c;
-    if (!climbs || !skill.comboChance || this.climb || this.trap || this.steal) return false;
+    if (!climbs || !skill.comboChance || this.climb || this.trap || this.steal || this.portalsBusy(now)) return false;
+    if (now - this.trapActiveAt < COMBO_AFTER_TRAP) return false;
     if (now < this.climbReadyAt || now < this.comboRollAt || !self.controller.isGrounded) return false;
-    this.comboRollAt = now + COMBO_ROLL;
+    this.comboRollAt = now + skill.comboEvery;
     if (random() >= skill.comboChance) return false;
     const enemy = this.target([...perception.enemies.values()].filter((e) => e.visible));
     if (!enemy) return false;
@@ -849,14 +1195,19 @@ export class BotBrain {
     if (known !== undefined) return known;
     const { traps } = this.c;
     const eyes = [c.land.clone().setY(c.land.y + PLAYER_FEET_OFFSET + EYE_OFFSET), c.point.clone().lerp(c.land, 0.5).setY((c.point.y + c.land.y) / 2 + 0.5)];
-    known = traps.spots.some((t) =>
-      eyes.some((eye) => {
+    // Any exit worth shooting counts (against someone at full health), the best-looking first.
+    const worth = traps.spots.filter((t) => trapValue(t, 100) >= MIN_TRAP_VALUE);
+    known = eyes.some((eye) => {
+      const near: { t: TrapSpot; d: number }[] = [];
+      for (const t of worth) {
         _v.copy(eye).sub(t.point);
         const d = _v.length();
-        if (d > EXIT_RANGE || t.normal.dot(_v) < 0.25 * d) return false;
-        return this.solidClear(eye, _w.copy(t.point).addScaledVector(t.normal, 0.05));
-      }),
-    );
+        if (d > EXIT_RANGE || t.normal.dot(_v) < 0.25 * d) continue;
+        near.push({ t, d });
+      }
+      near.sort((a, b) => b.t.damage - a.t.damage || a.d - b.d);
+      return near.slice(0, TRAP_VIEW_TRIES).some(({ t }) => this.solidClear(eye, _w.copy(t.point).addScaledVector(t.normal, 0.05)));
+    });
     this.climbTrapView.set(c, known);
     return known;
   }
@@ -890,12 +1241,17 @@ export class BotBrain {
       return;
     }
     if (cl.stage === 'walk' && cl.entrance) {
-      // Walk onto the floor portal (and drop in), looking at it.
-      this.aim = { key: `${cl.key}:in`, point: cl.entrance, fire: null, planned: true };
+      // Walk onto the floor portal (and drop in), looking at it - where it really opened: on a
+      // narrow walkway it sits up to a metre or so off where the shot was aimed.
+      const own = self.portals.orange;
+      const at = own.placed && own.isOpen && own.owner === self.id && own.surfaceCenter.distanceTo(cl.entrance) < ENTRANCE_SLACK ? own.surfaceCenter : cl.entrance;
+      this.aim = { key: `${cl.key}:in`, point: at, fire: null, planned: true };
       const pos = this.pos;
-      const dx = cl.entrance.x - pos.x;
-      const dz = cl.entrance.z - pos.z;
+      const dx = at.x - pos.x;
+      const dz = at.z - pos.z;
       const len = Math.hypot(dx, dz) || 1;
+      // (Right over it: stand, rather than flip the way it steers on a hair's breadth.)
+      if (len < 0.15) return;
       const yaw = self.controller.lookYaw;
       const fx = -Math.sin(yaw);
       const fz = -Math.cos(yaw);
@@ -905,10 +1261,34 @@ export class BotBrain {
     }
     if (cl.stage === 'approach' || !cl.entrance) return; // walking there (the follower steers)
     const exit = cl.stage === 'exit';
+    // (A sidestep may have carried it off: the way in goes beside it, wherever that is now.)
+    if (!exit && !cl.firedAt && cl.entrance.distanceTo(this.pos) > ENTRANCE_RINGS[1] + 1) {
+      const entrance = this.pickEntrance();
+      if (entrance) cl.entrance = entrance;
+    }
     const color: PortalColor = exit ? 'blue' : 'orange';
     const target = exit ? cl.spot.point : cl.entrance;
     if (!cl.firedAt) {
       const clear = perception.clearShot(_w.copy(target).addScaledVector(exit ? cl.spot.normal : _v.set(0, 1, 0), 0.05));
+      if (clear) {
+        cl.blockedSince = 0;
+      } else if (!cl.blockedSince) {
+        cl.blockedSince = now;
+      } else if (now - cl.blockedSince > CLIMB_BLOCKED) {
+        // Nothing but a wall in the way for a while (it has shifted since it chose): another floor spot, or give up.
+        const entrance = exit ? null : this.pickEntrance();
+        cl.blockedSince = 0;
+        if (entrance) {
+          cl.entrance = entrance;
+          this.record('climb:entrance-moved');
+        } else {
+          this.record('climb:abandon', 'no clear line to the mark');
+          if (exit) this.badClimbs.set(cl.spot, now + BAD_SPOT_TIME);
+          this.climb = null;
+          this.climbReadyAt = now + 1;
+          return;
+        }
+      }
       // Exits are often on small slots far off: line up within ~0.3 m of the mark.
       const tolerance = Math.atan2(CLIMB_AIM, perception.eye(_eye).distanceTo(target));
       // (It chose these marks itself: no reaction time before it turns to them.)
@@ -931,7 +1311,7 @@ export class BotBrain {
       return;
     }
     this.record(`climb:${cl.stage}-set`);
-    this.climb = { ...cl, stage: exit ? 'entrance' : 'walk', firedAt: 0, stageAt: now, retried: false };
+    this.climb = { ...cl, stage: exit ? 'entrance' : 'walk', firedAt: 0, stageAt: now, retried: false, blockedSince: 0 };
   }
 
   /**
@@ -961,6 +1341,121 @@ export class BotBrain {
     }
   }
 
+  // --- Portal travel ------------------------------------------------------------------------
+
+  /** What walking from `from` to `to` costs (route cost, about metres), or Infinity with no route. */
+  private walkCost(from: THREE.Vector3 | NavNode, to: THREE.Vector3): number {
+    const path = this.c.nav.findPath(from, to, (n) => this.onFloorPortal(n));
+    return path ? path.links.reduce((sum, l) => sum + l.cost, 0) : Infinity;
+  }
+
+  /**
+   * Portal travel (`portalTravel` skills): on its way to `dest` it is worth putting an exit in
+   * view that lands it much nearer (or somewhere walking would never get it), a floor portal
+   * beside itself, and stepping in - the climb's own steps (shoot the exit, shoot the
+   * entrance, walk in), with a goal rather than a victim. The exit is picked by what is left
+   * to walk from where it lands (a real route, for the few best), not by how near it looks.
+   * Looked into every few tenths of a second while on its way; false if walking is as good.
+   */
+  private tryTravel(now: number, dest: THREE.Vector3, kind: TravelKind, enemyId = ''): boolean {
+    const { travel, skill, self, perception, session } = this.c;
+    if (!travel || !skill.portalTravel || this.climb || now < this.travelRollAt || now < this.travelReadyAt) return false;
+    if (!self.controller.isGrounded || this.portalsBusy(now)) return false;
+    this.travelRollAt = now + TRAVEL_EVERY;
+    const pos = this.pos;
+    if (pos.distanceTo(dest) < 4) return false;
+    // Portals opened in view of someone near enough are theirs in a blink (a steal turns the way
+    // in into their trap): not with anyone watching the spot it stands on.
+    if (this.watchedAt(pos, _up)) return false;
+    const walk = this.walkCost(pos, dest);
+    // (A trap exit it has set goes with the hop: that is worth something.)
+    const spare = this.exitStillThere() ? TRAVEL_READY_COST : 0;
+    if (walk < TRAVEL_MIN_WALK + spare) return false;
+    const canFlash = self.controller.immunityCooldownFraction() >= 1;
+    perception.eye(_eye);
+    const cands: { s: ClimbSpot; est: number }[] = [];
+    for (const s of travel.spots) {
+      if (this.badClimbs.has(s) || (s.impact > FALL_DAMAGE_THRESHOLD && !canFlash)) continue;
+      // However it is routed, what is left from the landing is no less than the distance across.
+      const across = Math.hypot(s.land.x - dest.x, s.land.z - dest.z);
+      if (across + TRAVEL_OVERHEAD + TRAVEL_MIN_SAVING + spare >= walk) continue;
+      _v.copy(_eye).sub(s.point);
+      const d = _v.length();
+      if (d > CLIMB_RANGE || s.normal.dot(_v) < 0.25 * d) continue;
+      // (Landing on the wrong tier is across a wall of stairs: the real route is checked below.)
+      cands.push({ s, est: across + Math.abs(s.node.y - (dest.y - PLAYER_FEET_OFFSET)) * 2 + d * 0.15 });
+    }
+    if (!cands.length) return false;
+    cands.sort((a, b) => a.est - b.est);
+    let best: { s: ClimbSpot; left: number } | null = null;
+    let routed = 0;
+    for (const { s } of cands.slice(0, TRAVEL_LOOKS)) {
+      if (routed >= TRAVEL_ROUTES) break;
+      if (!perception.clearShot(_w.copy(s.point).addScaledVector(s.normal, 0.05))) continue;
+      if (session.noPortalNear(s.point, perception.orbs)) continue;
+      if (this.watchedAt(s.point, s.normal)) continue;
+      routed++;
+      const left = this.walkCost(s.node, dest);
+      if (!best || left < best.left) best = { s, left };
+    }
+    if (!best || best.left + TRAVEL_OVERHEAD + TRAVEL_MIN_SAVING + spare > walk) return false;
+    const entrance = this.pickEntrance();
+    if (!entrance) {
+      this.travelRollAt = now + TRAVEL_NO_ENTRANCE;
+      return false;
+    }
+    this.climb = {
+      stage: 'exit',
+      spot: best.s,
+      enemy: enemyId,
+      entrance,
+      firedAt: 0,
+      stageAt: now,
+      startedAt: now,
+      key: `climb:${this.climbs++}`,
+      retried: false,
+      blockedSince: 0,
+      why: 'travel',
+      fromFeet: pos.y - PLAYER_FEET_OFFSET,
+      dest: dest.clone(),
+      destKind: kind,
+    };
+    if (enemyId) this.focusId = enemyId;
+    this.trap = null;
+    this.steal = null;
+    this.setGoal('climb', `portal to ${kind}`);
+    this.record('travel:start', `${kind}: walk ${walk === Infinity ? 'no route' : walk.toFixed(0)} -> ${best.left.toFixed(0)} via a ${best.s.kind} exit at ${best.s.point.toArray().map((v) => v.toFixed(0)).join(',')}`);
+    this.c.follower.stop();
+    return true;
+  }
+
+  /** Whether an enemy near enough to shoot a portal at `at` (facing `normal`) has a clear line to it. */
+  private watchedAt(at: THREE.Vector3, normal: THREE.Vector3): boolean {
+    const range = STEAL_RANGE + TRAVEL_WATCH_MARGIN;
+    for (const e of this.c.perception.enemies.values()) {
+      _eye.copy(e.position);
+      _eye.y += 0.5;
+      _v.copy(_eye).sub(at);
+      const d = _v.length();
+      if (d > range || normal.dot(_v) < 0.3 * d) continue;
+      if (this.solidClear(_eye, _w.copy(at).addScaledVector(normal, 0.05))) return true;
+    }
+    return false;
+  }
+
+  /** A hop that has no point any more: the orb is gone, or whoever it was after has gone elsewhere. */
+  private travelOver(cl: ClimbPlan): boolean {
+    const dest = cl.dest;
+    if (!dest) return false;
+    const { perception } = this.c;
+    if (cl.destKind === 'orb') return !perception.orbs.some((o) => o.distanceToSquared(dest) < 1);
+    if (cl.destKind === 'enemy') {
+      const e = perception.enemies.get(cl.enemy);
+      return !e || e.position.distanceTo(dest) > TRAVEL_DEST_DRIFT;
+    }
+    return false;
+  }
+
   // --- Stealing ---------------------------------------------------------------------------
 
   private planSteal(now: number): boolean {
@@ -977,12 +1472,14 @@ export class BotBrain {
       this.whileAiming(st.portal.surfaceCenter);
       return true;
     }
-    if (now < this.stealReadyAt) return false;
-    const { perception, traps, random, skill } = this.c;
+    if (now < this.stealReadyAt || this.portalsBusy(now)) return false;
+    const { perception, random, skill } = this.c;
     let best: StealPlan | null = null;
     let bestValue = -Infinity;
     for (const [p, front] of perception.portals) {
       if (!this.stealable(p)) continue;
+      const tried = this.stealTries.get(p);
+      if (tried && now - tried.at < STEAL_REPEAT_TIME && tried.n >= STEAL_REPEAT) continue;
       // Go for this one at all? Decided once per placement.
       let call = this.stealCalls.get(p);
       if (!call || call.at.distanceToSquared(front) > 0.25) {
@@ -990,7 +1487,7 @@ export class BotBrain {
         this.stealCalls.set(p, call);
       }
       if (!call.go) continue;
-      const spot = traps.spots.find((t) => t.point.distanceTo(p.surfaceCenter) < AT_TRAP_SPOT) ?? null;
+      const spot = this.trapSpotAt(p.surfaceCenter);
       const floor = p.normal.y > 0.7;
       const ownExit = this.exitStillThere();
       // Someone's trap exit becomes its own exit (or, with one already set, just isn't theirs
@@ -1004,12 +1501,29 @@ export class BotBrain {
     }
     if (!best) return false;
     this.steals++;
+    const prev = this.stealTries.get(best.portal);
+    this.stealTries.set(best.portal, { n: prev && now - prev.at < STEAL_REPEAT_TIME ? prev.n + 1 : 1, at: now });
     this.steal = best;
     const what = `${best.portal.owner}:${best.portal.color} as ${best.color}${best.spot ? ' (trap exit)' : ''}`;
     this.setGoal('steal', what);
     this.record('steal:start', what);
     this.whileAiming(best.portal.surfaceCenter);
     return true;
+  }
+
+  /** The best trap exit spot right at `at` (a portal someone put there), if any. */
+  private trapSpotAt(at: THREE.Vector3): TrapSpot | null {
+    let best: TrapSpot | null = null;
+    let bestValue = 0;
+    for (const t of this.c.traps.spots) {
+      if (t.point.distanceTo(at) >= AT_TRAP_SPOT) continue;
+      const v = trapValue(t, 100);
+      if (v > bestValue) {
+        bestValue = v;
+        best = t;
+      }
+    }
+    return bestValue >= MIN_TRAP_VALUE ? best : null;
   }
 
   /** An enemy portal it can see right now, near enough and facing it squarely enough to hit. */
@@ -1052,6 +1566,7 @@ export class BotBrain {
       this.hasOrbTarget = false;
       return false;
     }
+    if (this.tryTravel(now, best, 'orb')) return true;
     const fresh = !this.hasOrbTarget || this.orbTarget.distanceToSquared(best) > 0.25;
     // Got there and it's still "there" (it can't be): don't keep walking on the spot.
     if (!fresh && follower.status === 'arrived') {
@@ -1065,6 +1580,12 @@ export class BotBrain {
       this.orbTarget.copy(best);
       this.hasOrbTarget = true;
       const status = gaveUp ? 'stuck' : follower.goTo(best);
+      // (Up in the air - out of a portal, off a ledge - there is no floor to route from yet: that
+      // is no fault of the orb's. Look again when it has landed.)
+      if (status === 'no-path' && !this.c.self.controller.isGrounded) {
+        this.hasOrbTarget = false;
+        return false;
+      }
       if (status === 'no-path' || gaveUp) {
         this.badOrbs.push({ at: best.clone(), until: now + 10 });
         this.hasOrbTarget = false;
@@ -1086,8 +1607,9 @@ export class BotBrain {
     const best = this.target(worth, (e) => 0.5 + 0.5 * e.confidence);
     if (!best) return false;
     // In sight: close in while too far off to trap them (near enough, the trap decides).
-    const close = this.c.skill.trapRange * (this.goal === 'hunt' ? HUNT_CLOSE - 0.2 : HUNT_CLOSE);
+    const close = this.floorReach(best) * (this.goal === 'hunt' ? HUNT_CLOSE - 0.2 : HUNT_CLOSE);
     if (best.visible && best.position.distanceTo(this.pos) < close) return false;
+    if (this.tryTravel(now, best.position, 'enemy', best.id)) return true;
     if (this.goal !== 'hunt' || follower.status !== 'moving') {
       if (follower.goTo(best.position) === 'no-path') return false;
       this.focusId = best.id;
@@ -1096,7 +1618,7 @@ export class BotBrain {
     return true;
   }
 
-  private explore(): void {
+  private explore(now: number): void {
     const { follower, nav, random } = this.c;
     if (this.goal === 'explore' && (follower.status === 'moving' || follower.status === 'waiting')) return;
     const pos = this.pos;
@@ -1119,6 +1641,7 @@ export class BotBrain {
       return;
     }
     const target = nav.standAt(pick);
+    if (this.tryTravel(now, target, 'explore')) return;
     if (follower.goTo(target) !== 'no-path') {
       this.visited.push(target);
       if (this.visited.length > TRAIL_LENGTH) this.visited.shift();
@@ -1144,7 +1667,7 @@ export class BotBrain {
     const t = this.trap;
     if (!t) return;
     if (t.stage === 'check') {
-      if (now < t.firedAt + (t.planned ? CHECK_AFTER_PLANNED : CHECK_AFTER)) return;
+      if (now < t.firedAt + (t.planned ? CHECK_AFTER_PLANNED : this.c.skill.checkDelay)) return;
       this.checkShot(now);
       return;
     }
@@ -1152,7 +1675,7 @@ export class BotBrain {
       // Hold fire while something is in the way (it may be walking).
       const clear = this.c.perception.clearShot(_w.copy(t.spot.point).addScaledVector(t.spot.normal, 0.05));
       if (clear) t.lastChance = now;
-      this.aim = { key: `exit:${t.spot.point.toArray().join(',')}`, point: t.spot.point, fire: clear ? 'blue' : null, planned: t.planned };
+      this.aim = { key: `exit:${t.spot.point.toArray().join(',')}`, point: t.spot.point, fire: clear ? 'blue' : null, tolerance: this.shotTolerance(t.spot.point, false), planned: t.planned };
       return;
     }
     const e = this.c.perception.enemies.get(t.enemy);
@@ -1160,7 +1683,13 @@ export class BotBrain {
     if (!floor) return; // wait for them to step back onto good floor (or give up in think)
     const clear = this.c.perception.clearShot(_w.copy(floor).setY(floor.y + 0.05));
     if (clear) t.lastChance = now;
-    this.aim = { key: `floor:${t.enemy}`, point: floor, fire: clear ? 'orange' : null, planned: t.planned };
+    // A hazard that only kills in its window: hold the shot until they would come down in it.
+    let timed = true;
+    if (t.spot.kind === 'timed') {
+      const when = this.timing(t.spot);
+      timed = !!when && when.earliest <= 0.03 && when.latest >= 0.03;
+    }
+    this.aim = { key: `floor:${t.enemy}`, point: floor, fire: clear && timed ? 'orange' : null, tolerance: this.shotTolerance(floor, true), planned: t.planned };
   }
 
   private actSteal(now: number): void {
@@ -1208,19 +1737,40 @@ export class BotBrain {
     if (this.shotWas === 'blue') {
       if (portal.placed && portal.surfaceCenter.distanceTo(t.spot.point) < 1.6) {
         this.exitSpot = t.spot;
+        if (t.prep) {
+          // Set in advance: the trap is one shot when someone turns up.
+          this.trap = null;
+          this.record('trap:prepared', `${t.spot.kind}/${t.spot.cause}`);
+          return;
+        }
         this.trap = { ...t, stage: 'floor', lastChance: now };
         this.record('trap:exit-set');
       } else {
         this.badSpots.set(t.spot, now + BAD_SPOT_TIME);
         this.record('trap:exit-failed');
         this.trap = null;
-        this.trapReadyAt = now + 0.5;
+        this.trapReadyAt = now + 0.15;
+        this.trapActiveAt = now;
       }
       return;
     }
-    this.record(portal.placed && portal.surfaceCenter.distanceTo(this.shotAt) < 1.6 ? 'trap:sprung' : 'trap:floor-failed');
+    const sprung = portal.placed && portal.surfaceCenter.distanceTo(this.shotAt) < 1.6;
+    this.record(sprung ? 'trap:sprung' : 'trap:floor-failed', `${t.spot.kind}/${t.spot.cause}`);
+    if (sprung) {
+      this.holdPortalsUntil = now + PORTAL_HOLD;
+      this.holdFor = t.enemy;
+      this.stats.sprung.set(t.spot.cause, (this.stats.sprung.get(t.spot.cause) ?? 0) + 1);
+      // Whatever it did stays on them (a kill resets it: they come back at full health).
+      const victim = this.c.session.playerById(t.enemy);
+      if (t.spot.kind === 'fall' && victim) {
+        const h = this.hurt.get(t.enemy);
+        const damage = (h && h.life === victim.respawns ? h.damage : 0) + t.spot.damage;
+        this.hurt.set(t.enemy, { damage, life: victim.respawns });
+      }
+    }
     this.trap = null;
-    this.trapReadyAt = now + TRAP_COOLDOWN;
+    this.trapReadyAt = now + this.c.skill.trapCooldown;
+    this.trapActiveAt = now;
   }
 
   /**
@@ -1230,11 +1780,11 @@ export class BotBrain {
   private dodge(cmd: PlayerCommand, now: number): void {
     const { skill, session, random } = this.c;
     if (now < this.dodgeUntil) {
-      cmd.forward = 0;
-      cmd.right = this.dodgeDir;
+      this.steerWorld(cmd, this.dodgeDir);
       return;
     }
-    if (!skill.dodges || now < this.dodgeUntil + DODGE_REST || this.trap || this.steal || this.climb) return;
+    // (A climb sidesteps too, until the last step: walking in to the way in it set.)
+    if (!skill.dodges || now < this.dodgeUntil + DODGE_REST || (this.trap && !this.trap.prep) || this.steal || this.climb?.stage === 'walk') return;
     const pos = this.pos;
     const feet = pos.y - PLAYER_FEET_OFFSET;
     for (const e of this.c.perception.enemies.values()) {
@@ -1252,22 +1802,34 @@ export class BotBrain {
       const side = this.safeSide(random() < 0.5 ? -1 : 1);
       if (!side) return;
       this.dodgeUntil = now + DODGE_TIME;
-      this.dodgeDir = side;
-      cmd.forward = 0;
-      cmd.right = side;
+      const mine = this.c.self.controller.lookYaw;
+      this.dodgeDir.set(Math.cos(mine) * side, 0, -Math.sin(mine) * side);
+      this.steerWorld(cmd, this.dodgeDir);
       this.record('dodge', e.id);
       return;
     }
   }
 
+  /** Run along `dir` (a horizontal unit vector in the world), whichever way the head has turned. */
+  private steerWorld(cmd: PlayerCommand, dir: THREE.Vector3): void {
+    const yaw = this.c.self.controller.lookYaw;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    cmd.forward = dir.x * fx + dir.z * fz;
+    cmd.right = dir.x * -fz + dir.z * fx;
+  }
+
   /** Which way (1 right, -1 left, as it looks now) has safe floor for a sidestep - `prefer` first - or 0. */
   private safeSide(prefer: number): number {
-    const { nav, self } = this.c;
+    const { nav, self, skill } = this.c;
     const pos = this.pos;
     const feet = pos.y - PLAYER_FEET_OFFSET;
     const yaw = self.controller.lookYaw;
+    // A faster body slides further in the half second it sidesteps.
+    const reach = Math.ceil(skill.moveSpeed * 7 * DODGE_TIME + DODGE_MARGIN);
+    const steps = Array.from({ length: reach }, (_, i) => i + 1);
     for (const side of [prefer, -prefer]) {
-      const ok = DODGE_CLEAR.every((k) => {
+      const ok = steps.every((k) => {
         const n = nav.nearest(_w.set(pos.x + Math.cos(yaw) * side * k, pos.y, pos.z - Math.sin(yaw) * side * k), 0);
         return !!n && !n.hazards.length && !nav.blocked(n) && !this.onFloorPortal(n) && Math.abs(n.y - feet) < 0.7;
       });
