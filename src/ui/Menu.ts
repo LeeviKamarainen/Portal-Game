@@ -630,10 +630,10 @@ export class Menu {
                   ['tap', 'Tap screen'],
                   ['buttons', 'Buttons'],
                 ]),
-                this.segRow('touchBlue', 'Blue portal', 'Tap shooting only. Hold: tap is orange, press and hold is blue. Double tap: tap is orange, double tap is blue. Alternate: every tap is the next colour; the swatch by the bars flips it.', [
+                this.segRow('touchBlue', 'Blue portal', 'Tap shooting only. Alternate: every tap is the next colour; the swatch by the bars flips it. Hold: tap is orange, press and hold is blue. Double tap: tap is orange, double tap is blue.', [
+                  ['alternate', 'Alternate'],
                   ['hold', 'Hold'],
                   ['double', 'Double tap'],
-                  ['alternate', 'Alternate'],
                 ]),
               ]
             : []),

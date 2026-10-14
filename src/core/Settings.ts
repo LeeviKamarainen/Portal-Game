@@ -51,7 +51,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   sensitivity: 1,
   invertY: false,
   touchFire: 'tap',
-  touchBlue: 'hold',
+  touchBlue: 'alternate',
   portalPings: true,
   botDifficulty: 'normal',
   botCount: 1,
