@@ -3,7 +3,7 @@ import { materials, glowMaterial, type MaterialName } from '../world/Materials';
 import { EFFECT_COLORS, iconTexture, type SwitchEffect } from '../world/hazards/Switch';
 import { PLATE_HEIGHT, faithArcs } from '../world/hazards/FaithPlate';
 import { BUTTON_HEIGHT } from '../world/hazards/FloorButton';
-import { FACE_NAMES, ROOM_SIDES, TEAM_COLORS, color, faces, footprint, front, turn, type Piece, type Team } from '../world/maps/MapFormat';
+import { FACE_NAMES, ROOM_SIDES, TEAM_COLORS, color, faces, footprint, front, surfRamp, turn, type Piece, type Poly, type Team } from '../world/maps/MapFormat';
 import type { FaceKey } from '../world/Level';
 
 /**
@@ -148,6 +148,32 @@ function flat(w: number, d: number, at: THREE.Vector3, mat: THREE.Material, lift
 
 const V = (v: [number, number, number]) => new THREE.Vector3(v[0], v[1], v[2]);
 
+/** A convex solid from its polygons (a surf ramp, a fin), each face fanned into triangles. */
+function polyMesh(polys: Poly[], material: MaterialName): THREE.Object3D {
+  const group = new THREE.Group();
+  const middle = new THREE.Vector3();
+  let n = 0;
+  for (const poly of polys) for (const q of poly.points) (middle.add(q), n++);
+  middle.divideScalar(n);
+  for (const poly of polys) {
+    const pts = poly.points;
+    const pos: number[] = [];
+    for (let i = 1; i < pts.length - 1; i++) {
+      // Wound to face away from the middle.
+      const [a, b, c] = [pts[0], pts[i], pts[i + 1]];
+      const out = new THREE.Vector3().crossVectors(b.clone().sub(a), c.clone().sub(a)).dot(a.clone().sub(middle)) >= 0;
+      for (const q of out ? [a, b, c] : [a, c, b]) pos.push(q.x, q.y, q.z);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    group.add(new THREE.Mesh(g, solidMaterial(poly.portalable ? 'panel' : material)));
+  }
+  return group;
+}
+
+const GATE_COLORS: Record<string, number> = { checkpoint: 0xffc23a, finish: 0x40ffd0, fizzler: 0x7cc4ff };
+
 /** The editor's view of one piece. Never throws: a broken piece shows as a red box. */
 export function pieceView(p: Piece): THREE.Object3D {
   try {
@@ -239,6 +265,29 @@ function build(p: Piece): THREE.Object3D {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       group.add(mesh);
+      break;
+    }
+    case 'surf-ramp': {
+      const { ramp, fins } = surfRamp(p);
+      const mat = (typeof p.material === 'string' ? p.material : 'surf') as MaterialName;
+      group.add(polyMesh(ramp, mat));
+      for (const f of fins) group.add(polyMesh(f, 'metal'));
+      break;
+    }
+    case 'checkpoint':
+    case 'finish':
+    case 'fizzler': {
+      const hex = GATE_COLORS[p.type];
+      const flatGate = p.flat === true;
+      const sheet = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(size[0], 0.1), Math.max(flatGate ? size[2] : size[1], 0.1)), cached(`gate-${hex}`, () => new THREE.MeshBasicMaterial({ color: hex, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false })));
+      sheet.position.copy(at).setY(at.y + size[1] / 2);
+      sheet.rotation.set(flatGate ? -Math.PI / 2 : 0, (rot * Math.PI) / 180, 0, 'YXZ');
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(sheet.geometry), line(hex));
+      edges.position.copy(sheet.position);
+      edges.rotation.copy(sheet.rotation);
+      edges.raycast = () => {};
+      group.add(sheet, edges);
+      if (p.type !== 'fizzler') group.add(arrow(at.clone().setY(at.y + 0.3), fwd, 2, hex));
       break;
     }
     case 'acid': {

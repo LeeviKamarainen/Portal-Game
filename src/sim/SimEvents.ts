@@ -55,6 +55,10 @@ export type SessionEvent =
   /** `by`: who gets the kill credit, if anyone (see Match). */
   | { type: 'death'; player: string; cause: string; by: string | null }
   | { type: 'goal' }
+  /** Speedrun: checkpoint `index` (0-based) passed `time` seconds into the run. */
+  | { type: 'checkpoint'; index: number; time: number }
+  /** Speedrun: the finish gate, every checkpoint done; `splits` are the checkpoint times. */
+  | { type: 'finish'; time: number; splits: number[] }
   | { type: 'score'; player: string; points: number; reason: 'orb' | 'kill'; victim?: string }
   | { type: 'win'; player: string }
   | { type: 'steal'; thief: string; victim: string };

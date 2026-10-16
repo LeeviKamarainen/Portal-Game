@@ -1567,6 +1567,11 @@ export class Editor {
       if (goals === 0) out.push('A puzzle needs an exit goal (Markers → Exit goal) - nothing ends the level yet.');
       if (goals > 1) out.push('A puzzle has one exit goal; remove the extra ones.');
     }
+    if (mapKind(this.map) === 'speedrun') {
+      const finishes = pieces.filter((p) => p.type === 'finish').length;
+      if (finishes === 0) out.push('A speedrun needs a finish gate (Markers → Finish gate) - the clock never stops yet.');
+      if (finishes > 1) out.push('A speedrun has one finish gate; remove the extra ones.');
+    }
     if (!pieces.some((p) => p.type === 'room')) out.push('No room shell: the map has no outer walls or sky cover.');
     const ids = new Set(pieces.map((p) => p.id).filter((x): x is string => typeof x === 'string' && !!x));
     const has = (id: string) => ids.has(id) || (id.endsWith('~') && ids.has(id.replace(/~+$/, '')));

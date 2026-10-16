@@ -13,6 +13,7 @@ import { Switch } from '../world/hazards/Switch';
 import { PointOrbs, distanceToOpening } from '../world/PointOrbs';
 import { Match, type MatchRules } from '../game/Match';
 import { ArenaPlayer, type PlayerSetup } from '../game/ArenaPlayer';
+import { Speedrun } from './Speedrun';
 import type { Noise, SessionEvent, SimShot, SimSound, SoundName, SoundSource } from './SimEvents';
 
 const BOX_IMPACT_THRESHOLD = 10;
@@ -79,6 +80,8 @@ export class ArenaSim {
   /** Scores and win condition; null outside PvP. */
   readonly match: Match | null;
   readonly orbs: PointOrbs | null;
+  /** Speedrun maps: the clock, the checkpoints passed (see Speedrun); null otherwise. */
+  readonly speedrun: Speedrun | null;
   time = 0;
   /** Noises made during the previous step: what bots can hear during this one. */
   heard: readonly Noise[] = [];
@@ -106,6 +109,8 @@ export class ArenaSim {
   private readonly alive: PlayerController[] = [];
   private readonly propHidden = new Map<PropBox, number>();
   private readonly propSpeed = new Map<PropBox, number[]>();
+  /** Where each body was at the start of the step, for what it flew through (gates, fizzlers). */
+  private readonly stepStart = new Map<ArenaPlayer, THREE.Vector3>();
   private completed = false;
   private gravityFactor = 1;
   private gravityUntil = 0;
@@ -136,6 +141,7 @@ export class ArenaSim {
     };
     this.match = rules ? new Match(rules) : null;
     this.orbs = this.match ? new PointOrbs(this.arena, this.match.rules) : null;
+    this.speedrun = def.kind === 'speedrun' ? new Speedrun(this.arena) : null;
     for (const p of this.arena.props) this.system.register(p);
 
     this.hazardCtx = {
@@ -183,6 +189,8 @@ export class ArenaSim {
     const controller = new PlayerController(this.physics, camera, commands, spawn.position, spawn.yaw);
     controller.id = setup.id;
     controller.gravityScale = this.gravityFactor;
+    if (this.speedrun) controller.fallDamage = false;
+    controller.checkSlick = this.level.solids.some((s) => s.slick);
     const portals = { orange: new Portal('orange', palette.orange), blue: new Portal('blue', palette.blue) };
     linkPortals(portals.orange, portals.blue);
     portals.orange.owner = portals.blue.owner = setup.id;
@@ -532,6 +540,10 @@ export class ArenaSim {
     }
     for (const h of this.arena.hazards) h.prePhysics?.(dt, this.hazardCtx);
     for (const p of this.players) {
+      const start = this.stepStart.get(p) ?? new THREE.Vector3();
+      this.stepStart.set(p, start.copy(p.controller.getPosition()));
+    }
+    for (const p of this.players) {
       const c = p.controller;
       // Puppets are placed from the game server's snapshots instead (see netClient).
       if (p.puppet) continue;
@@ -569,6 +581,8 @@ export class ArenaSim {
       this.propSpeed.set(p, recent);
     }
     this.physics.step();
+    // Before portal travel moves anyone: the step's own flight, start to end.
+    this.passGates(dt);
     this.system.step(dt);
     this.alive.length = 0;
     for (const p of this.players) if (this.reachable(p)) this.alive.push(p.controller);
@@ -603,6 +617,42 @@ export class ArenaSim {
     if (local && !local.dead && !this.completed && this.arena.goal?.contains(local.controller.getPosition())) {
       this.completed = true;
       this.events.push({ type: 'goal' });
+    }
+  }
+
+  /**
+   * What each body flew through this step: a fizzler closes its portals; the local runner's
+   * checkpoints and finish (speedrun maps) move the run on. Tested along the step's path,
+   * so a gate can't be skipped at speed.
+   */
+  private passGates(dt: number): void {
+    const fizzlers = this.arena.fizzlers;
+    const run = this.speedrun;
+    for (const p of this.players) {
+      if (p.puppet || p.waiting) continue;
+      const a = this.stepStart.get(p);
+      if (!a) continue;
+      const b = p.controller.getPosition();
+      if (p.local && run && !this.completed) {
+        run.advance(dt, b);
+        if (!p.dead) {
+          const hit = run.cross(a, b);
+          if (hit.checkpoint !== undefined) {
+            this.sound('click', 0.8);
+            this.events.push({ type: 'checkpoint', index: hit.checkpoint, time: run.time });
+          } else if (hit.finish) {
+            this.completed = true;
+            this.events.push({ type: 'finish', time: run.time, splits: [...run.splits] });
+          }
+        }
+      }
+      if (p.dead || fizzlers.length === 0) continue;
+      if (!p.portals.orange.placed && !p.portals.blue.placed) continue;
+      if (fizzlers.some((f) => f.crossed(a, b))) {
+        p.portals.orange.unplace();
+        p.portals.blue.unplace();
+        this.sound('fizzle', 0.8, p.local ? undefined : b, 30, p.id);
+      }
     }
   }
 
@@ -729,6 +779,13 @@ export class ArenaSim {
     }
   }
 
+  /** Speedrun: a fresh run from the spawn pad, the clock at zero. */
+  restartRun(): void {
+    this.speedrun?.reset();
+    this.completed = false;
+    this.respawn();
+  }
+
   /** Online, on a player's screen: the server says the match is over - nobody moves any more. */
   endMatch(): void {
     this.completed = true;
@@ -738,7 +795,8 @@ export class ArenaSim {
   respawnPlayer(p: ArenaPlayer): void {
     p.portals.orange.unplace();
     p.portals.blue.unplace();
-    const spawn = this.spawnFor(p.slot);
+    // A speedrunner comes back at the last checkpoint they passed.
+    const spawn = (p.local ? this.speedrun?.respawnPoint() : null) ?? this.spawnFor(p.slot);
     p.controller.respawn(spawn.position, spawn.yaw);
     p.controller.gravityScale = this.gravityFactor;
     if (this.match) p.controller.setInvulnerableFor(SPAWN_PROTECTION);

@@ -65,6 +65,7 @@ export const SKINS = 'abcdefghijklmnopqr'.split('');
 
 const SETTINGS_KEY = 'portal-arena.settings';
 const PROGRESS_KEY = 'portal-arena.progress';
+const TIMES_KEY = 'portal-arena.speedrun';
 
 function read(key: string): unknown {
   if (FLAGS.test) return null;
@@ -126,4 +127,27 @@ export function loadProgress(): Set<string> {
 
 export function saveProgress(done: Set<string>): void {
   write(PROGRESS_KEY, [...done]);
+}
+
+/** A speedrun map's best run: the time and the checkpoint splits it was made with. */
+export interface RunRecord {
+  time: number;
+  splits: number[];
+}
+
+export function loadBestTimes(): Map<string, RunRecord> {
+  const v = read(TIMES_KEY);
+  const out = new Map<string, RunRecord>();
+  if (!v || typeof v !== 'object') return out;
+  for (const [id, r] of Object.entries(v as Record<string, unknown>)) {
+    const rec = r as Partial<RunRecord> | null;
+    if (rec && typeof rec.time === 'number' && rec.time > 0 && Array.isArray(rec.splits)) {
+      out.set(id, { time: rec.time, splits: rec.splits.filter((x): x is number => typeof x === 'number') });
+    }
+  }
+  return out;
+}
+
+export function saveBestTimes(times: Map<string, RunRecord>): void {
+  write(TIMES_KEY, Object.fromEntries(times));
 }

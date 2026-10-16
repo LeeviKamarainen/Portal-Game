@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { BUILT_IN_MAPS, blankPuzzle } from '../../src/editor/templates';
-import { PIECES, mapKind, withDefaults, type MapData, type MapKind, type Vec3 } from '../../src/world/maps/MapFormat';
+import { PIECES, mapKind, withDefaults, type MapData, type Vec3 } from '../../src/world/maps/MapFormat';
 import { buildCatalogue, renderExample } from './catalogue';
-import { HAZARD_TYPES, blueprintText, roomSizeFor, type Blueprint, type RoomSize } from './blueprint';
+import { HAZARD_TYPES, blueprintText, roomSizeFor, type Blueprint, type GenKind, type RoomSize } from './blueprint';
 import { combatExample, crevasseExample, puzzleExample } from './blueprintExamples';
 
 /**
@@ -16,7 +16,7 @@ export { roomSizeFor };
 
 export interface GenRequest {
   prompt: string;
-  kind: 'auto' | MapKind;
+  kind: 'auto' | GenKind;
   size: 'auto' | RoomSize;
   /** A refinement: change this map as the prompt says instead of designing a new one (already cleaned, see base.ts). */
   baseMap?: MapData;

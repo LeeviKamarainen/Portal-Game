@@ -9,6 +9,7 @@ import { simEnv } from '../sim/env';
  *   metal  - dark ribbed steel:    portals never stick here
  *   floor  - darker concrete tiles (portalable floor)
  *   hazard - yellow/black stripes on anything that moves or hurts
+ *   surf   - blue gridded steel on surf ramps (no portals unless a map says so)
  *
  * Every texture tiles once per `TILE_METRES`, and the builder writes world-scale UVs, so
  * seams line up across neighbouring faces.
@@ -171,7 +172,18 @@ const hazardPainter: Painter = (u, v) => {
   return { h: 0.5 + n * 0.1, r, g, b, rough: 0.55 + n * 0.25 };
 };
 
-export type MaterialName = 'panel' | 'floor' | 'metal' | 'hazard' | 'trim';
+const surfPainter: Painter = (u, v) => {
+  // Surf-ramp steel: deep blue sheet with a bright line grid, so speed and slope read at a glance.
+  const g = gridDist(u, v, 4);
+  const line = g < 0.02 ? 1 : 0;
+  const n = fbm(u * 9, v * 9);
+  const r = line ? 120 : 34 - n * 8;
+  const gr = line ? 170 : 52 - n * 10;
+  const b = line ? 230 : 98 - n * 16;
+  return { h: line ? 0.35 : 0.5 + n * 0.08, r, g: gr, b, rough: line ? 0.3 : 0.38 + n * 0.15 };
+};
+
+export type MaterialName = 'panel' | 'floor' | 'metal' | 'hazard' | 'trim' | 'surf';
 
 let cache: Record<MaterialName, THREE.MeshStandardMaterial> | null = null;
 
@@ -180,19 +192,21 @@ export function materials(): Record<MaterialName, THREE.MeshStandardMaterial> {
   // Nobody looks at a headless arena: plain colours, no canvases.
   if (simEnv.headless) {
     const plain = () => new THREE.MeshStandardMaterial();
-    cache = { panel: plain(), floor: plain(), metal: plain(), hazard: plain(), trim: plain() };
+    cache = { panel: plain(), floor: plain(), metal: plain(), hazard: plain(), trim: plain(), surf: plain() };
     return cache;
   }
   const panel = makeTextures(panelPainter, 6);
   const floor = makeTextures(floorPainter, 5);
   const metal = makeTextures(metalPainter, 9);
   const hazard = makeTextures(hazardPainter, 3);
+  const surf = makeTextures(surfPainter, 4);
   cache = {
     panel: new THREE.MeshStandardMaterial({ ...panel, color: 0xffffff, metalness: 0.0, envMapIntensity: 0.5 }),
     floor: new THREE.MeshStandardMaterial({ ...floor, color: 0xffffff, metalness: 0.05, envMapIntensity: 0.5 }),
     metal: new THREE.MeshStandardMaterial({ ...metal, color: 0xffffff, metalness: 0.75, envMapIntensity: 0.9 }),
     hazard: new THREE.MeshStandardMaterial({ ...hazard, color: 0xffffff, metalness: 0.2, envMapIntensity: 0.6 }),
     trim: new THREE.MeshStandardMaterial({ color: 0x2b3038, roughness: 0.45, metalness: 0.8, envMapIntensity: 0.9 }),
+    surf: new THREE.MeshStandardMaterial({ ...surf, color: 0xffffff, metalness: 0.55, envMapIntensity: 1.0 }),
   };
   return cache;
 }

@@ -1,6 +1,6 @@
 import { BUILT_IN_MAPS, blankMap, blankPuzzle } from '../../src/editor/templates';
-import type { MapData, MapKind } from '../../src/world/maps/MapFormat';
-import { roomSizeFor, type RoomSize } from './blueprint';
+import type { MapData } from '../../src/world/maps/MapFormat';
+import { roomSizeFor, type GenKind, type RoomSize } from './blueprint';
 import { buildCatalogue } from './catalogue';
 import { GenError, addUsage, estimateCostUsd, noUsage, totalTokens, type Llm, type TurnBlock, type TurnMessage, type Usage } from './llm';
 import type { AgentSettings, Prices } from './config';
@@ -23,7 +23,7 @@ export interface ChatTurn {
 
 export interface AgentRequest {
   prompt: string;
-  kind: 'auto' | MapKind;
+  kind: 'auto' | GenKind;
   size: 'auto' | RoomSize;
   /** The map in the editor, which the chat changes (or replaces, when it is just a template). */
   baseMap: MapData;

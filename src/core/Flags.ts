@@ -22,6 +22,7 @@
  *   (Without ?arena, ?editor or ?test the game opens on the main menu.)
  *   ?fps=1              show the frame-time readout (always on in dev builds).
  *   ?arena=pvp          start straight in the PvP arena.
+ *   ?speedrun=N         start straight on speedrun course N (1-based).
  *   ?debug=nav          draw the bots' navigation graph (green floor points; grey walk, blue
  *                       drop and yellow jump links; orange/yellow points: hazard / edge cost).
  *   ?room=ABCDE         open the Online page ready to join that room (invite links).
@@ -62,6 +63,7 @@ export const FLAGS = {
   muted: readMuted(),
   test: params.get('test'),
   arena: params.get('arena'),
+  speedrun: params.get('speedrun'),
   editor: params.has('editor'),
   quality: readQuality(),
   showFps: params.has('fps') || import.meta.env.DEV,

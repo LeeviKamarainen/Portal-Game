@@ -221,7 +221,7 @@ export class PortalGun {
       (c) => {
         const t = this.physics.getOwner(c.handle)?.type;
         // People and crates move out of the way; tunnel colliders are not real geometry.
-        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel' && t !== 'ramp' && c.handle !== face.solid.collider.handle;
+        return t !== 'player' && t !== 'prop' && t !== 'portal-tunnel' && t !== 'ramp' && c.handle !== face.solid.collider.handle && !face.solid.clearOf?.includes(c.handle);
       },
     );
     return blocked === null;

@@ -1,5 +1,5 @@
 import { ArenaSim } from '../sim/ArenaSim';
-import { mapKind, mapToArena, type MapData } from '../world/maps/MapFormat';
+import { mapKind, mapToArena, soloMapMessage, type MapData } from '../world/maps/MapFormat';
 import { BUILT_IN_ONLINE_MAPS, MAP_JSON_MAX, MAP_PIECES_MAX, MAX_SLOTS, type MapChoice } from '../net/protocol';
 
 /** A map a room can play: proven to build, with the number of players it has spawn pads for. */
@@ -49,7 +49,7 @@ async function checkCustom(raw: unknown): Promise<CheckedMap | string> {
   const problem = mapProblem(raw);
   if (problem) return problem;
   const data = raw as MapData;
-  if (mapKind(data) === 'puzzle') return 'Puzzle maps are single-player; online rooms play combat maps.';
+  if (mapKind(data) !== 'combat') return soloMapMessage(data);
   return build(data, null);
 }
 

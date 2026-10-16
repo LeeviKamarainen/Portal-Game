@@ -40,6 +40,15 @@ const CSS = `
 .hud .score .row .bar { flex:1; height:8px; }
 .hud .score .row .bar > div { background:linear-gradient(90deg,#c89a1a,#ffd23a); }
 .hud .score .row.you .who { color:#ffd23a; }
+.hud .run { position:absolute; left:50%; top:12px; transform:translateX(-50%); text-align:center; display:none;
+  padding:6px 16px 8px; border-radius:8px; background:rgba(12,14,20,0.55); border:1px solid rgba(64,255,208,0.3); }
+.hud .run .clock { font-size:30px; font-weight:700; letter-spacing:0.04em; font-variant-numeric:tabular-nums; }
+.hud .run .clock.idle { opacity:0.6; }
+.hud .run .meta { font-size:12px; letter-spacing:0.14em; opacity:0.85; font-variant-numeric:tabular-nums; }
+.hud .run .speed { font-size:13px; font-weight:600; letter-spacing:0.08em; margin-top:2px; font-variant-numeric:tabular-nums; }
+.hud.running .title { max-width:calc(50vw - 150px); }
+.hud.touch .run { top:6px; padding:3px 10px 5px; }
+.hud.touch .run .clock { font-size:22px; }
 .hud .toasts { position:absolute; left:50%; top:58%; transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; gap:4px; }
 .hud .toast { font-size:20px; font-weight:700; letter-spacing:0.1em; color:#ffd23a; animation: hud-toast 1.8s ease-out forwards; }
 @keyframes hud-toast { 0% { opacity:0; transform:translateY(10px) scale(0.9); } 12% { opacity:1; transform:none; } 70% { opacity:1; } 100% { opacity:0; transform:translateY(-14px); } }
@@ -99,11 +108,12 @@ export class Hud {
       <div class="center shadow"><div class="banner"></div><div class="sub"></div></div>
       <div class="effect shadow"></div>
       <div class="score shadow"><div class="to"></div><div class="rows"></div></div>
+      <div class="run shadow"><div class="clock"></div><div class="meta"></div><div class="speed"></div></div>
       <div class="toasts shadow"></div>
       <div class="click shadow">${FLAGS.touch ? 'Tap to play' : 'Click to play'}</div>
     `;
     container.appendChild(this.root);
-    for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts']) {
+    for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts', 'run', 'clock', 'meta', 'speed']) {
       this.el[cls] = this.root.querySelector(`.${cls}`)!;
     }
     this.el.l = this.root.querySelector('.br.l')!;
@@ -173,6 +183,24 @@ export class Hud {
         return row;
       }),
     );
+  }
+
+  /**
+   * The speedrun clock, checkpoints and speed, or null to hide it. `clock` is the time as
+   * shown; `idle` greys it (not started yet); `meta` the line under it.
+   */
+  setRun(run: { clock: string; idle: boolean; meta: string; speed: number } | null): void {
+    this.el.run.style.display = run ? 'block' : 'none';
+    this.root.classList.toggle('running', !!run);
+    if (!run) return;
+    if (this.el.clock.textContent !== run.clock) this.el.clock.textContent = run.clock;
+    this.el.clock.classList.toggle('idle', run.idle);
+    if (this.el.meta.textContent !== run.meta) this.el.meta.textContent = run.meta;
+    const speed = `${Math.round(run.speed)} m/s`;
+    if (this.el.speed.textContent !== speed) this.el.speed.textContent = speed;
+    // Faster reads hotter: white at a run, gold at a fling's speed.
+    const k = Math.min(1, Math.max(0, (run.speed - 7) / 33));
+    this.el.speed.style.color = `rgb(${232 + 23 * k}, ${237 - 27 * k}, ${245 - 187 * k})`;
   }
 
   /** A short line that pops up under the crosshair and fades ("+10 ORB"). */

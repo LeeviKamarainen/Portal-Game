@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Level, type BoxOptions, type SlopeOptions } from './Level';
 import { Goal, addLightStrip, addSpawnPad } from './Markers';
+import { Gate, type GateKind } from './Gates';
 import type { Hazard, PowerSource } from './hazards/Hazard';
 import { PropBox } from './hazards/PropBox';
 import { AcidPool } from './hazards/AcidPool';
@@ -43,6 +44,10 @@ export class ArenaBuilder {
   /** Every spawn point, the main one first; player slot i starts on spawns[i % length]. */
   readonly spawns: SpawnPoint[] = [];
   goal: Goal | null = null;
+  /** Speedrun maps: checkpoints in the order they must be passed, the finish, and the fizzlers. */
+  readonly checkpoints: Gate[] = [];
+  finish: Gate | null = null;
+  readonly fizzlers: Gate[] = [];
   killY = -6;
   fog: FogSettings = { color: 0x0b0e14, near: 30, far: 150 };
   /** Shadow-casting key light covers this box. */
@@ -72,6 +77,18 @@ export class ArenaBuilder {
 
   setGoal(p: THREE.Vector3): void {
     this.goal = new Goal(this.level, p);
+  }
+
+  /** A speedrun gate (see Gates.ts); `at` is its bottom centre, `size` width, height, thickness. */
+  gate(kind: GateKind, at: THREE.Vector3, size: THREE.Vector3, yaw: number, respawn?: { feet: THREE.Vector3; yaw: number }, flat = false): Gate {
+    const g = new Gate(this.level, kind, at, size, yaw, respawn, flat);
+    if (kind === 'checkpoint') this.checkpoints.push(g);
+    else if (kind === 'fizzler') this.fizzlers.push(g);
+    else {
+      if (this.finish) throw new Error('a speedrun map has one finish gate; remove the extra one');
+      this.finish = g;
+    }
+    return g;
   }
 
   /**
@@ -276,7 +293,7 @@ export interface ArenaDef {
   hint: string;
   /** One line for the stage list in the menu. */
   blurb?: string;
-  /** `combat`: a scored match; `puzzle` (the default): solo, ended by the exit goal. */
-  kind?: 'combat' | 'puzzle';
+  /** `combat`: a scored match; `puzzle` (the default): solo, ended by the exit goal; `speedrun`: solo, timed, gate to gate. */
+  kind?: 'combat' | 'puzzle' | 'speedrun';
   build(b: ArenaBuilder): void;
 }

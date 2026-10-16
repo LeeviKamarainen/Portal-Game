@@ -3,6 +3,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { PortalTraversable } from '../portals/PortalTraversable';
 import type { Portal } from '../portals/Portal';
+import type { Solid } from '../world/Level';
 import type { PortalTrip } from '../game/Match';
 import { Health } from './Health';
 import { MOUSE_SENSITIVITY, clearCommand, emptyCommand, type CommandSource, type PlayerCommand } from './PlayerCommand';
@@ -25,6 +26,20 @@ const MAX_AIR_SPEED = 7;
 const GROUND_ACCEL = 60;
 const AIR_ACCEL = 18;
 const GROUND_FRICTION = 40;
+/**
+ * Surfing (touching a surf ramp's face): Source-style air control - a tiny speed cap along
+ * the wish direction but a huge acceleration up to it, so holding strafe into the ramp
+ * cancels the slide off it at once while adding no speed of its own. Gravity down the
+ * ramp, steered by the mouse, is what makes you fast.
+ */
+const SURF_AIR_CAP = 0.5;
+const SURF_AIR_ACCEL = 160;
+/**
+ * On a surf ramp, the slide down its face (across the ramp, not along it) is held to this
+ * unless you steer off it: letting go of the keys lowers you gently instead of dropping you
+ * off the edge, and speed along the ramp is untouched.
+ */
+const SURF_SLIDE_CAP = 3;
 const TERMINAL_SPEED = 45;
 const SNAP_DISTANCE = 0.3;
 /** How far ahead the climb looks for the surface to rise to, and the most it may rise there. */
@@ -61,10 +76,12 @@ export interface MoveState {
   grounded: boolean;
 }
 
+const SLICK_PROBE = new RAPIER.Capsule(CAPSULE_HALF_HEIGHT, CAPSULE_RADIUS - 0.05);
 const _q = new THREE.Quaternion();
 const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const _q2 = new THREE.Quaternion();
 const _funnel = new THREE.Vector3();
+const _down = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 export class PlayerController implements PortalTraversable {
@@ -96,6 +113,15 @@ export class PlayerController implements PortalTraversable {
   landingSpeed = 0;
   /** Heavier (or lighter) gravity from an arena effect; 1 = normal. */
   gravityScale = 1;
+  /** Hard landings hurt (off on speedrun maps, where long drops are the point). */
+  fallDamage = true;
+  /** The level has slick surfaces (surf ramps): look for them underfoot each step. */
+  checkSlick = false;
+  /** On a surf ramp's face after the last step (sliding, not standing). */
+  surfing = false;
+  /** The face being surfed (outward normal) and its ramp's length axis, when known. */
+  private readonly slickNormal = new THREE.Vector3();
+  private slickAxis: THREE.Vector3 | null = null;
   /** Top running speed multiplier (1 = everyone's; harder bots run a little faster). */
   speedScale = 1;
   /** 0..1 flash strength for the HUD, set on damage and decayed here. */
@@ -191,6 +217,7 @@ export class PlayerController implements PortalTraversable {
     } else {
       this.velocity.y = Math.max(this.velocity.y - GRAVITY * this.gravityScale * dt, -TERMINAL_SPEED);
     }
+    if (this.surfing) this.holdOnRamp();
     this.guide?.(this.velocity, dt);
     const preMoveVelY = this.velocity.y;
 
@@ -269,12 +296,15 @@ export class PlayerController implements PortalTraversable {
     // Something brushed underfoot while flying upward (the lip of a floor portal one is
     // shooting out of) is not ground: counting it would zero the climb next step.
     if (this.velocity.y > 0.5) groundedNow = false;
+    // Rapier counts anything less steep than a wall as ground; a surf ramp never is.
+    this.surfing = this.checkSlick && this.onSlick(next);
+    if (this.surfing) groundedNow = false;
     if (!this.wasGrounded && groundedNow) {
       const impactSpeed = Math.max(0, -preMoveVelY);
       this.landingSpeed = impactSpeed;
       // A throw from a jump pad comes down softly, however far it fell.
       if (this.thrown) this.thrown = false;
-      else this.applyImpactDamage(impactSpeed);
+      else if (this.fallDamage) this.applyImpactDamage(impactSpeed);
     }
     this.wasGrounded = groundedNow;
     this.externalDelta.set(0, 0, 0);
@@ -311,6 +341,51 @@ export class PlayerController implements PortalTraversable {
     const rise = ahead.y - hit.timeOfImpact - (p.y - PLAYER_FEET_OFFSET);
     if (rise <= 0.02 || rise > CLIMB_MAX) return 0;
     return (rise / CLIMB_LOOK) * h;
+  }
+
+  /**
+   * Whether what the body at `at` rests on is a slick surface (a surf ramp's face), not ground.
+   * The probe is a slimmer capsule swept down a little, so it finds what is underneath rather
+   * than a wall brushing the side (a ramp fin the body is pressed against).
+   */
+  private onSlick(at: { x: number; y: number; z: number }): boolean {
+    const hit = this.physics.world.castShape(
+      { x: at.x, y: at.y + 0.05, z: at.z },
+      { x: 0, y: 0, z: 0, w: 1 },
+      { x: 0, y: -1, z: 0 },
+      SLICK_PROBE,
+      0,
+      0.6,
+      true,
+      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+      undefined,
+      this.collider,
+      undefined,
+      this.filter,
+    );
+    if (!hit) return false;
+    const owner = this.physics.getOwner(hit.collider.handle);
+    const solid = owner?.type === 'solid' ? (owner.ref as Solid) : null;
+    if (!solid?.slick) return false;
+    this.slickNormal.set(hit.normal2.x, hit.normal2.y, hit.normal2.z);
+    this.slickAxis = solid.slideAxis ?? null;
+    return true;
+  }
+
+  /** Surfing: the slide down the face is capped unless the keys steer off the ramp. */
+  private holdOnRamp(): void {
+    const axis = this.slickAxis;
+    if (!axis) return;
+    const n = this.slickNormal;
+    const down = _down.crossVectors(n, axis);
+    if (down.lengthSq() < 1e-6) return;
+    down.normalize();
+    if (down.y > 0) down.negate();
+    // Steering away from the ramp lets go of it.
+    const wish = this.wishDirection();
+    if (wish.x * n.x + wish.z * n.z > 0.1) return;
+    const along = this.velocity.dot(down);
+    if (along > SURF_SLIDE_CAP) this.velocity.addScaledVector(down, SURF_SLIDE_CAP - along);
   }
 
   private move(desired: THREE.Vector3): THREE.Vector3 {
@@ -372,13 +447,18 @@ export class PlayerController implements PortalTraversable {
     }
   }
 
-  private updateHorizontalVelocity(dt: number, grounded: boolean): void {
+  /** Where the keys push, flat (at most unit length). */
+  private wishDirection(): THREE.Vector3 {
     const forward = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-
     const cmd = this.command;
     const wish = forward.multiplyScalar(THREE.MathUtils.clamp(cmd.forward, -1, 1)).addScaledVector(right, THREE.MathUtils.clamp(cmd.right, -1, 1));
     if (wish.lengthSq() > 1) wish.normalize();
+    return wish;
+  }
+
+  private updateHorizontalVelocity(dt: number, grounded: boolean): void {
+    const wish = this.wishDirection();
 
     const horiz = new THREE.Vector3(this.velocity.x, 0, this.velocity.z);
     if (!grounded) {
@@ -386,8 +466,8 @@ export class PlayerController implements PortalTraversable {
       // brakes momentum the player already has - a fling out of a portal keeps its speed.
       if (wish.lengthSq() > 0) {
         const current = horiz.dot(wish);
-        const add = MAX_AIR_SPEED * this.speedScale - current;
-        if (add > 0) horiz.addScaledVector(wish, Math.min(AIR_ACCEL * dt, add));
+        const add = (this.surfing ? SURF_AIR_CAP : MAX_AIR_SPEED * this.speedScale) - current;
+        if (add > 0) horiz.addScaledVector(wish, Math.min((this.surfing ? SURF_AIR_ACCEL : AIR_ACCEL) * dt, add));
       }
     } else {
       const target = wish.multiplyScalar(MAX_GROUND_SPEED * this.speedScale);
@@ -521,6 +601,7 @@ export class PlayerController implements PortalTraversable {
     this.physics.world.propagateModifiedBodyPositionsToColliders();
     this.velocity.set(0, 0, 0);
     this.wasGrounded = false;
+    this.surfing = false;
     this.health.reset();
     this.thrown = false;
     this.damageFlash = 0;

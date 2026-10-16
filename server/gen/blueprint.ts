@@ -125,13 +125,18 @@ export type Blueprint = Omit<PlanAnswer, 'features'> & { features: Feature[] };
 
 export type RoomSize = 'small' | 'medium' | 'large';
 
+/** The kinds of map the generator makes (speedrun courses are made by hand). */
+export type GenKind = Exclude<MapKind, 'speedrun'>;
+/** A map's kind as the generator's checks see it: a speedrun is judged like a puzzle (solo, one way through). */
+export const genKind = (kind: MapKind): GenKind => (kind === 'combat' ? 'combat' : 'puzzle');
+
 /** Room sizes by kind, as [width, height, depth] in metres. The blueprint's own numbers are judged against `RANGE`. */
-const ROOMS: Record<MapKind, Record<RoomSize, [number, number, number]>> = {
+const ROOMS: Record<GenKind, Record<RoomSize, [number, number, number]>> = {
   combat: { small: [32, 16, 32], medium: [48, 20, 48], large: [64, 28, 64] },
   puzzle: { small: [16, 6, 20], medium: [20, 8, 28], large: [28, 10, 40] },
 };
-export const roomSizeFor = (kind: MapKind, size: RoomSize): [number, number, number] => ROOMS[kind][size];
-const RANGE: Record<MapKind, { w: [number, number]; h: [number, number]; d: [number, number] }> = {
+export const roomSizeFor = (kind: GenKind, size: RoomSize): [number, number, number] => ROOMS[kind][size];
+const RANGE: Record<GenKind, { w: [number, number]; h: [number, number]; d: [number, number] }> = {
   combat: { w: [24, 90], h: [10, 40], d: [24, 90] },
   puzzle: { w: [10, 40], h: [5, 14], d: [10, 50] },
 };

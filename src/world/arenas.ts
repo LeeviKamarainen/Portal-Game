@@ -3,6 +3,8 @@ import type { ArenaDef } from './ArenaBuilder';
 import { mapToArena, type MapData } from './maps/MapFormat';
 import highwire from './maps/highwire.json';
 import catapult from './maps/catapult.json';
+import slipstream from './maps/slipstream.json';
+import updraft from './maps/updraft.json';
 
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 const V2 = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -156,6 +158,14 @@ export const ARENAS: ArenaDef[] = [
   },
   mapToArena(catapult as MapData),
 ];
+
+/**
+ * Speedrun maps (see MapFormat's `speedrun` kind): timed, checkpoint to checkpoint, with
+ * fizzlers cutting each course into sections that need portals of their own.
+ *  1. Slipstream - three falling halls of surf ramps, fins, flings and jump pads.
+ *  2. Updraft    - a tower climb: well dives and fall loops turned upward, or the jump pads.
+ */
+export const SPEEDRUNS: ArenaDef[] = [mapToArena(slipstream as MapData), mapToArena(updraft as MapData)];
 
 /**
  * The PvP arena, scored as a match (see game/Match.ts) - playable solo for now: there are

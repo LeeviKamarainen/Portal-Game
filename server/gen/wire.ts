@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { PIECES, type FieldSpec, type MapData, type Piece, type Vec3 } from '../../src/world/maps/MapFormat';
+import { genKind } from './blueprint';
 
 /**
  * The shape the model writes a map in.
@@ -147,7 +148,7 @@ export function toWire(map: MapData): WireMap {
     name: map.name,
     hint: map.hint,
     blurb: map.blurb ?? '',
-    kind: map.kind ?? 'combat',
+    kind: genKind(map.kind ?? 'combat'),
     symmetry: map.symmetry ?? 'none',
     fogColor: map.fog?.color ?? '#0b0e14',
     fogNear: map.fog?.near ?? 30,

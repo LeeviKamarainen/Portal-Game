@@ -11,6 +11,7 @@ import type { Face } from '../../src/world/Level';
 import { PORTAL_HALF_H, PORTAL_HALF_W, PORTAL_HEIGHT, PORTAL_WIDTH } from '../../src/portals/Portal';
 import { PLAYER_FEET_OFFSET } from '../../src/player/PlayerController';
 import { expandPieces, footprint, isSymmetric, mapKind, mapToArena, rotated, withDefaults, type MapData, type Piece } from '../../src/world/maps/MapFormat';
+import { genKind } from './blueprint';
 
 /**
  * Can the level be finished (puzzle) or walked (combat)? The answer comes from the game's own
@@ -171,7 +172,7 @@ function faceDistance(f: Face, p: THREE.Vector3): { d: number; front: boolean } 
 
 export async function analyzeRoutes(map: MapData): Promise<RouteReport> {
   const t0 = performance.now();
-  const kind = mapKind(map);
+  const kind = genKind(mapKind(map));
   const notes: string[] = [];
   // Doors are assumed to open: the level is analysed without them (they are reported below).
   const doorless: MapData = { ...map, pieces: map.pieces.filter((p) => p.type !== 'door') };

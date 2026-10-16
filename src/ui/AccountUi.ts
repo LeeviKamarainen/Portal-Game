@@ -1,6 +1,6 @@
 import { AccountError, type AccountClient } from '../net/AccountClient';
 import { passwordProblem, userNameProblem, USER_NAME_MAX, PASSWORD_MIN, type MapSummary, type Visibility } from '../net/accounts';
-import { mapKind, type MapData } from '../world/maps/MapFormat';
+import { mapKind, soloMapMessage, type MapData } from '../world/maps/MapFormat';
 
 /** What the account pages need from the menu around them. */
 export interface AccountUiHost {
@@ -347,7 +347,7 @@ export class AccountUi {
   private async useInRoom(id: string): Promise<void> {
     try {
       const data = (await this.accounts.getMap(id)).data as MapData;
-      if (mapKind(data) === 'puzzle') this.host.lobbyError('Puzzle maps are single-player; online rooms play combat maps.');
+      if (mapKind(data) !== 'combat') this.host.lobbyError(soloMapMessage(data));
       else this.host.useInRoom(data);
     } catch (e) {
       this.host.lobbyError(messageOf(e));

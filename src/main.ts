@@ -1,6 +1,6 @@
 import { FLAGS } from './core/Flags';
 import { Game } from './game/Game';
-import { ARENAS } from './world/arenas';
+import { ARENAS, SPEEDRUNS } from './world/arenas';
 
 async function main(): Promise<void> {
   const container = document.querySelector<HTMLDivElement>('#app')!;
@@ -13,6 +13,8 @@ async function main(): Promise<void> {
       ? -1
       : FLAGS.editor
         ? 'editor'
+        : FLAGS.speedrun !== null && !FLAGS.test
+          ? { speedrun: Math.min(SPEEDRUNS.length - 1, Math.max(0, parseInt(FLAGS.speedrun, 10) - 1 || 0)) }
         : FLAGS.arena === 'pvp'
           ? 'pvp'
           : FLAGS.arena === null && !FLAGS.test

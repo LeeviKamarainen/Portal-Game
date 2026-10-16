@@ -32,6 +32,12 @@ export interface Solid {
   faces: Face[];
   min: THREE.Vector3;
   max: THREE.Vector3;
+  /** Never ground underfoot, however it is touched: bodies slide on it (surf ramps). */
+  slick?: boolean;
+  /** Colliders a portal opening on this solid may overlap (a ramp fin's own ramp). */
+  clearOf?: number[];
+  /** A surf ramp's length axis (back to front): bodies slide freely along it. */
+  slideAxis?: THREE.Vector3;
 }
 
 export class Face {
@@ -313,6 +319,83 @@ export class Level {
       const w = Math.max(...xs) - Math.min(...xs);
       const h = Math.max(...ys) - Math.min(...ys);
       addFace(new Face(solid, centroid, n, w, h, false, { outline: local }), false, 'panel');
+    }
+    return solid;
+  }
+
+  /**
+   * A convex solid given by its polygons (each a planar outline of world points, any winding):
+   * one convex-hull collider and a face per polygon, its normal pointing away from the solid's
+   * middle. Faces can lie at any angle - surf ramps are made this way.
+   */
+  polyhedron(
+    polys: { points: THREE.Vector3[]; portalable?: boolean; up?: THREE.Vector3 }[],
+    opts: { material?: MaterialName; portalMaterial?: MaterialName; slick?: boolean } = {},
+  ): Solid {
+    const corners = polys.flatMap((p) => p.points);
+    const flat = new Float32Array(corners.length * 3);
+    corners.forEach((c, i) => c.toArray(flat, i * 3));
+    const desc = RAPIER.ColliderDesc.convexHull(flat);
+    if (!desc) throw new Error('the corners do not span a volume');
+    const body = this.physics.world.createRigidBody(RAPIER.RigidBodyDesc.fixed());
+    const collider = this.physics.world.createCollider(desc.setFriction(0.8), body);
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (const c of corners) {
+      min.min(c);
+      max.max(c);
+    }
+    const solid: Solid = { collider, faces: [], min, max, slick: opts.slick };
+    this.physics.registerOwner(collider.handle, { type: 'solid', ref: solid });
+    this.faceByCollider.set(collider.handle, solid);
+    this.solids.push(solid);
+
+    const middle = corners.reduce((s, c) => s.add(c), new THREE.Vector3()).divideScalar(corners.length);
+    const mats = materials();
+    const matName = opts.material ?? 'metal';
+    for (const poly of polys) {
+      const pts = poly.points;
+      const centroid = pts.reduce((s, c) => s.add(c), new THREE.Vector3()).divideScalar(pts.length);
+      const n = new THREE.Vector3();
+      for (let i = 0; i < pts.length; i++) {
+        // Newell's method: robust for any planar polygon.
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+      }
+      n.normalize();
+      if (n.dot(centroid.clone().sub(middle)) < 0) n.negate();
+      // Upright faces keep world up; floors and ceilings and anything nearly flat pick their own.
+      const up = poly.up ?? (Math.abs(n.y) > 0.95 ? undefined : new THREE.Vector3(0, 1, 0));
+      const probe = new Face(solid, centroid, n, 1, 1, false, { up });
+      let local = pts.map((p) => {
+        const l = probe.toLocal(p);
+        return new THREE.Vector2(l.x, l.y);
+      });
+      // ShapeGeometry wants the outline counter-clockwise as seen from the front.
+      if (THREE.ShapeUtils.isClockWise(local)) local = local.reverse();
+      const xs = local.map((v) => v.x);
+      const ys = local.map((v) => v.y);
+      const w = Math.max(...xs) - Math.min(...xs);
+      const h = Math.max(...ys) - Math.min(...ys);
+      const portalable = !!poly.portalable;
+      const face = new Face(solid, centroid, n, w, h, portalable, { up, outline: local });
+      solid.faces.push(face);
+      this.faces.push(face);
+      this.raycastTargets.push(face.proxy);
+      if (portalable) {
+        const mesh = new THREE.Mesh(face.buildGeometry(), mats[opts.portalMaterial ?? 'panel']);
+        mesh.receiveShadow = true;
+        mesh.castShadow = true;
+        face.mesh = mesh;
+        this.scene.add(mesh);
+      } else {
+        const key = `${matName}|1`;
+        if (!this.staticBatches.has(key)) this.staticBatches.set(key, []);
+        this.staticBatches.get(key)!.push(face.buildGeometry());
+      }
     }
     return solid;
   }

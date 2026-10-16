@@ -1,6 +1,6 @@
 import { expandPieces, mapKind, withDefaults, type MapData, type Piece, type Vec3 } from '../../src/world/maps/MapFormat';
 import { solidsOf } from './check';
-import type { Feature } from './blueprint';
+import { genKind, type Feature } from './blueprint';
 import { feature as f } from './blueprintExamples';
 import { featureProblems } from './features';
 
@@ -110,7 +110,7 @@ export function measure(map: MapData): MapStats {
     (s) => !hazards.some((h) => (h.at as Vec3)[0] >= s.minX - 1 && (h.at as Vec3)[0] <= s.maxX + 1 && (h.at as Vec3)[2] >= s.minZ - 1 && (h.at as Vec3)[2] <= s.maxZ + 1 && (h.at as Vec3)[1] >= s.top - 1 && (h.at as Vec3)[1] <= s.top + 6),
   );
   return {
-    kind: mapKind(map),
+    kind: genKind(mapKind(map)),
     pieces: map.pieces.length,
     spawns: placed.filter((p) => p.type === 'spawn').length,
     byType,

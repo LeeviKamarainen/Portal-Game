@@ -1,9 +1,10 @@
 import { FLAGS } from '../core/Flags';
-import { ARENAS, PVP_ARENA } from '../world/arenas';
-import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type Settings } from '../core/Settings';
+import { ARENAS, PVP_ARENA, SPEEDRUNS } from '../world/arenas';
+import { formatTime } from '../sim/Speedrun';
+import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type RunRecord, type Settings } from '../core/Settings';
 import { SkinPreview } from './SkinPreview';
 import { DEFAULT_RULES } from '../game/Match';
-import { mapKind, type MapData } from '../world/maps/MapFormat';
+import { mapKind, soloMapMessage, type MapData } from '../world/maps/MapFormat';
 import { readEditorDraft } from '../editor/draft';
 import { BOT_DIFFICULTIES, BOT_DIFFICULTY_LABEL, BUILT_IN_ONLINE_MAPS, CODE_LENGTH, NAME_MAX, REJOIN_SECONDS, type BotDifficulty, type MapChoice } from '../net/protocol';
 import type { OnlineView } from '../net/OnlineLobby';
@@ -18,6 +19,8 @@ import { AdminUi } from './AdminUi';
 
 export interface MenuHandlers {
   playStage(index: number): void;
+  /** A speedrun course, by its index in SPEEDRUNS. */
+  playSpeedrun(index: number): void;
   playPvp(): void;
   resume(): void;
   restart(): void;
@@ -39,7 +42,7 @@ export interface MenuHandlers {
   onlineError(message: string): void;
 }
 
-type Page = 'main' | 'pause' | 'tutorial' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin';
+type Page = 'main' | 'pause' | 'tutorial' | 'speedrun' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin';
 type SettingsTab = 'character' | 'graphics' | 'lighting' | 'controls';
 
 const previewUrls = import.meta.glob('../assets/players/Previews/*.png', {
@@ -181,6 +184,7 @@ export class Menu {
   private readonly handlers: MenuHandlers;
   private readonly settings: Settings;
   private progress = new Set<string>();
+  private bestTimes = new Map<string, RunRecord>();
   private muted = true;
   private page: Page = 'main';
   /** Where Back from a sub-page goes: the main menu or the pause menu. */
@@ -270,6 +274,11 @@ export class Menu {
   setProgress(done: Set<string>): void {
     this.progress = done;
     if (this.isOpen && (this.page === 'main' || this.page === 'tutorial')) this.show(this.page);
+  }
+
+  setBestTimes(times: Map<string, RunRecord>): void {
+    this.bestTimes = times;
+    if (this.isOpen && (this.page === 'main' || this.page === 'speedrun')) this.show(this.page);
   }
 
   setMuted(muted: boolean): void {
@@ -365,6 +374,7 @@ export class Menu {
           <h1>P<span class="o">O</span>RTAL ARE<span class="b">N</span>A</h1>
           <div class="stack">
             ${this.item('tutorial', 'Tutorial', `${ARENAS.length} stages &middot; ${done} completed`)}
+            ${this.item('speedrun', 'Speedrun <span class="chip">NEW</span>', `${SPEEDRUNS.length} course${SPEEDRUNS.length === 1 ? '' : 's'} against the clock &middot; ${SPEEDRUNS.filter((a) => this.bestTimes.has(a.id)).length} finished`)}
             ${this.item('pvp', 'PvP Arena <span class="chip">WIP</span>', `${PVP_ARENA.name} &middot; walk the map solo for now`)}
             ${this.item('online', 'Online <span class="chip">WIP</span>', 'Play with friends: create a room or join one with a code')}
             ${this.item('settings', 'Settings', 'Character, graphics, lighting, controls')}
@@ -402,6 +412,23 @@ export class Menu {
             }).join('')}
           </div>
           <div class="note">Stages get harder in order, and finishing one carries straight on to the next. Every stage can be played at any time.</div>
+          ${foot}`;
+      case 'speedrun':
+        return `${back}
+          <div class="eyebrow">Speedrun</div>
+          <h2>Choose a course</h2>
+          <div class="stages">
+            ${SPEEDRUNS.map((a, i) => {
+              const best = this.bestTimes.get(a.id);
+              return `<button class="stage" data-action="run" data-index="${i}">
+                <div class="n">COURSE ${String(i + 1).padStart(2, '0')}
+                  <span class="chip ${best ? 'done' : 'idle'}">${best ? `BEST ${formatTime(best.time)}` : 'NO TIME YET'}</span></div>
+                <div class="t">${esc(a.name)}</div>
+                <div class="d">${esc(a.blurb ?? '')}</div>
+              </button>`;
+            }).join('')}
+          </div>
+          <div class="note">The clock starts when you leave the pad. Fizzlers close your portals, so each section needs new ones. A fall puts you back at the last checkpoint with the clock still running; R starts the run over.</div>
           ${foot}`;
       case 'pvp':
         return `${back}
@@ -522,7 +549,7 @@ export class Menu {
         <div class="d">On ${esc(lobby.map.name)}. Loading it…</div>`;
     } else if (you?.host) {
       const draft = readEditorDraft();
-      const draftPuzzle = draft !== null && mapKind(draft) === 'puzzle';
+      const draftPuzzle = draft !== null && mapKind(draft) !== 'combat';
       const maxBots = lobby.map.slots - lobby.members.length;
       controls = `
         <div class="d" style="margin-top:18px">Map</div>
@@ -577,7 +604,7 @@ export class Menu {
         // Reported below.
       }
       if (!data || !Array.isArray(data.pieces)) this.handlers.onlineError("That file isn't a map.");
-      else if (mapKind(data) === 'puzzle') this.handlers.onlineError('Puzzle maps are single-player; online rooms play combat maps.');
+      else if (mapKind(data) !== 'combat') this.handlers.onlineError(soloMapMessage(data));
       else this.handlers.setRoomMap({ kind: 'custom', data });
     });
   }
@@ -725,9 +752,13 @@ export class Menu {
         this.back();
         break;
       case 'tutorial':
+      case 'speedrun':
       case 'pvp':
       case 'settings':
         this.show(a);
+        break;
+      case 'run':
+        this.handlers.playSpeedrun(Number(el.dataset.index));
         break;
       case 'online':
         this.show(this.inRoom ? 'lobby' : 'online');

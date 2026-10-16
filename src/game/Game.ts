@@ -4,7 +4,8 @@ import { InputManager } from '../core/InputManager';
 import { Loop } from '../core/Loop';
 import { Audio } from '../core/Audio';
 import { FLAGS } from '../core/Flags';
-import { SKINS, loadProgress, loadSettings, saveProgress, saveSettings, type Settings } from '../core/Settings';
+import { SKINS, loadBestTimes, loadProgress, loadSettings, saveBestTimes, saveProgress, saveSettings, type Settings } from '../core/Settings';
+import { formatDelta, formatTime } from '../sim/Speedrun';
 import { PlayerAvatar } from '../player/PlayerAvatar';
 import { PortalGunModel } from '../player/PortalGunModel';
 import { BotController } from '../bots/BotController';
@@ -21,7 +22,7 @@ import { NetOverlay } from '../ui/NetOverlay';
 import { Menu } from '../ui/Menu';
 import { Editor } from '../editor/Editor';
 import { mapToArena, type MapData } from '../world/maps/MapFormat';
-import { ARENAS, PVP_ARENA, TEST_ARENA } from '../world/arenas';
+import { ARENAS, PVP_ARENA, SPEEDRUNS, TEST_ARENA } from '../world/arenas';
 import type { ArenaDef } from '../world/ArenaBuilder';
 import type { PortalColor } from '../portals/Portal';
 import { Session, type SessionEvent } from './Session';
@@ -48,7 +49,7 @@ type State =
   | 'editor';
 
 /** What the loaded arena is for. */
-type Mode = 'tutorial' | 'pvp' | 'test' | 'menu' | 'playtest' | 'online';
+type Mode = 'tutorial' | 'speedrun' | 'pvp' | 'test' | 'menu' | 'playtest' | 'online';
 
 /** Death to control again: under a second, most of it a fade. */
 const DEATH_FADE = 0.45;
@@ -119,6 +120,8 @@ export class Game {
   private fade = 1;
   private menuYaw = 0;
   private readonly progress = loadProgress();
+  /** Best speedrun times by map id (Settings.loadBestTimes). */
+  private readonly bestTimes = loadBestTimes();
   private readonly container: HTMLElement;
   private editor: Editor | null = null;
 
@@ -136,6 +139,7 @@ export class Game {
     this.netOverlay = FLAGS.net ? new NetOverlay(this.hud.layer) : null;
     this.menu = new Menu(container, this.settings, {
       playStage: (i) => this.startFromMenu(() => this.loadArena(i)),
+      playSpeedrun: (i) => this.startFromMenu(() => this.loadSpeedrun(i)),
       playPvp: () => this.startFromMenu(() => this.loadPvp()),
       resume: () => this.resume(),
       restart: () => {
@@ -163,6 +167,7 @@ export class Game {
     this.hud.setMuted(this.audio.muted);
     this.menu.setMuted(this.audio.muted);
     this.menu.setProgress(this.progress);
+    this.menu.setBestTimes(this.bestTimes);
     this.audio.onChange((m) => {
       this.hud.setMuted(m);
       this.menu.setMuted(m);
@@ -195,8 +200,8 @@ export class Game {
     );
   }
 
-  /** `start` is an arena index (-1 = test chamber), 'pvp', 'menu' for the main menu, or 'editor'. */
-  async init(start: number | 'pvp' | 'menu' | 'editor'): Promise<void> {
+  /** `start` is an arena index (-1 = test chamber), 'pvp', 'menu' for the main menu, 'editor', or a speedrun course. */
+  async init(start: number | 'pvp' | 'menu' | 'editor' | { speedrun: number }): Promise<void> {
     void this.accounts.refresh();
     this.avatarSkin = this.settings.skin;
     this.avatar = await PlayerAvatar.load(this.avatarSkin);
@@ -208,6 +213,7 @@ export class Game {
     }
     else if (start === 'editor') this.openEditor();
     else if (start === 'pvp') await this.loadPvp();
+    else if (typeof start === 'object') await this.loadSpeedrun(start.speedrun);
     else await this.loadArena(start);
     this.loop.start();
   }
@@ -218,6 +224,11 @@ export class Game {
 
   async loadArena(index: number): Promise<void> {
     await this.load(this.defFor(index), index < 0 ? 'test' : 'tutorial', index);
+  }
+
+  /** A speedrun course, by its index in SPEEDRUNS. */
+  async loadSpeedrun(index: number): Promise<void> {
+    await this.load(SPEEDRUNS[index], 'speedrun', index);
   }
 
   async loadPvp(): Promise<void> {
@@ -383,6 +394,10 @@ export class Game {
   private arenaLabel(): string {
     if (this.mode === 'online') return `ONLINE · ROOM ${this.netRoom}`;
     if (this.mode === 'tutorial') return `TUTORIAL ${this.arenaIndex + 1} / ${ARENAS.length}`;
+    if (this.mode === 'speedrun') {
+      const best = this.current && this.bestTimes.get(this.current.def.id);
+      return `SPEEDRUN ${this.arenaIndex + 1} / ${SPEEDRUNS.length} · ${best ? `BEST ${formatTime(best.time)}` : 'NO TIME YET'}`;
+    }
     if (this.combat) {
       const where = this.mode === 'playtest' ? 'PLAYTEST' : 'PVP ARENA';
       if (this.opponentBrain === 'idle') return `${where} · PRACTICE`;
@@ -667,6 +682,25 @@ export class Game {
         !last ? '' : this.mode === 'tutorial' ? 'R: play again from stage 1 · Esc: menu' : 'R: play again · Esc: menu',
       );
       this.setState(last ? 'finished' : 'complete');
+    } else if (e.type === 'checkpoint') {
+      const n = session.arena.checkpoints.length;
+      const best = this.mode === 'speedrun' ? this.bestTimes.get(session.def.id)?.splits[e.index] : undefined;
+      const delta = best === undefined ? '' : ` (${formatDelta(e.time - best)})`;
+      this.hud.toast(`CHECKPOINT ${e.index + 1}/${n} · ${formatTime(e.time)}${delta}`, best === undefined ? undefined : e.time <= best ? '#5aff8a' : '#ff8a6a');
+    } else if (e.type === 'finish') {
+      this.audio.play('goal', 0.9);
+      const id = session.def.id;
+      const best = this.bestTimes.get(id);
+      const record = this.mode === 'speedrun' && (!best || e.time < best.time);
+      if (record) {
+        this.bestTimes.set(id, { time: e.time, splits: e.splits });
+        saveBestTimes(this.bestTimes);
+        this.menu.setBestTimes(this.bestTimes);
+        this.hud.setArena(this.arenaLabel(), session.def.name, '');
+      }
+      const versus = record ? (best ? `NEW BEST · ${formatDelta(e.time - best.time)}` : 'FIRST TIME SET') : best ? `Best ${formatTime(best.time)} (${formatDelta(e.time - best.time)})` : '';
+      this.hud.setBanner(formatTime(e.time), `${versus}${versus ? ' · ' : ''}R: run again · Esc: menu`);
+      this.setState('finished');
     } else if (e.type === 'score') {
       const you = e.player === session.player.id;
       const who = you ? '' : `${session.match?.player(e.player)?.name ?? e.player} `;
@@ -736,6 +770,13 @@ export class Game {
 
   restart(): void {
     if (!this.session || this.state === 'loading' || this.net) return;
+    // A speedrun starts over on the spot: the clock, the checkpoints, back on the pad.
+    if (this.session.speedrun) {
+      this.session.restartRun();
+      this.hud.setBanner('');
+      this.setState('respawning');
+      return;
+    }
     // A match restarts from zero; so does a finished level (its exit has been used up).
     if (this.combat || (this.state === 'finished' && this.mode === 'playtest')) {
       const { def, mode, index } = this.current!;
@@ -805,6 +846,15 @@ export class Game {
     this.pings.update(frameDt, this.engine.camera);
 
     this.hud.setEffect(inMenu ? '' : session.effectText);
+    const run = inMenu ? null : session.speedrun;
+    this.hud.setRun(
+      run && {
+        clock: formatTime(run.time),
+        idle: !run.started,
+        meta: run.checkpointCount ? `CHECKPOINT ${run.next} / ${run.checkpointCount}` : 'NO CHECKPOINTS',
+        speed: player.isGrounded ? player.horizontalSpeed() : player.getVelocity().length(),
+      },
+    );
     const match = inMenu ? null : session.match;
     this.hud.setScores(
       match?.players.map((p) => ({ name: p.name, score: p.score, you: p.id === player.id })) ?? null,
