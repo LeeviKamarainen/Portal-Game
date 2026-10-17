@@ -18,10 +18,10 @@ export const PLAYER_FEET_OFFSET = CAPSULE_HALF_HEIGHT + CAPSULE_RADIUS;
 export const PLAYER_RADIUS = CAPSULE_RADIUS;
 export const PLAYER_HALF_HEIGHT = CAPSULE_HALF_HEIGHT;
 
-const GRAVITY = 20;
+export const GRAVITY = 20;
 /** ~2 m jump apex: enough for a ledge, not enough to skip the arenas' portal puzzles. */
-const JUMP_SPEED = 9;
-const MAX_GROUND_SPEED = 7;
+export const JUMP_SPEED = 9;
+export const MAX_GROUND_SPEED = 7;
 const MAX_AIR_SPEED = 7;
 const GROUND_ACCEL = 60;
 const AIR_ACCEL = 18;

@@ -3,6 +3,7 @@ import type { MatchRules } from '../game/Match';
 import type { SessionEvent } from '../sim/SimEvents';
 import highwire from '../world/maps/highwire.json';
 import catwalk from '../world/maps/catwalk.json';
+import cubefield from '../world/maps/cubefield.json';
 import shaft from '../world/maps/shaft.json';
 import courtyard from '../world/maps/courtyard.json';
 
@@ -39,6 +40,7 @@ export const BUILT_IN_ONLINE_MAPS: readonly { id: string; data: MapData }[] = [
   { id: 'catwalk', data: catwalk as MapData },
   { id: 'shaft', data: shaft as MapData },
   { id: 'courtyard', data: courtyard as MapData },
+  { id: 'cubefield', data: cubefield as MapData },
 ];
 
 export type BotDifficulty = 'easy' | 'normal' | 'hard' | 'ultra' | 'ultra2';

@@ -71,6 +71,8 @@ export interface MapData {
   fog?: { color: string; near: number; far: number };
   /** Anything falling below this dies. */
   killY?: number;
+  /** How far a portal shot reaches, in metres (default 200): a tall course can keep far-off surfaces out of use. */
+  portalRange?: number;
   pieces: Piece[];
 }
 
@@ -1008,6 +1010,7 @@ export function mapToArena(data: MapData): ArenaDef {
       }
       if (data.fog) b.fog = { color: color(data.fog.color, 0x0b0e14), near: data.fog.near, far: data.fog.far };
       if (data.killY !== undefined) b.killY = data.killY;
+      if (data.portalRange !== undefined) b.level.portalRange = data.portalRange;
       if (!ctx.extent.isEmpty()) b.bounds.copy(ctx.extent).expandByScalar(1);
     },
   };

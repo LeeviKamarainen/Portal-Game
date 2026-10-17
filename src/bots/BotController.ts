@@ -88,7 +88,7 @@ export class BotController implements CommandSource {
       look: this.look,
       traps,
       climbs: this.skill.portalClimb ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav) : null,
-      travel: this.skill.portalTravel ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav, 'any') : null,
+      travel: this.skill.portalTravel || this.skill.strandedTravel ? ClimbSpots.for(session, session.arena, session.level, session.physics, this.nav, 'any') : null,
     });
   }
 

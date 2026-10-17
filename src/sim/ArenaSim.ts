@@ -290,6 +290,17 @@ export class ArenaSim {
     return this.local.gun;
   }
 
+  /**
+   * For a map that shortens the portal gun's reach: that reach and the distance to what the
+   * local player is aiming at (null: nothing in sight). Null when the reach is unlimited.
+   */
+  aimReach(): { range: number; distance: number | null } | null {
+    const gun = this.local.gun;
+    if (gun.range >= 200) return null;
+    this.local.controller.viewPose(_eye, _look);
+    return { range: gun.range, distance: gun.aimDistance(_eye, _fwd.set(0, 0, -1).applyQuaternion(_look)) };
+  }
+
   get isDead(): boolean {
     return this.local.dead;
   }

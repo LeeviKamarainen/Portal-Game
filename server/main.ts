@@ -13,6 +13,7 @@
  *                           (limits and model ids: server/gen/config.ts, GEN_* variables)
  *
  * Accounts: /api/... (server/auth/AuthApi.ts), saved maps: /api/maps (MapApi.ts), the map generator:
+ * the speedrun leaderboards: /api/leaderboard (LeaderboardApi.ts), the map generator:
  * /api/generate (server/gen/GenerateApi.ts), the admin page's player list: /api/admin (AdminApi.ts);
  * the admin tool is server/admin.ts.
  */
@@ -28,6 +29,7 @@ import { TickLoop } from './TickLoop';
 import { AuthApi } from './auth/AuthApi';
 import { AdminApi } from './auth/AdminApi';
 import { MapApi } from './auth/MapApi';
+import { LeaderboardApi } from './auth/LeaderboardApi';
 import { SqliteStore } from './store/SqliteStore';
 import type { Store } from './store/Store';
 import { CheckWorker } from './gen/checkPool';
@@ -112,6 +114,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     log,
   });
   const maps = new MapApi({ store, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
+  const leaderboard = new LeaderboardApi({ store, allowedOrigins: origins, userFor: (req) => auth.userFor(req), log });
   // Generated maps are built to check them, which takes up to ~100 ms: on a worker thread, not the one stepping the rooms.
   const checker = options.generator?.check ? null : new CheckWorker(log);
   const jobs = new JobManager({
@@ -128,6 +131,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const housekeeping = setInterval(() => {
     auth.sweep();
     maps.sweep();
+    leaderboard.sweep();
     jobs.sweep();
   }, 600_000);
 
@@ -141,6 +145,10 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
       }
       if (url.pathname === '/api/maps' || url.pathname.startsWith('/api/maps/')) {
         await maps.handle(req, res, url);
+        return;
+      }
+      if (url.pathname === '/api/leaderboard' || url.pathname.startsWith('/api/leaderboard/')) {
+        await leaderboard.handle(req, res, url);
         return;
       }
       if (url.pathname === '/api/generate' || url.pathname.startsWith('/api/generate/')) {

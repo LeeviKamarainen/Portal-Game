@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { PlayerController } from '../player/PlayerController';
-import { EYE_OFFSET, PLAYER_FEET_OFFSET } from '../player/PlayerController';
+import { EYE_OFFSET, GRAVITY, JUMP_SPEED, MAX_GROUND_SPEED, PLAYER_FEET_OFFSET } from '../player/PlayerController';
 import type { PlayerCommand } from '../player/PlayerCommand';
 import type { NavGraph, NavNode, NavPath } from './NavGraph';
 
@@ -29,12 +29,22 @@ const HOP_CLEAR = 7;
 /** ...with open floor this many cells (metres) all round each of those points. */
 const HOP_ROOM = 2;
 const HOP_CHECK = [0.3, 0.6, 0.9, 1.2];
+/**
+ * Gap jumps: take off once this far past the last cell's centre (its edge is 0.5 out), only
+ * running straight at the far side at least this much faster than the jump needs - too slow
+ * or crooked this close to the edge, it backs up this far for a run-up first.
+ */
+const GAP_TAKEOFF = 0.25;
+const GAP_SPEED_MARGIN = 1.15;
+const RUN_UP = 2;
+const RUN_UP_FROM = -1.2;
 
 export type FollowStatus = 'idle' | 'moving' | 'waiting' | 'arrived' | 'stuck' | 'no-path';
 
 const _p = new THREE.Vector3();
 const _d = new THREE.Vector3();
 const _look = new THREE.Vector3();
+const _q = new THREE.Vector3();
 
 /**
  * Walks a body along a navigation path by filling in the move part of its PlayerCommand -
@@ -62,6 +72,8 @@ export class PathFollower {
   private avoidReplanAt = 0;
   private startSlack = 0;
   private clock = 0;
+  /** The gap jump (link index) it is backing up from for a run-up, or -1. */
+  private runUp = -1;
 
   constructor(nav: NavGraph, body: PlayerController) {
     this.nav = nav;
@@ -85,6 +97,7 @@ export class PathFollower {
   private plan(): void {
     this.path = this.nav.findPath(this.body.getPosition(), this.goal, this.avoid ?? undefined);
     this.index = 0;
+    this.runUp = -1;
     this.waitedFor = 0;
     this.progressTimer = 0;
     this.progressAt.copy(this.body.getPosition());
@@ -106,7 +119,7 @@ export class PathFollower {
     const nodes = path.nodes;
 
     // Advance past waypoints reached (or already walked past).
-    while (this.index < nodes.length - 1 && (this.reached(pos, nodes[this.index + 1]) || this.passed(pos, this.index + 1))) this.index++;
+    while (this.index < nodes.length - 1 && (this.reached(pos, nodes[this.index + 1]) || this.passed(pos, this.index + 1) || this.jumpedAcross(pos))) this.index++;
     const toGoal = Math.hypot(this.goal.x - pos.x, this.goal.z - pos.z);
     const landed = this.body.isGrounded;
     if (landed && this.index >= nodes.length - 2 && (toGoal < REACH || (this.index >= nodes.length - 1 && !this.endsAtGoal()))) {
@@ -182,10 +195,25 @@ export class PathFollower {
 
     if (link?.kind === 'jump' && this.body.isGrounded) {
       const from = nodes[this.index];
-      const out = Math.hypot(pos.x - from.x, pos.z - from.z);
       const span = Math.hypot(next.x - from.x, next.z - from.z);
-      // Up onto a ledge: jump just short of it. Across a gap: jump at the edge.
-      if (span <= 1.01 ? Math.hypot(next.x - pos.x, next.z - pos.z) < 1.1 : out > 0.3) cmd.jump = true;
+      // Up onto a ledge: jump just short of it.
+      if (span <= 1.01) {
+        if (Math.hypot(next.x - pos.x, next.z - pos.z) < 1.1) cmd.jump = true;
+      } else if (Math.abs(pos.y - PLAYER_FEET_OFFSET - from.y) < 0.5) {
+        // Across a gap: at the edge, running straight at the far side fast enough - or a run-up first.
+        const dx = (next.x - from.x) / span;
+        const dz = (next.z - from.z) / span;
+        const along = (pos.x - from.x) * dx + (pos.z - from.z) * dz;
+        const v = this.body.getVelocity();
+        const fast = v.x * dx + v.z * dz >= Math.min(this.gapSpeed(span, next.y - from.y) * GAP_SPEED_MARGIN, MAX_GROUND_SPEED * this.body.speedScale * 0.92);
+        if (this.runUp === this.index) {
+          if (along < -RUN_UP + 0.3) this.runUp = -1;
+        } else if (!fast && along > RUN_UP_FROM && along < GAP_TAKEOFF + 0.2 && this.roomToRunUp(from, dx, dz)) {
+          this.runUp = this.index;
+        } else if (along > GAP_TAKEOFF) {
+          cmd.jump = true;
+        }
+      }
     }
 
     // Look the way it's heading, a few metres out (never at a point right beside it, which
@@ -280,8 +308,18 @@ export class PathFollower {
    * the goal itself when the route ends by it.
    */
   private steerPoint(pos: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-    const { nodes } = this.path!;
+    const { nodes, links } = this.path!;
     const lastIndex = nodes.length - 1;
+    const gap = this.gapJump();
+    if (gap) {
+      const { from, dx, dz, along, span } = gap;
+      // Backing up for a run-up; or in the air already past the far side's first cell: straight
+      // on (steering back at that cell, right by the edge, flies it back over the gap).
+      if (this.runUp === this.index) return out.set(from.x - dx * RUN_UP, from.y, from.z - dz * RUN_UP);
+      if (!this.body.isGrounded && along > span - 0.3) return out.set(pos.x + dx, nodes[this.index + 1].y, pos.z + dz);
+    } else if (links[this.index]?.kind !== 'jump') {
+      this.runUp = -1;
+    }
     const at = (k: number, o: THREE.Vector3) => {
       const n = nodes[k];
       return k === lastIndex && this.endsAtGoal() ? o.set(this.goal.x, n.y, this.goal.z) : o.set(n.x, n.y, n.z);
@@ -302,6 +340,43 @@ export class PathFollower {
       i++;
       if (!this.flat(i)) return out.set(px, out.y, pz);
     }
+  }
+
+  /** The link it is on is a jump across a gap: its start, direction, span and how far along it is. */
+  private gapJump(): { from: NavNode; dx: number; dz: number; span: number; along: number } | null {
+    const { nodes, links } = this.path!;
+    if (links[this.index]?.kind !== 'jump' || this.index + 1 >= nodes.length) return null;
+    const from = nodes[this.index];
+    const to = nodes[this.index + 1];
+    const span = Math.hypot(to.x - from.x, to.z - from.z);
+    if (span <= 1.01) return null;
+    const dx = (to.x - from.x) / span;
+    const dz = (to.z - from.z) / span;
+    const pos = this.body.getPosition();
+    return { from, dx, dz, span, along: (pos.x - from.x) * dx + (pos.z - from.z) * dz };
+  }
+
+  /** Down on the far side of a gap jump (past its first cell, maybe well past): that link is done. */
+  private jumpedAcross(pos: THREE.Vector3): boolean {
+    const gap = this.body.isGrounded ? this.gapJump() : null;
+    return !!gap && gap.along > gap.span - 0.6 && Math.abs(pos.y - PLAYER_FEET_OFFSET - this.path!.nodes[this.index + 1].y) < 0.6;
+  }
+
+  /** Horizontal speed a jump from GAP_TAKEOFF out needs to land `span` cells on, `dy` higher (body centre a little past the edge). */
+  private gapSpeed(span: number, dy: number): number {
+    const across = span - 0.5 - GAP_TAKEOFF + 0.4;
+    const disc = JUMP_SPEED * JUMP_SPEED - 2 * GRAVITY * Math.max(0, dy);
+    if (disc <= 0) return Infinity;
+    return across / ((JUMP_SPEED + Math.sqrt(disc)) / GRAVITY);
+  }
+
+  /** Floor at the same height straight back from `from`, for a run-up. */
+  private roomToRunUp(from: NavNode, dx: number, dz: number): boolean {
+    for (let k = 1; k <= RUN_UP; k++) {
+      const n = this.nav.nearest(_q.set(from.x - dx * k, from.y + PLAYER_FEET_OFFSET, from.z - dz * k), 0);
+      if (!n || n.hazards.length || Math.abs(n.y - from.y) > 0.3 || Math.hypot(n.x - _q.x, n.z - _q.z) > 0.6) return false;
+    }
+    return true;
   }
 
   private replan(): boolean {

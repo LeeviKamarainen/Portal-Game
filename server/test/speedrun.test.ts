@@ -1,6 +1,6 @@
 /**
  * Speedrun maps: surf ramps and their fins, fizzlers, checkpoint gates and the run clock,
- * and every route through the built-in courses (Slipstream, Updraft), played headless by a
+ * and every route through the built-in courses (Slipstream, Updraft, Monolith), played headless by a
  * scripted runner. Starting points are set by hand just before each mechanic, so a check
  * is about the course, not about steering.
  *
@@ -15,6 +15,7 @@ import { mapToArena } from '../../src/world/maps/MapFormat';
 import { ArenaSim } from '../../src/sim/ArenaSim';
 import slipstream from '../../src/world/maps/slipstream.json';
 import updraft from '../../src/world/maps/updraft.json';
+import monolith from '../../src/world/maps/monolith.json';
 import { V, scripted, DT } from './scripted';
 
 type Game = Awaited<ReturnType<typeof scripted>>;
@@ -469,4 +470,126 @@ test('no later section can be shot at from anywhere in an earlier one', async ()
       sim.dispose();
     }
   }
+});
+
+/** Monolith's route on foot: the middle of every arm's band, [x, z, jump here to reach the next point]. */
+const MONOLITH_ROUTE: [number, number, number][] = [[8.5,8.5,0],[8.5,-6,0],[8.5,-8.5,0],[2,-8.5,0],[2,-8.5,1],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,-3,1],[-8.5,0.8,0],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,-1,0],[8.5,-6,0],[8.5,-8.5,0],[2,-8.5,0],[2,-8.5,1],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,6,0],[-8.5,8.5,0],[-4,8.5,0],[-4,8.5,1],[-2,8.5,0],[0,8.5,0],[0,8.5,1],[2,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,3,1],[8.5,-0.8,0],[8.5,-1,0],[8.5,-6,0],[8.5,-8.5,0],[3,-8.5,0],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-2,0],[-8.5,-2,1],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,3,1],[8.5,-2,0],[8.5,-6,0],[8.5,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[-4,8.5,0],[-4,8.5,1],[-2,8.5,0],[0,8.5,0],[0,8.5,1],[2,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,2,0],[8.5,2,1],[8.5,-1,0],[8.5,-6,0],[8.5,-8.5,0],[3,-8.5,0],[3,-8.5,1],[-0.8,-8.5,0],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[-3,8.5,0],[-3,8.5,1],[2,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,-1,0],[8.5,-6,0],[8.5,-8.5,0],[4,-8.5,0],[4,-8.5,1],[2,-8.5,0],[0,-8.5,0],[0,-8.5,1],[-2,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,-3,1],[-8.5,0.8,0],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[-3,8.5,0],[1,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,3,1],[8.5,-2,0],[8.5,-6,0],[8.5,-8.5,0],[3,-8.5,0],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,1,0],[-8.5,6,0],[-8.5,8.5,0],[-4,8.5,0],[-4,8.5,1],[-2,8.5,0],[0,8.5,0],[0,8.5,1],[2,8.5,0],[6,8.5,0],[8.5,8.5,0],[8.5,3,0],[8.5,-1,0],[8.5,-6,0],[8.5,-8.5,0],[3,-8.5,0],[-1,-8.5,0],[-6,-8.5,0],[-8.5,-8.5,0],[-8.5,-3,0],[-8.5,-3,1],[-8.5,2,0],[-8.5,6,0],[-8.5,8.5,0],[-3,8.5,0],[-3,8.5,1],[0.8,8.5,0],[1,8.5,0],[6,8.5,0],[8.5,-6,0]];
+
+/** Jumps toward (x, z) from here, steering in the air, until down again. */
+function leap(g: Game, x: number, z: number): void {
+  const c = g.commands.next;
+  c.forward = 1;
+  c.jump = true;
+  let up = false;
+  for (let i = 0; i < 2 / DT && !g.me.dead; i++) {
+    g.stepTo(V(x, g.body.getPosition().y, z));
+    if (!g.body.isGrounded) {
+      up = true;
+      c.jump = false;
+    } else if (up) break;
+  }
+  c.jump = false;
+  c.forward = 0;
+}
+
+/** Walks the route from point `from` to point `to`, leaping where it says. */
+function climb(g: Game, from: number, to: number): void {
+  for (let i = from + 1; i <= to && !g.me.dead && !g.sim.speedrun!.finished; i++) {
+    const [x, z] = MONOLITH_ROUTE[i];
+    if (MONOLITH_ROUTE[i - 1][2]) leap(g, x, z);
+    if (!g.walk(x, z, 0.6, 10, () => g.sim.speedrun!.finished)) assert.fail(`stuck on the way to route point ${i} (${x}, ${z}) at ${g.body.getPosition().toArray().map((n) => n.toFixed(1))}`);
+  }
+}
+
+test('Monolith: the whole spiral climbs on foot - ramps, gaps, steps, spike beds - through every gate to the finish', async () => {
+  // (Rams are timing; they have a test of their own.)
+  const noRams = { ...monolith, pieces: (monolith as MapData).pieces.filter((p) => p.type !== 'ram') };
+  await course(noRams, (g) => {
+    climb(g, 0, MONOLITH_ROUTE.length - 1);
+    assert.ok(!g.me.dead, 'alive');
+    assert.equal(g.sim.speedrun!.next, 3, 'three checkpoints passed');
+    assert.ok(g.sim.speedrun!.finished, `the finish (at ${g.body.getPosition().toArray().map((n) => n.toFixed(1))})`);
+  });
+});
+
+test('Monolith: a ram can be walked past while it rests, and throws whoever stands in front of it off the arm', async () => {
+  // Lap 2's east arm: a flat 4 m stretch (z 3 to -1, 21.5 up) with a ram in the tower wall.
+  const stand = (g: Game, z: number) => place(g, V(8.5, 22.6, z));
+  await course(monolith, (g) => {
+    stand(g, 3.6);
+    g.idle(0.3);
+    assert.ok(g.body.isGrounded, `standing on the arm (at ${g.body.getPosition().toArray().map((n) => n.toFixed(1))})`);
+    assert.ok(g.walk(8.5, -2, 0.5, 3), "across the ram's reach in its rest");
+    assert.ok(!g.me.dead && g.body.getPosition().x < 11, 'not thrown');
+  });
+  await course(monolith, (g) => {
+    stand(g, 1);
+    g.idle(4.5);
+    const p = g.body.getPosition();
+    assert.ok(p.x > 11.2 || p.y < 21, `thrown off by the ram (at ${p.toArray().map((n) => n.toFixed(1))})`);
+  });
+});
+
+test('Monolith: portals reach 30 m, the whole ground takes them, and a ground-to-plate loop flings you up the tower', async () => {
+  await course(monolith, (g) => {
+    place(g, V(0, 1.1, 40));
+    g.idle(0.3);
+    // The gun knows its reach, and how far off what you aim at is (the HUD shows both).
+    assert.equal(g.sim.gun.range, 30);
+    const eye = V(0, 0, 0);
+    g.body.viewPose(eye, new THREE.Quaternion());
+    const d = g.sim.gun.aimDistance(eye, V(0, -2.7, -32).normalize());
+    assert.ok(d !== null && Math.abs(d - (eye.y * Math.hypot(2.7, 32)) / 2.7) < 0.5, `aim distance ${d}`);
+    assert.ok(g.sim.aimReach() !== null && g.sim.aimReach()!.range === 30);
+    g.shoot('orange', V(0, 0, 20));
+    assert.ok(g.me.portals.orange.placed, 'ground portal within range');
+    g.shoot('blue', V(0, 0, 8));
+    assert.ok(!g.me.portals.blue.placed, 'the same shot 32 m away stops short');
+  });
+  await course(monolith, (g) => {
+    // The west plate (7 m up) over open ground: blue on the ground under it, orange on its underside.
+    place(g, V(-17.5, 1.1, 8));
+    g.idle(0.3);
+    g.shoot('blue', V(-17.5, 0, 0));
+    g.shoot('orange', V(-17.5, 7, 0));
+    assert.ok(g.me.portals.orange.placed && g.me.portals.blue.placed, 'ground and plate underside both take portals');
+    // Step in: down through the ground, out of the plate, down again.
+    g.walk(-17.5, 0, 0.3, 4, () => !g.body.isGrounded);
+    // (Steering back over the portal each fall, the way a player would.)
+    for (let i = 0; i < 12 / DT && g.body.getVelocity().y > -44; i++) {
+      const p = g.body.getPosition();
+      g.commands.next.forward = Math.hypot(p.x + 17.5, p.z) > 0.4 ? 1 : 0;
+      g.stepTo(V(-17.5, p.y, 0));
+    }
+    g.commands.next.forward = 0;
+    assert.ok(g.body.getVelocity().y < -44, `looped to terminal speed (${g.body.getVelocity().y.toFixed(1)} m/s)`);
+    // Move the exit to open ground a few metres off: out of it at full speed, straight up the tower's side.
+    g.shoot('orange', V(-17.5, 0, 9));
+    assert.ok(g.me.portals.orange.placed, 'the exit moved to the ground');
+    let top = 0;
+    for (let i = 0; i < 6 / DT; i++) {
+      g.stepTo(null);
+      top = Math.max(top, g.body.getPosition().y);
+      if (g.body.getVelocity().y < -5 && top > 20) break;
+    }
+    assert.ok(top > 40, `flung ${top.toFixed(0)} m up`);
+  });
+});
+
+test('Monolith: a jump-pad lift skips a lap - gap to the pad, out east, back onto the next lap', async () => {
+  await course(monolith, (g) => {
+    // Lap 2's start pier (20 m): across the gap to the outcrop pad, thrown to the platform, thrown on to lap 3's pier.
+    place(g, V(10.6, 21.1, 8.5));
+    g.idle(0.3);
+    assert.ok(g.body.isGrounded, 'on the pier');
+    leap(g, 17.5, 8.5);
+    coast(g, 3, () => g.body.getPosition().y > 28);
+    assert.ok(g.body.getPosition().y > 28, `thrown up to the platform (at ${g.body.getPosition().toArray().map((n) => n.toFixed(1))})`);
+    coast(g, 3, () => g.body.isGrounded);
+    g.idle(0.2);
+    assert.ok(g.walk(17.5, -1.5, 0.4, 4, () => !g.body.isGrounded), 'to the second pad');
+    coast(g, 4, () => g.body.isGrounded && g.body.getPosition().y > 38);
+    const p = g.body.getPosition();
+    assert.ok(p.y > 40.5 && p.x < 12 && p.z > 6, `on the next lap's pier (at ${p.toArray().map((n) => n.toFixed(1))})`);
+  });
 });

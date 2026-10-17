@@ -16,6 +16,7 @@ import { BOT_SKILLS, seededRandom } from '../../src/bots/BotSkill';
 import type { ArenaDef } from '../../src/world/ArenaBuilder';
 import * as THREE from 'three';
 import { exitVelocity } from '../../src/bots/AirChain';
+import { clearCommand } from '../../src/player/PlayerCommand';
 
 const DT = 1 / 60;
 
@@ -214,5 +215,66 @@ test('Ultra 2 alternates an orb rush with a hunt for the players, and Ultra hard
     assert.equal(rushSteals, 0);
   } finally {
     sim.dispose();
+  }
+});
+
+test('on Cubefield bots jump the short gaps without falling in and hop from block to block', async () => {
+  const map = BUILT_IN_ONLINE_MAPS.find((m) => m.id === 'cubefield')!;
+  const blocks = (map.data.pieces as { type: string; at: number[]; size: number[]; portal?: string[] }[]).filter((p) => p.type === 'block' && p.portal);
+  const blockAt = (x: number, feet: number, z: number) =>
+    blocks.findIndex((p) => Math.abs(x - p.at[0]) <= p.size[0] / 2 + 0.5 && Math.abs(z - p.at[2]) <= p.size[2] / 2 + 0.5 && Math.abs(feet - (p.at[1] + p.size[1])) < 1.5);
+  for (const [d, seed] of [['normal', 2], ['hard', 3]] as const) {
+    const sim = await ArenaSim.load(mapToArena(map.data), {});
+    try {
+      sim.orbs!.random = seededRandom(seed * 31);
+      sim.orbs!.clear(0);
+      const bot = new BotController(BOT_SKILLS[d], seed);
+      const player = sim.addPlayer({ id: 'p1', name: 'BOT' }, bot);
+      bot.attach(sim, player);
+      let deaths = 0;
+      const visited = new Set<number>();
+      for (let i = 0; i < Math.round(90 / DT); i++) {
+        sim.step(DT);
+        for (const e of sim.events.splice(0)) if (e.type === 'death') deaths++;
+        if (i % 30 === 0 && player.controller.isGrounded) {
+          const at = player.controller.getPosition();
+          const b = blockAt(at.x, at.y - 1, at.z);
+          if (b >= 0) visited.add(b);
+        }
+      }
+      console.log(`${d}: ${visited.size} blocks, ${bot.brain!.stats.travels} hops, ${deaths} deaths`);
+      // (Alone, nothing but its own mistakes can kill it; on foot it only ever had its spawn block and the one next door.)
+      assert.ok(deaths <= 1, `${d} fell in ${deaths} times`);
+      assert.ok(visited.size >= 4, `${d} only got to ${visited.size} blocks`);
+    } finally {
+      sim.dispose();
+    }
+  }
+});
+
+test('on Cubefield Hard gets up to someone standing on a higher block and kills them', async () => {
+  const map = BUILT_IN_ONLINE_MAPS.find((m) => m.id === 'cubefield')!;
+  // Block tops above its spawn top (30.5): out of sight of a trap from below.
+  for (const [k, [x, top, z]] of ([[-39, 36.7, -66], [-73, 46.7, -78]] as const).entries()) {
+    const sim = await ArenaSim.load(mapToArena(map.data), {});
+    try {
+      sim.orbs!.random = seededRandom(k + 5);
+      sim.orbs!.clear(0);
+      const bot = new BotController(BOT_SKILLS.hard, k + 1);
+      bot.attach(sim, sim.addPlayer({ id: 'p1', name: 'BOT' }, bot));
+      const victim = sim.addPlayer({ id: 'p2', name: 'STILL' }, { read: (cmd) => clearCommand(cmd) });
+      const place = () => victim.controller.setPosition(new THREE.Vector3(x, top + 1.05, z));
+      place();
+      let killedAt = -1;
+      for (let i = 0; i < Math.round(60 / DT) && killedAt < 0; i++) {
+        sim.step(DT);
+        for (const e of sim.events.splice(0)) if (e.type === 'death' && e.player === 'p2' && e.by === 'p1') killedAt = i * DT;
+        if (victim.dead) place();
+      }
+      console.log(`target on the block at ${x},${z} (top ${top}): ${killedAt < 0 ? 'not killed' : `killed after ${killedAt.toFixed(0)} s`}, ${bot.brain!.stats.travels} hops`);
+      assert.ok(killedAt >= 0, `never got the one on the block at ${x},${z}`);
+    } finally {
+      sim.dispose();
+    }
   }
 });

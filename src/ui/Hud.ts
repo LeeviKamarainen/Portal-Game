@@ -9,6 +9,9 @@ const CSS = `
 .hud .xhair .br.l { left:2px; border-right:none; border-radius:18px 0 0 18px; border-color:#ff7a1a; }
 .hud .xhair .br.r { right:2px; border-left:none; border-radius:0 18px 18px 0; border-color:#2ab8ff; }
 .hud .xhair .br.on { opacity:1; }
+.hud .xhair .reach { position:absolute; left:50%; top:54px; transform:translateX(-50%); white-space:nowrap; font-size:12px; letter-spacing:0.06em; color:rgba(255,255,255,0.75); text-shadow:0 1px 3px #000; }
+.hud .xhair .reach.out { color:#ff7a6a; }
+.hud .xhair.far .br, .hud .xhair.far .dot { opacity:0.25; }
 .hud .xhair .br.l.on { background:rgba(255,122,26,0.35); }
 .hud .xhair .br.r.on { background:rgba(42,184,255,0.35); }
 .hud .bars { position:absolute; left:22px; bottom:22px; width:230px; }
@@ -95,7 +98,7 @@ export class Hud {
     this.root = document.createElement('div');
     this.root.className = FLAGS.touch ? 'hud touch' : 'hud';
     this.root.innerHTML = `
-      <div class="xhair"><div class="br l"></div><div class="dot"></div><div class="br r"></div></div>
+      <div class="xhair"><div class="br l"></div><div class="dot"></div><div class="br r"></div><div class="reach"></div></div>
       <div class="title shadow"><div class="step"></div><div class="name"></div><div class="hint"></div></div>
       <div class="corner shadow"><span class="net"></span><span class="fps"></span><button class="btn mute"></button></div>
       <div class="bars shadow">
@@ -113,7 +116,7 @@ export class Hud {
       <div class="click shadow">${FLAGS.touch ? 'Tap to play' : 'Click to play'}</div>
     `;
     container.appendChild(this.root);
-    for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts', 'run', 'clock', 'meta', 'speed']) {
+    for (const cls of ['step', 'name', 'hint', 'fps', 'net', 'mute', 'health', 'immunity', 'banner', 'sub', 'click', 'effect', 'score', 'to', 'rows', 'toasts', 'run', 'clock', 'meta', 'speed', 'reach', 'xhair']) {
       this.el[cls] = this.root.querySelector(`.${cls}`)!;
     }
     this.el.l = this.root.querySelector('.br.l')!;
@@ -134,6 +137,21 @@ export class Hud {
     this.el.step.textContent = label;
     this.el.name.textContent = name;
     this.showHint(hint);
+  }
+
+  /**
+   * The portal gun's reach under the crosshair, for a map that limits it: the distance to what
+   * you aim at ("23 m"), or OUT OF REACH when it is beyond `range`. Null: no limit, nothing shown.
+   */
+  setReach(info: { range: number; distance: number | null } | null): void {
+    const el = this.el.reach;
+    this.el.xhair.classList.toggle('far', !!info && info.distance !== null && info.distance > info.range);
+    el.style.display = info ? 'block' : 'none';
+    if (!info) return;
+    const out = info.distance !== null && info.distance > info.range;
+    const text = out ? 'OUT OF REACH' : info.distance === null ? `REACH ${Math.round(info.range)} m` : `${Math.round(info.distance)} / ${Math.round(info.range)} m`;
+    if (el.textContent !== text) el.textContent = text;
+    el.classList.toggle('out', out);
   }
 
   /** Hidden while a menu covers the screen. */

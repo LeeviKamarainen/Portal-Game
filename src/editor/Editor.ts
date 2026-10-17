@@ -1526,6 +1526,7 @@ export class Editor {
       <div class="row"><label>Fog colour</label><input type="color" data-key="fog.color" value="${m.fog?.color ?? '#0c1018'}"></div>
       <div class="row"><label>Fog near / far</label><div class="vec"><input type="number" step="5" data-key="fog.near" value="${m.fog?.near ?? 40}"><input type="number" step="5" data-key="fog.far" value="${m.fog?.far ?? 160}"></div></div>
       <div class="row"><label>Death below y</label><input type="number" step="0.5" data-key="killY" value="${m.killY ?? -6}"></div>
+      <div class="row"><label title="How far a portal shot reaches; far-off surfaces can't be used">Portal range</label><input type="number" step="5" min="5" data-key="portalRange" value="${m.portalRange ?? 200}"></div>
       <h3>Checks</h3>
       <ul class="checks">${checks.length ? checks.map((c) => `<li class="err">${esc(c)}</li>`).join('') : '<li class="ok">Ready to playtest.</li>'}</ul>
       <h3>Keys</h3>
@@ -1541,6 +1542,7 @@ export class Editor {
     else if (key === 'fog.near') fog.near = Number(input.value) || 0;
     else if (key === 'fog.far') fog.far = Number(input.value) || 0;
     else if (key === 'killY') m.killY = Number(input.value);
+    else if (key === 'portalRange') m.portalRange = Math.max(5, Number(input.value) || 200);
     else if (key === 'symmetry') {
       m.symmetry = input.value as MapData['symmetry'];
       this.rebuildAll();

@@ -22,7 +22,7 @@ import { NetOverlay } from '../ui/NetOverlay';
 import { Menu } from '../ui/Menu';
 import { Editor } from '../editor/Editor';
 import { mapToArena, type MapData } from '../world/maps/MapFormat';
-import { ARENAS, PVP_ARENA, SPEEDRUNS, TEST_ARENA } from '../world/arenas';
+import { ARENAS, PVP_ARENA, PVP_MAPS, SPEEDRUNS, TEST_ARENA } from '../world/arenas';
 import type { ArenaDef } from '../world/ArenaBuilder';
 import type { PortalColor } from '../portals/Portal';
 import { Session, type SessionEvent } from './Session';
@@ -140,7 +140,7 @@ export class Game {
     this.menu = new Menu(container, this.settings, {
       playStage: (i) => this.startFromMenu(() => this.loadArena(i)),
       playSpeedrun: (i) => this.startFromMenu(() => this.loadSpeedrun(i)),
-      playPvp: () => this.startFromMenu(() => this.loadPvp()),
+      playPvp: (mapId) => this.startFromMenu(() => this.loadPvp(mapId)),
       resume: () => this.resume(),
       restart: () => {
         this.resume();
@@ -163,7 +163,10 @@ export class Game {
       startMatch: () => this.online.start(),
       onlineError: (message) => this.online.showError(message),
     }, this.accounts);
-    this.accounts.onChange = () => this.menu.setAccount();
+    this.accounts.onChange = () => {
+      this.menu.setAccount();
+      this.syncBestTimes();
+    };
     this.hud.setMuted(this.audio.muted);
     this.menu.setMuted(this.audio.muted);
     this.menu.setProgress(this.progress);
@@ -231,8 +234,9 @@ export class Game {
     await this.load(SPEEDRUNS[index], 'speedrun', index);
   }
 
-  async loadPvp(): Promise<void> {
-    await this.load(PVP_ARENA, 'pvp', 0);
+  /** A PvP map by id (see PVP_MAPS); Highwire when none is given or the id is unknown. */
+  async loadPvp(mapId?: string): Promise<void> {
+    await this.load(PVP_MAPS.find((m) => m.id === mapId)?.def ?? PVP_ARENA, 'pvp', 0);
   }
 
   private async load(def: ArenaDef, mode: Mode, index: number, state: State = 'entering', match: MatchStart | null = null): Promise<void> {
@@ -663,6 +667,43 @@ export class Game {
     if (reconnecting) this.hud.setBanner('RECONNECTING…', `Your place and score are kept for ${REJOIN_SECONDS} s`);
   }
 
+  /** Course ids whose best time went to the leaderboard for the account that is logged in now. */
+  private readonly submittedFor = new Set<string>();
+  private submittedUser: number | null = null;
+
+  /**
+   * Puts a finished run on the course's leaderboard (the server keeps a player's best). `fresh`:
+   * a run just finished, so say how it ranks; otherwise it is a saved time being sent quietly.
+   */
+  private async submitRun(course: string, time: number, splits: number[], fresh: boolean): Promise<void> {
+    // Guests have no leaderboard stats: nothing is sent, and nothing is said about it.
+    if (!this.accounts.user) return;
+    try {
+      const reply = await this.accounts.submitRun(course, time, splits);
+      if (fresh) {
+        const place = `#${reply.you.rank} OF ${reply.total}`;
+        this.hud.toast(reply.improved ? `LEADERBOARD ${place}` : `BEST ON THE BOARD ${formatTime(reply.you.time)} · ${place}`, reply.improved ? '#5aff8a' : undefined);
+      }
+    } catch (e) {
+      if (fresh) this.hud.toast(`LEADERBOARD: ${e instanceof AccountError ? e.message : 'could not send the run'}`, '#ff8a6a');
+    }
+  }
+
+  /** On logging in, the times saved in this browser go to the boards too (once per account). */
+  private syncBestTimes(): void {
+    const user = this.accounts.user;
+    if (this.submittedUser !== (user?.id ?? null)) {
+      this.submittedUser = user?.id ?? null;
+      this.submittedFor.clear();
+    }
+    if (!user) return;
+    for (const [course, best] of this.bestTimes) {
+      if (this.submittedFor.has(course) || !SPEEDRUNS.some((a) => a.id === course)) continue;
+      this.submittedFor.add(course);
+      void this.submitRun(course, best.time, best.splits, false);
+    }
+  }
+
   /** Something happened in the match: tell the player (offline and online alike). */
   private handleEvent(session: Session, e: SessionEvent): void {
     if (e.type === 'death' && e.player === session.local.id && (this.state === 'playing' || this.state === 'entering')) {
@@ -701,6 +742,7 @@ export class Game {
       const versus = record ? (best ? `NEW BEST · ${formatDelta(e.time - best.time)}` : 'FIRST TIME SET') : best ? `Best ${formatTime(best.time)} (${formatDelta(e.time - best.time)})` : '';
       this.hud.setBanner(formatTime(e.time), `${versus}${versus ? ' · ' : ''}R: run again · Esc: menu`);
       this.setState('finished');
+      if (this.mode === 'speedrun') void this.submitRun(id, e.time, e.splits, true);
     } else if (e.type === 'score') {
       const you = e.player === session.player.id;
       const who = you ? '' : `${session.match?.player(e.player)?.name ?? e.player} `;
@@ -855,6 +897,8 @@ export class Game {
         speed: player.isGrounded ? player.horizontalSpeed() : player.getVelocity().length(),
       },
     );
+    // A map that shortens the portal gun's reach shows it under the crosshair.
+    this.hud.setReach(inMenu ? null : session.aimReach());
     const match = inMenu ? null : session.match;
     this.hud.setScores(
       match?.players.map((p) => ({ name: p.name, score: p.score, you: p.id === player.id })) ?? null,

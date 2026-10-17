@@ -1,5 +1,5 @@
 import { FLAGS } from '../core/Flags';
-import { ARENAS, PVP_ARENA, SPEEDRUNS } from '../world/arenas';
+import { ARENAS, PVP_MAPS, SPEEDRUNS } from '../world/arenas';
 import { formatTime } from '../sim/Speedrun';
 import { DEFAULT_SETTINGS, MAX_BOTS, SKINS, saveSettings, type RunRecord, type Settings } from '../core/Settings';
 import { SkinPreview } from './SkinPreview';
@@ -10,6 +10,7 @@ import { BOT_DIFFICULTIES, BOT_DIFFICULTY_LABEL, BUILT_IN_ONLINE_MAPS, CODE_LENG
 import type { OnlineView } from '../net/OnlineLobby';
 import type { AccountClient } from '../net/AccountClient';
 import { ACCOUNT_CSS, AccountUi } from './AccountUi';
+import { LEADERBOARD_CSS, LeaderboardUi } from './LeaderboardUi';
 import { AdminUi } from './AdminUi';
 
 /**
@@ -21,7 +22,8 @@ export interface MenuHandlers {
   playStage(index: number): void;
   /** A speedrun course, by its index in SPEEDRUNS. */
   playSpeedrun(index: number): void;
-  playPvp(): void;
+  /** A PvP match against bots on the map `mapId` (an id from PVP_MAPS). */
+  playPvp(mapId: string): void;
   resume(): void;
   restart(): void;
   mainMenu(): void;
@@ -42,8 +44,17 @@ export interface MenuHandlers {
   onlineError(message: string): void;
 }
 
-type Page = 'main' | 'pause' | 'tutorial' | 'speedrun' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin';
+type Page = 'main' | 'pause' | 'tutorial' | 'speedrun' | 'pvp' | 'settings' | 'online' | 'lobby' | 'account' | 'maps' | 'admin' | 'board';
 type SettingsTab = 'character' | 'graphics' | 'lighting' | 'controls';
+
+/** What a bot difficulty means, shown under the difficulty buttons. */
+const BOT_DIFFICULTY_BLURB: Readonly<Record<BotDifficulty, string>> = {
+  easy: 'Sees and hears no more than you do, and makes the mistakes you would expect.',
+  normal: 'Sees and hears no more than you do. Collects orbs, dodges and sets portal traps.',
+  hard: 'Knows where everyone is, so it is hard to ambush. Goes after whoever is nearest or winning.',
+  ultra: 'Hard, and it also gets about through its own portals.',
+  ultra2: 'Switches between rushing the orbs and hunting you down.',
+};
 
 const previewUrls = import.meta.glob('../assets/players/Previews/*.png', {
   query: '?url',
@@ -101,6 +112,11 @@ const CSS = `
 .menu .stage .n { font-size:13px; color:var(--muted); letter-spacing:0.2em; display:flex; justify-content:space-between; align-items:center; }
 .menu .stage .t { font-size:20px; font-weight:650; }
 .menu .stage .d { font-size:13px; color:var(--muted); line-height:1.45; }
+.menu .stage.on { border-color:var(--orange); background:rgba(255,122,26,0.1); }
+.menu .step { margin-top:28px; font-size:12px; font-weight:700; letter-spacing:0.18em; text-transform:uppercase; color:var(--muted); }
+.menu .step + .stages { margin-top:12px; }
+.menu .step + .card { margin-top:12px; }
+.menu .btn.big { padding:11px 22px; font-size:16px; }
 .menu .note { margin-top:18px; color:var(--muted); font-size:13px; max-width:640px; line-height:1.5; }
 .menu .card { margin-top:28px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:22px 24px; max-width:560px; }
 .menu .card .t { font-size:22px; font-weight:650; }
@@ -204,6 +220,7 @@ export class Menu {
   private readonly accounts: AccountClient;
   private readonly ui: AccountUi;
   private readonly admin: AdminUi;
+  private readonly board: LeaderboardUi;
 
   constructor(container: HTMLElement, settings: Settings, handlers: MenuHandlers, accounts: AccountClient) {
     this.settings = settings;
@@ -223,8 +240,13 @@ export class Menu {
         if (this.isOpen && this.page === 'admin') this.show('admin', true);
       },
     });
+    this.board = new LeaderboardUi(accounts, {
+      redraw: () => {
+        if (this.isOpen && this.page === 'board') this.show('board', true);
+      },
+    });
     const style = document.createElement('style');
-    style.textContent = CSS + ACCOUNT_CSS;
+    style.textContent = CSS + ACCOUNT_CSS + LEADERBOARD_CSS;
     document.head.appendChild(style);
     this.root = document.createElement('div');
     this.root.className = 'menu';
@@ -319,7 +341,8 @@ export class Menu {
   setAccount(): void {
     this.ui.userChanged();
     this.admin.userChanged();
-    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps' || this.page === 'admin')) this.show(this.page);
+    this.board.userChanged();
+    if (this.isOpen && (this.page === 'main' || this.page === 'account' || this.page === 'online' || this.page === 'maps' || this.page === 'admin' || this.page === 'board')) this.show(this.page);
   }
 
   /** The name to play under: the account's, when logged in. */
@@ -338,7 +361,7 @@ export class Menu {
       if (this.home === 'pause') this.handlers.resume();
       return;
     }
-    this.show(this.home);
+    this.show(this.page === 'board' ? 'speedrun' : this.home);
   }
 
   private muteLabel(): string {
@@ -355,6 +378,7 @@ export class Menu {
     this.page = page;
     if (!redraw && page === 'maps') void this.ui.loadMaps(true);
     if (!redraw && page === 'admin') void this.admin.load();
+    if (!redraw && page === 'board') void this.board.load();
     this.root.classList.toggle('dim', page !== 'main');
     this.root.classList.toggle('peek', page === 'settings' && (this.tab === 'lighting' || this.tab === 'graphics'));
     if (page !== 'settings' || this.tab !== 'character') this.preview?.stop();
@@ -375,7 +399,7 @@ export class Menu {
           <div class="stack">
             ${this.item('tutorial', 'Tutorial', `${ARENAS.length} stages &middot; ${done} completed`)}
             ${this.item('speedrun', 'Speedrun <span class="chip">NEW</span>', `${SPEEDRUNS.length} course${SPEEDRUNS.length === 1 ? '' : 's'} against the clock &middot; ${SPEEDRUNS.filter((a) => this.bestTimes.has(a.id)).length} finished`)}
-            ${this.item('pvp', 'PvP Arena <span class="chip">WIP</span>', `${PVP_ARENA.name} &middot; walk the map solo for now`)}
+            ${this.item('pvp', 'PvP Arena', `Fight up to ${MAX_BOTS} bots &middot; ${PVP_MAPS.length} maps &middot; first to ${DEFAULT_RULES.scoreToWin} points`)}
             ${this.item('online', 'Online <span class="chip">WIP</span>', 'Play with friends: create a room or join one with a code')}
             ${this.item('settings', 'Settings', 'Character, graphics, lighting, controls')}
             ${this.item('editor', 'Map editor', 'Build arenas from blocks, hazards and switches')}
@@ -428,37 +452,49 @@ export class Menu {
               </button>`;
             }).join('')}
           </div>
+          <div class="stack" style="margin-top:14px">${this.item('board', 'Leaderboards', 'The fastest runs of every player, course by course')}</div>
           <div class="note">The clock starts when you leave the pad. Fizzlers close your portals, so each section needs new ones. A fall puts you back at the last checkpoint with the clock still running; R starts the run over.</div>
           ${foot}`;
-      case 'pvp':
+      case 'pvp': {
+        const map = this.pvpMap();
+        const bots = this.settings.botCount;
+        const diff = this.settings.botDifficulty;
         return `${back}
           <div class="eyebrow">Player versus player</div>
-          <h2>PvP Arena <span class="chip">${this.settings.botCount === 1 ? '1 v 1 VS BOT' : `FREE FOR ALL &middot; ${this.settings.botCount} BOTS`}</span></h2>
+          <h2>PvP Arena</h2>
+          <div class="step">1 &middot; Choose a map</div>
+          <div class="stages">
+            ${PVP_MAPS.map((m) => {
+              const picked = m.id === map.id;
+              return `<button class="stage ${picked ? 'on' : ''}" data-action="pvp-map" data-map="${m.id}" aria-pressed="${picked}">
+                <div class="n">MAP <span class="chip ${picked ? '' : 'idle'}">${picked ? 'SELECTED' : 'SELECT'}</span></div>
+                <div class="t">${esc(m.def.name)}</div>
+                <div class="d">${esc(m.def.blurb ?? '')}</div>
+              </button>`;
+            }).join('')}
+          </div>
+          <div class="step">2 &middot; Set up the match</div>
           <div class="card">
-            <div class="t">${esc(PVP_ARENA.name)}</div>
-            <div class="d">${esc(PVP_ARENA.blurb ?? '')}</div>
-            <ul>
-              <li class="ok">Scoring: point orbs, portal kill credit, first to ${DEFAULT_RULES.scoreToWin} wins</li>
-              <li class="ok">Bot opponents: collect orbs, dodge, set portal traps and go after whoever is nearest or winning. Easy and Normal see and hear no more than you; Hard knows where everyone is; Ultra hard is Hard that also gets about by portal; Ultra 2 alternates between rushing the orbs and hunting you</li>
-              <li class="ok">Shoot an opponent's portal to steal it</li>
-              <li>Online opponents</li>
-            </ul>
-            <div class="d" style="margin-top:10px">Bots</div>
-            <div class="seg" style="margin-top:6px">
+            <div class="d" style="margin-top:0">Opponents</div>
+            <div class="seg" style="margin-top:6px; display:inline-flex">
               ${Array.from({ length: MAX_BOTS }, (_, i) => i + 1)
-                .map((n) => `<button class="${this.settings.botCount === n ? 'on' : ''}" data-action="bot-count" data-count="${n}">${n === 1 ? '1 (1 v 1)' : `${n} (free for all)`}</button>`)
+                .map((n) => `<button class="${bots === n ? 'on' : ''}" data-action="bot-count" data-count="${n}">${n === 1 ? '1 bot' : `${n} bots`}</button>`)
                 .join('')}
             </div>
-            <div class="d" style="margin-top:10px">Bot difficulty</div>
-            <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap">
-              ${BOT_DIFFICULTIES
-                .map(
-                  (d) =>
-                    `<button class="btn ${this.settings.botDifficulty === d ? 'primary' : ''}" data-action="pvp-play" data-difficulty="${d}">Play vs ${this.settings.botCount === 1 ? '' : `${this.settings.botCount} `}${BOT_DIFFICULTY_LABEL[d]} bot${this.settings.botCount === 1 ? '' : 's'}</button>`,
-                )
-                .join('')}
+            <div class="d">${bots === 1 ? 'A duel: you against one bot.' : `Free for all: you against ${bots} bots, everyone for themselves.`}</div>
+            <div class="d" style="margin-top:16px">Bot difficulty</div>
+            <div class="seg" style="margin-top:6px; display:inline-flex; max-width:100%; flex-wrap:wrap">
+              ${BOT_DIFFICULTIES.map((d) => `<button class="${diff === d ? 'on' : ''}" data-action="bot-difficulty" data-difficulty="${d}">${BOT_DIFFICULTY_LABEL[d]}</button>`).join('')}
             </div>
-          </div>${foot}`;
+            <div class="d">${BOT_DIFFICULTY_BLURB[diff]}</div>
+            <div class="line" style="margin-top:22px">
+              <button class="btn primary big" data-action="pvp-play">Play on ${esc(map.def.name)}</button>
+              <span class="d" style="margin:0">vs ${bots} ${BOT_DIFFICULTY_LABEL[diff].toLowerCase()} bot${bots === 1 ? '' : 's'}</span>
+            </div>
+          </div>
+          <div class="note">First to ${DEFAULT_RULES.scoreToWin} points wins. Grab the gold orbs for points, and send opponents into hazards through your portals: a kill scores for whoever's portal they fell through. Shoot an opponent's portal to steal it. To play against other people, use Online.</div>
+          ${foot}`;
+      }
       case 'online':
         return `${back}${this.renderOnline()}${foot}`;
       case 'lobby':
@@ -469,6 +505,8 @@ export class Menu {
         return `${back}${this.ui.renderMaps()}${foot}`;
       case 'admin':
         return `${back}${this.admin.render()}${foot}`;
+      case 'board':
+        return `${back}${this.board.render()}${foot}`;
       case 'settings':
         return `${back}
           <div class="eyebrow">Options</div>
@@ -492,6 +530,11 @@ export class Menu {
             <button class="btn" data-action="reset">Reset ${this.tab === 'controls' ? 'controls' : this.tab} to defaults</button>
           </div>`;
     }
+  }
+
+  /** The PvP map picked on the PvP page (the first when the saved one is gone). */
+  private pvpMap(): (typeof PVP_MAPS)[number] {
+    return PVP_MAPS.find((m) => m.id === this.settings.pvpMap) ?? PVP_MAPS[0];
   }
 
   private pingText(): string {
@@ -742,10 +785,15 @@ export class Menu {
       this.admin.click(a, el);
       return;
     }
+    if (a.startsWith('board-')) {
+      this.board.click(a, el);
+      return;
+    }
     switch (a) {
       case 'account':
       case 'maps':
       case 'admin':
+      case 'board':
         this.show(a);
         break;
       case 'back':
@@ -801,16 +849,27 @@ export class Menu {
       case 'stage':
         this.handlers.playStage(Number(el.dataset.index));
         break;
-      case 'pvp-play': {
-        const d = el.dataset.difficulty;
-        const picked = BOT_DIFFICULTIES.find((k) => k === d);
+      case 'pvp-map': {
+        const id = PVP_MAPS.find((m) => m.id === el.dataset.map)?.id;
+        if (id) {
+          this.settings.pvpMap = id;
+          saveSettings(this.settings);
+        }
+        this.show('pvp');
+        break;
+      }
+      case 'bot-difficulty': {
+        const picked = BOT_DIFFICULTIES.find((k) => k === el.dataset.difficulty);
         if (picked) {
           this.settings.botDifficulty = picked;
           saveSettings(this.settings);
         }
-        this.handlers.playPvp();
+        this.show('pvp');
         break;
       }
+      case 'pvp-play':
+        this.handlers.playPvp(this.pvpMap().id);
+        break;
       case 'bot-count': {
         const n = Number(el.dataset.count);
         if (n >= 1 && n <= MAX_BOTS) {

@@ -81,16 +81,29 @@ export class PortalGun {
     this.effects = new ShotEffects(level.scene, (c) => this.portals[c].tint);
   }
 
+  /** How far a shot reaches, in metres (a map may shorten it). */
+  get range(): number {
+    return this.level.portalRange;
+  }
+
+  /** Metres from `eye` along `dir` to the first thing a shot would hit (however far), or null. */
+  aimDistance(eye: THREE.Vector3, dir: THREE.Vector3): number | null {
+    this.raycaster.set(eye, dir.clone().normalize());
+    this.raycaster.far = 400;
+    return this.raycaster.intersectObjects(this.level.raycastTargets, false)[0]?.distance ?? null;
+  }
+
   fire(color: PortalColor, eye: THREE.Vector3, dir: THREE.Vector3, muzzle?: THREE.Vector3, landing?: LandingPredictor): ShotResult {
     // Moving blockers (crushers, platforms, doors) have moved since the last frame drew.
     this.level.scene.updateMatrixWorld();
     this.raycaster.set(eye, dir.clone().normalize());
-    this.raycaster.far = 200;
+    this.raycaster.far = this.level.portalRange;
     const hits = this.raycaster.intersectObjects(this.level.raycastTargets, false);
     const hit = hits[0];
     const from = muzzle ?? eye;
     if (!hit) {
-      this.effects.tracer(color, from, eye.clone().addScaledVector(dir, 60), false);
+      // Nothing in reach: the shot fizzles out at the end of it (60 m at most).
+      this.effects.tracer(color, from, eye.clone().addScaledVector(dir.clone().normalize(), Math.min(60, this.level.portalRange)), false);
       return { placed: false, point: null, normal: null };
     }
     const face = hit.object.userData.face as Face | undefined;

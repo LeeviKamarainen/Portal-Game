@@ -30,6 +30,8 @@ export interface Settings {
   /** The PvP bots' difficulty, and how many of them (everyone for themselves). */
   botDifficulty: BotDifficultySetting;
   botCount: number;
+  /** The PvP map last played (an id from PVP_MAPS; anything unknown means the first). */
+  pvpMap: string;
   /** What other players see you as online ('' until you pick one). */
   playerName: string;
 }
@@ -55,6 +57,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = {
   portalPings: true,
   botDifficulty: 'normal',
   botCount: 1,
+  pvpMap: 'highwire',
   playerName: '',
 };
 
@@ -111,6 +114,7 @@ export function loadSettings(): Settings {
     portalPings: typeof s.portalPings === 'boolean' ? s.portalPings : d.portalPings,
     botDifficulty: oneOf(s.botDifficulty, ['easy', 'normal', 'hard', 'ultra', 'ultra2'] as const, d.botDifficulty),
     botCount: Math.round(clamp(s.botCount, 1, MAX_BOTS, d.botCount)),
+    pvpMap: typeof s.pvpMap === 'string' ? s.pvpMap.slice(0, 40) : d.pvpMap,
     playerName: typeof s.playerName === 'string' ? s.playerName.slice(0, 16) : d.playerName,
   };
 }

@@ -155,12 +155,16 @@ const _p = new THREE.Vector3();
  * acid, a ceiling slot over a pit or just a long way up, a wall over a spike bed. Static map
  * knowledge, the same a person learns by playing the map.
  */
+/** Exit points tried in all: a map with very many (or huge) portal faces tries each more loosely. */
+const SAMPLE_BUDGET = 6000;
+
 export class TrapSpots {
   readonly spots: TrapSpot[] = [];
   readonly buildMs: number;
   private readonly arena: ArenaBuilder;
   private readonly physics: PhysicsWorld;
   private readonly hazards: Hazard[];
+  private readonly faceSamples: number;
 
   static for(key: object, arena: ArenaBuilder, level: Level, physics: PhysicsWorld): TrapSpots {
     let t = spotsFor.get(key);
@@ -177,6 +181,7 @@ export class TrapSpots {
     this.physics = physics;
     this.hazards = arena.hazards.filter((h) => !!h.covers);
     const hurt = new Map<string, TrapSpot>();
+    this.faceSamples = Math.max(24, SAMPLE_BUDGET / Math.max(1, level.faces.filter((f) => f.portalable && f.normal.y <= 0.5).length));
     level.faces.forEach((face, i) => {
       if (face.portalable) this.sampleFace(face, `${i}`, hurt);
     });
@@ -197,8 +202,10 @@ export class TrapSpots {
     const hw = face.width / 2 - mx;
     const hh = face.height / 2 - my;
     if (hw < 0 || hh < 0) return;
-    for (let y = -hh; y <= hh + 1e-6; y += SPACING) {
-      for (let x = -hw; x <= hw + 1e-6; x += SPACING) {
+    // (A huge face is tried more loosely: the work per face is capped.)
+    const step = Math.max(SPACING, Math.sqrt((4 * hw * hh) / this.faceSamples));
+    for (let y = -hh; y <= hh + 1e-6; y += step) {
+      for (let x = -hw; x <= hw + 1e-6; x += step) {
         const point = face.toWorld(x, y);
         const spot = this.evaluate(face, point, ceiling);
         if (!spot) continue;

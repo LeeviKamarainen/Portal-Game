@@ -7,6 +7,7 @@
  * map save, at match end - never one per tick.
  */
 import type { GenModel, MapSummary, Right, Role, Visibility } from '../../src/net/accounts';
+import type { BoardEntry } from '../../src/net/leaderboard';
 
 export {
   DEFAULT_GEN_MODEL,
@@ -46,6 +47,8 @@ export interface MapRecord extends MapSummary {
   /** The map file as JSON text, exactly as saved. The store does not judge it: run it through `checkMap` first. */
   json: string;
 }
+
+export type { BoardEntry } from '../../src/net/leaderboard';
 
 export type GenerationStatus = 'running' | 'ok' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
 
@@ -113,6 +116,21 @@ export interface Store {
   listMapsOf(ownerId: number): MapSummary[];
   /** Public maps, newest first. */
   listPublicMaps(limit: number, offset?: number): MapSummary[];
+
+  // --- speedrun leaderboards: one row per player and course, their best run ---
+  /**
+   * Records a finished run; it replaces the player's row only if it is faster (an equal time
+   * keeps the older run). Returns whether it did, and the player's entry afterwards.
+   */
+  submitRun(userId: number, mapId: string, time: number, splits: readonly number[]): { improved: boolean; entry: BoardEntry };
+  /** The fastest runs on a course, best first; disabled players are left out. */
+  boardTop(mapId: string, limit: number, offset?: number): BoardEntry[];
+  /** One player's best run with its rank, or null (no time, or a disabled account). */
+  boardEntryOf(mapId: string, userId: number): BoardEntry | null;
+  /** Players with a time on the course. */
+  boardTotal(mapId: string): number;
+  /** Takes a player's time off a course; whether there was one. */
+  removeRun(userId: number, mapId: string): boolean;
 
   // --- the map generator (docs/llm-map-generation-plan.md) ---
   startGeneration(userId: number, id: string, prompt: string, kind: string): void;

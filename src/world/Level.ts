@@ -178,6 +178,8 @@ export class Level {
   readonly faces: Face[] = [];
   /** Everything the portal gun's ray can hit; userData.face set on surfaces. */
   readonly raycastTargets: THREE.Object3D[] = [];
+  /** How far a portal shot reaches (a map may shorten it, so far-off surfaces can't be used). */
+  portalRange = 200;
   private readonly faceByCollider = new Map<number, Solid>();
   private readonly staticBatches = new Map<string, THREE.BufferGeometry[]>();
   private readonly owned: Array<{ dispose(): void }> = [];

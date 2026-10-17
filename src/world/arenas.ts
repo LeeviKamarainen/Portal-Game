@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import type { ArenaDef } from './ArenaBuilder';
 import { mapToArena, type MapData } from './maps/MapFormat';
-import highwire from './maps/highwire.json';
+import { BUILT_IN_ONLINE_MAPS } from '../net/protocol';
 import catapult from './maps/catapult.json';
 import slipstream from './maps/slipstream.json';
 import updraft from './maps/updraft.json';
+import monolith from './maps/monolith.json';
 
 const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
 const V2 = (x: number, y: number) => new THREE.Vector2(x, y);
@@ -164,14 +165,17 @@ export const ARENAS: ArenaDef[] = [
  * fizzlers cutting each course into sections that need portals of their own.
  *  1. Slipstream - three falling halls of surf ramps, fins, flings and jump pads.
  *  2. Updraft    - a tower climb: well dives and fall loops turned upward, or the jump pads.
+ *  3. Monolith   - a climb round the outside of a giant tower: ramps, gaps, spikes and rams, tier by tier.
  */
-export const SPEEDRUNS: ArenaDef[] = [mapToArena(slipstream as MapData), mapToArena(updraft as MapData)];
+export const SPEEDRUN_MAPS = [slipstream, updraft, monolith] as MapData[];
+export const SPEEDRUNS: ArenaDef[] = SPEEDRUN_MAPS.map(mapToArena);
 
 /**
- * The PvP arena, scored as a match (see game/Match.ts) - playable solo for now: there are
- * no opponents or networking yet. Built from a map file (see maps/MapFormat.ts).
+ * The PvP maps, scored as a match (see game/Match.ts): the combat maps that also ship for
+ * online rooms, built from their map files (see maps/MapFormat.ts). Highwire comes first.
  */
-export const PVP_ARENA: ArenaDef = mapToArena(highwire as MapData);
+export const PVP_MAPS: readonly { id: string; def: ArenaDef }[] = BUILT_IN_ONLINE_MAPS.map((m) => ({ id: m.id, def: mapToArena(m.data) }));
+export const PVP_ARENA: ArenaDef = PVP_MAPS[0].def;
 
 /**
  * Debug chamber for the scripted portal tests: plain portalable box with the same

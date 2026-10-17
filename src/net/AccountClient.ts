@@ -1,4 +1,5 @@
 import { hasRight, type AdminUser, type GenModel, type MapListing, type MapSummary, type PublicUser, type Right, type Visibility } from './accounts';
+import type { BoardReply, SubmitReply } from './leaderboard';
 import { isTerminalEvent, type GenQuota, type GenStartRequest, type JobEvent } from './generate';
 
 /** Something the server (or the network) refused, in words for the player. */
@@ -75,6 +76,17 @@ export class AccountClient {
 
   async deleteMap(id: string): Promise<void> {
     await this.request('DELETE', `/api/maps/${encodeURIComponent(id)}`);
+  }
+
+  // ---- the speedrun leaderboards (server/auth/LeaderboardApi.ts, src/net/leaderboard.ts)
+
+  async leaderboard(course: string): Promise<BoardReply> {
+    return (await this.request('GET', `/api/leaderboard/${encodeURIComponent(course)}`)) as BoardReply;
+  }
+
+  /** Puts a finished run on the course's board (log in first); the server keeps the player's best. */
+  async submitRun(course: string, time: number, splits: number[]): Promise<SubmitReply> {
+    return (await this.request('POST', `/api/leaderboard/${encodeURIComponent(course)}`, { time, splits })) as SubmitReply;
   }
 
   // ---- the admin page (server/auth/AdminApi.ts)

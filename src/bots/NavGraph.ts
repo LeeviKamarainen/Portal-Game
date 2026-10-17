@@ -25,8 +25,8 @@ const SAFE_IMPACT = 13;
 const IMPACT_DAMAGE = 4;
 /** A jump clears about 2 m; ledges up to this are worth trying. */
 const MAX_JUMP_UP = 1.4;
-/** Gap jumps: this many cells across at most (a running jump carries ~6 m). */
-const MAX_GAP_CELLS = 3;
+/** Gap jumps: this many cells across at most (a running jump carries ~6 m; the last cells only on the level). */
+const MAX_GAP_CELLS = 5;
 /** Extra cost per metre on a cell next to deadly floor, and on floor a timed hazard covers. */
 const EDGE_PENALTY = 1.5;
 const HAZARD_PENALTY = 4;
@@ -99,6 +99,8 @@ export class NavGraph {
   private readonly nz: number;
   private readonly physics: PhysicsWorld;
   private readonly arena: ArenaBuilder;
+  private islands: Int32Array | null = null;
+  private readonly islandLists = new Map<number, NavNode[]>();
 
   /** The graph for an arena (built on first use, shared by every bot in it). */
   static for(key: object, arena: ArenaBuilder, physics: PhysicsWorld): NavGraph {
@@ -318,7 +320,8 @@ export class NavGraph {
       for (const id of this.columns.get(this.key(ix + dx * k, iz + dz * k)) ?? []) {
         const b = this.nodes[id];
         const dy = b.y - a.y;
-        if (dy > 0.5 || dy < -2) continue;
+        // (Up onto a ledge across a short gap too: a running jump clears 1.4 m with room to spare.)
+        if (dy > (k <= 4 ? MAX_JUMP_UP - 0.1 : 0.5) || dy < -2) continue;
         if (!this.clear(a.x, a.y + 1.0, a.z, b.x, a.y + 1.0, b.z) || !this.clear(a.x, a.y + 1.9, a.z, b.x, a.y + 1.9, b.z)) continue;
         a.links.push({ to: b.id, kind: 'jump', cost: k * CELL * (1 + b.penalty) + 3 });
         return;
@@ -345,6 +348,34 @@ export class NavGraph {
       }
     }
     return true;
+  }
+
+  /**
+   * Which island a node is on: floor joined up by links (either way round), so two nodes on
+   * different islands have no route between them on foot - the separate blocks of Cubefield.
+   */
+  island(n: NavNode): number {
+    if (!this.islands) {
+      const parent = this.nodes.map((_, i) => i);
+      const root = (i: number): number => {
+        while (parent[i] !== i) i = parent[i] = parent[parent[i]];
+        return i;
+      };
+      for (const a of this.nodes) for (const l of a.links) parent[root(a.id)] = root(l.to);
+      this.islands = Int32Array.from(this.nodes, (_, i) => root(i));
+    }
+    return this.islands[n.id];
+  }
+
+  /** Every node on the same island as `n`. */
+  islandNodes(n: NavNode): readonly NavNode[] {
+    const id = this.island(n);
+    let list = this.islandLists.get(id);
+    if (!list) {
+      list = this.nodes.filter((m) => this.islands![m.id] === id);
+      this.islandLists.set(id, list);
+    }
+    return list;
   }
 
   /** Deadly right now (a timed hazard over it is in its warning or active). */

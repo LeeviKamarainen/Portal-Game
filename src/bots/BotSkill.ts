@@ -94,6 +94,12 @@ export interface BotSkill {
    */
   readonly portalTravel: boolean;
   /**
+   * Gets about by portal only when there is no way on foot at all - stranded on a block of
+   * Cubefield, an island on Shaft: the same hop as `portalTravel` (no chains), to another
+   * island that has a way on, or at least lands a good deal nearer.
+   */
+  readonly strandedTravel: boolean;
+  /**
    * Chains portals in the air: out of one portal with time to fall, it shoots a new exit
    * nearer where it is going and a way in on what it is about to hit, and goes through that
    * too - link after link, off a ceiling or a wall, instead of landing and walking on. Needs
@@ -168,6 +174,7 @@ const ULTRA: BotSkill = {
   decisive: true,
   anticipate: true,
   portalTravel: true,
+  strandedTravel: true,
   airChain: true,
   travelEnemyClear: 30,
   chainEnemyClear: 30,
@@ -217,6 +224,7 @@ export const BOT_SKILLS = {
     decisive: false,
     anticipate: false,
     portalTravel: false,
+    strandedTravel: false,
     airChain: false,
     travelEnemyClear: 0,
     chainEnemyClear: 0,
@@ -262,6 +270,7 @@ export const BOT_SKILLS = {
     decisive: false,
     anticipate: false,
     portalTravel: false,
+    strandedTravel: true,
     airChain: false,
     travelEnemyClear: 0,
     chainEnemyClear: 0,
@@ -307,6 +316,7 @@ export const BOT_SKILLS = {
     decisive: true,
     anticipate: true,
     portalTravel: false,
+    strandedTravel: true,
     airChain: false,
     travelEnemyClear: 0,
     chainEnemyClear: 0,

@@ -10,6 +10,7 @@ import {
   RIGHTS,
   StoreError,
   userNameProblem,
+  type BoardEntry,
   type GenModel,
   type GenerationRecord,
   type GenerationStatus,
@@ -82,6 +83,17 @@ const MIGRATIONS: string[] = [
   `,
   `
   ALTER TABLE users ADD COLUMN gen_model TEXT NOT NULL DEFAULT 'haiku' CHECK (gen_model IN ('haiku', 'sonnet'));
+  `,
+  `
+  CREATE TABLE speedrun_times (
+    map_id  TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    time    REAL NOT NULL,
+    splits  TEXT NOT NULL,
+    set_at  INTEGER NOT NULL,
+    PRIMARY KEY (map_id, user_id)
+  );
+  CREATE INDEX speedrun_rank ON speedrun_times(map_id, time, set_at);
   `,
 ];
 
@@ -329,6 +341,66 @@ export class SqliteStore implements Store {
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
+  }
+
+  // --- speedrun leaderboards ---
+
+  submitRun(userId: number, mapId: string, time: number, splits: readonly number[]): { improved: boolean; entry: BoardEntry } {
+    return this.transaction(() => {
+      if (!this.one('SELECT 1 FROM users WHERE id = ?', userId)) throw new StoreError('no-such-user', 'No such user.');
+      const best = this.one('SELECT time FROM speedrun_times WHERE map_id = ? AND user_id = ?', mapId, userId);
+      const improved = !best || time < Number(best.time);
+      if (improved) {
+        this.run(
+          'INSERT INTO speedrun_times (map_id, user_id, time, splits, set_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (map_id, user_id) DO UPDATE SET time = excluded.time, splits = excluded.splits, set_at = excluded.set_at',
+          mapId,
+          userId,
+          time,
+          JSON.stringify(splits),
+          this.now(),
+        );
+      }
+      return { improved, entry: this.boardEntryOf(mapId, userId)! };
+    });
+  }
+
+  boardTop(mapId: string, limit: number, offset = 0): BoardEntry[] {
+    const start = Math.max(0, Math.floor(offset));
+    return this.all(
+      'SELECT t.*, u.name FROM speedrun_times t JOIN users u ON u.id = t.user_id WHERE t.map_id = ? AND u.disabled = 0 ORDER BY t.time, t.set_at, t.user_id LIMIT ? OFFSET ?',
+      mapId,
+      Math.max(0, Math.floor(limit)),
+      start,
+    ).map((row, i) => this.entryOf(row, start + i + 1));
+  }
+
+  boardEntryOf(mapId: string, userId: number): BoardEntry | null {
+    const row = this.one('SELECT t.*, u.name FROM speedrun_times t JOIN users u ON u.id = t.user_id WHERE t.map_id = ? AND t.user_id = ? AND u.disabled = 0', mapId, userId);
+    if (!row) return null;
+    const ahead = Number(
+      this.one(
+        'SELECT COUNT(*) AS n FROM speedrun_times t JOIN users u ON u.id = t.user_id WHERE t.map_id = ? AND u.disabled = 0 AND (t.time < ? OR (t.time = ? AND (t.set_at < ? OR (t.set_at = ? AND t.user_id < ?))))',
+        mapId,
+        Number(row.time),
+        Number(row.time),
+        Number(row.set_at),
+        Number(row.set_at),
+        userId,
+      )!.n,
+    );
+    return this.entryOf(row, ahead + 1);
+  }
+
+  boardTotal(mapId: string): number {
+    return Number(this.one('SELECT COUNT(*) AS n FROM speedrun_times t JOIN users u ON u.id = t.user_id WHERE t.map_id = ? AND u.disabled = 0', mapId)!.n);
+  }
+
+  removeRun(userId: number, mapId: string): boolean {
+    return this.run('DELETE FROM speedrun_times WHERE map_id = ? AND user_id = ?', mapId, userId) > 0;
+  }
+
+  private entryOf(row: Row, rank: number): BoardEntry {
+    return { rank, userId: Number(row.user_id), name: String(row.name), time: Number(row.time), splits: JSON.parse(String(row.splits)) as number[], setAt: Number(row.set_at) };
   }
 
   // --- the map generator ---
